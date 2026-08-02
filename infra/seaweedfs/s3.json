@@ -1,0 +1,14 @@
+{
+  "identities": [
+    {
+      "name": "asteria-local-admin",
+      "credentials": [
+        {
+          "accessKey": "asteria-local-access",
+          "secretKey": "asteria-local-secret-not-for-production"
+        }
+      ],
+      "actions": ["Admin", "Read", "List", "Tagging", "Write"]
+    }
+  ]
+}
