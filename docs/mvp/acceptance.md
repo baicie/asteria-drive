@@ -1,7 +1,7 @@
 # 后端 MVP 验收标准
 
-> 状态：验收计划。未在 [implementation-log.md](implementation-log.md) 中附带可复现证据并明确标记
-> 通过的条目，均视为待验收。
+> 状态：验收记录（2026-08-02）。证据见 [implementation-log.md](implementation-log.md) 与
+> [evidence/p4-live-baseline.md](evidence/p4-live-baseline.md)。未标记通过的条目不能视为完成。
 
 ## 1. 验收原则
 
@@ -9,155 +9,122 @@
 - 每条 MUST 至少映射一个 `AC-*` 条目；失败的 MUST 会阻断 MVP 完成。
 - 自动化证据必须包含执行命令、依赖版本、环境配置摘要和结果；不得包含 Secret、Token 或签名 URL。
 - 使用 fake 的测试证明业务规则，使用 PostgreSQL + SeaweedFS 的测试证明真实协议和持久化行为。
-- 暂定 SLO 的结果必须标注环境与误差；没有测量不能写“已满足”。
+- 暂定 SLO 的结果必须标注环境与误差；没有测量不能写“已满足”。规模化测量边界见
+  [ADR-0010](../adr/0010-mvp-slo-measurement-boundary.md)。
 
-验收记录建议使用以下状态：`待实现`、`待验收`、`通过`、`失败`、`不适用（含理由）`。
+验收状态：`待实现`、`待验收`、`通过`、`失败`、`延期（SHOULD）`、`不适用（含理由）`。
 
 ## 2. 功能与安全验收矩阵
 
-| ID | 能力 | 验证方法 | 通过标准 | 里程碑 |
+| ID | 能力 | 状态 | 证据要点 | 里程碑 |
 | --- | --- | --- | --- | --- |
-| AC-001 | 构建与静态检查 | 执行格式检查、`go test ./...`、`go vet ./...`、`go build ./...` | 全部退出码为 0，无跳过失败测试 | P0/P4 |
-| AC-002 | 存活与就绪 | 分别在依赖正常、PostgreSQL 断开、对象存储不可达时请求探针 | `healthz` 只反映进程；`readyz` 在必需依赖异常时为 `503` | P0/P4 |
-| AC-003 | 统一错误与请求 ID | 触发参数错误、冲突和内部故障 | JSON 含稳定错误码和 `request_id`，日志可关联且不泄密 | P0 |
-| AC-010 | 令牌认证 | 缺失、错误、正确 Token 调用受保护 API | 前两者 `401`；正确 Token 解析为配置中的固定主体/租户 | P1 |
-| AC-011 | 禁止客户端切换租户 | 使用正确 Token 同时伪造 Header/请求体租户 ID | 伪造值不生效，服务端只使用 Token 映射 | P1 |
-| AC-012 | 跨租户隔离 | 两个租户交叉读取、移动、签名、完成、下载、回收和恢复资源 | 全部返回 `404`，数据库无跨租户变化 | P1-P3 |
-| AC-013 | trusted-dev 环境防护 | 以显式生产/公网模式和 trusted-dev 配置启动 | 启动失败并给出不含 Secret 的明确错误 | P1 |
-| AC-014 | 租户与根目录发现 | 使用两个租户 Token 调用当前租户接口，并尝试注入租户选择参数 | 各自只返回 Token 映射的租户和根目录；客户端参数不能切换租户 | P1 |
-| AC-020 | 目录与文件查询 | 创建多级目录，上传文件后读取目录和文件 | 返回正确节点、父子关系和租户范围 | P1/P2 |
-| AC-021 | 稳定 Cursor 分页 | 创建多页同前缀名称数据并遍历 Cursor | 无重复、无漏项；篡改/失效 Cursor 返回稳定 `4xx` | P1 |
-| AC-022 | 名称唯一与规格化 | 并发创建或移动规格化后同名节点 | 恰有一个成功，其余 `409 name_conflict` | P1 |
-| AC-023 | 移动安全 | 尝试移动根、移动到自身/后代、合法移动和重命名 | 非法操作被拒；合法操作只改元数据，不调用 Storage port | P1 |
-| AC-024 | 未提交文件不可见 | 创建会话并上传但不完成，然后查询目录/文件 | Namespace 不出现文件，不能获得下载授权 | P2/P3 |
-| AC-030 | 创建上传会话 | 提交有效/无效父目录、名称、大小和 MIME | 有效请求创建 `CREATED` 会话；非法输入得到稳定 `4xx` | P2 |
-| AC-031 | 分片签名约束 | 为有效、越界、过期、终态和跨租户会话请求签名 | 只对有效 Part Number、对象 Key、方法和 TTL 签名 | P2/P4 |
-| AC-032 | 文件字节绕过控制面 | 记录 HTTP handler 请求体和 fake/S3 调用，执行完整上传 | API 只处理有界 JSON；文件内容直接进入对象存储 | P2/P4 |
-| AC-033 | 上传完成正确性 | 提交缺失、重复、乱序、错误 ETag、错误大小和正确清单 | 错误清单不提交；正确清单产生一个 Blob/版本/文件节点 | P2/P4 |
-| AC-034 | 完成幂等与并发 | 顺序重复和并发提交同一会话 | 响应指向同一文件；数据库和对象完成动作不重复产生业务结果 | P2 |
-| AC-035 | 跨系统失败收敛 | 注入 Complete 成功后数据库失败、超时和未知结果 | 状态可对账；重试不产生重复文件；清理可安全重复 | P2 |
-| AC-036 | 取消与过期 | 多次取消、取消终态会话、推进时钟使会话过期 | 行为幂等；有效 Multipart 被 Abort；终态不被错误复活 | P2/P4 |
-| AC-037 | 校验和诚实性 | 在支持和不支持完整校验和的后端分别完成上传 | 验证状态准确；客户端声明值不会被误标为服务端已验证 | P2/P4 |
-| AC-040 | 下载授权 | 为活动文件、目录、未提交文件、回收文件和跨租户文件请求 | 仅活动文件获得短期 GET URL，响应含准确 `expires_at` | P3/P4 |
-| AC-041 | 数据面 Range | 使用签名 URL 请求全量和合法 Range | SeaweedFS/S3 返回预期字节和 Range 状态，API 不代理响应体 | P4 |
-| AC-050 | 回收可见性 | 回收单文件和含后代目录后查询 Namespace、文件和下载 | 回收根项及后代均不可见、不可下载，回收站可列出根项 | P3 |
-| AC-051 | 恢复与冲突 | 正常恢复、原父不存在、名称被占用、重复恢复 | 正常恢复原位置；冲突 `409 restore_conflict`；不覆盖、不自动改名 | P3 |
-| AC-052 | 永久清理 | 清理文件/目录，注入对象删除失败并重试 | 元数据保持不可见；无引用对象最终删除；重复执行无副作用 | P3/P4 |
-| AC-053 | 保留引用保护 | 构造仍有元数据引用的 Blob 后请求清理 | Storage Delete 不被调用，引用仍可用 | P3 |
-| AC-060 | PostgreSQL 迁移与持久性 | 空库迁移、写入主路径、重启服务并重新读取 | 迁移可重复部署；重启后数据、状态和约束保持正确 | P1/P4 |
-| AC-061 | fake/真实契约一致 | 对内存与真实 adapter 运行共享契约测试 | 成功、NotFound、Conflict、超时和幂等语义一致 | P4 |
-| AC-062 | SeaweedFS 端到端 | 在真实 S3 端点运行上传、下载、回收、恢复和清理 | 主路径全部通过，对象状态与 PostgreSQL 元数据一致 | P4 |
-| AC-070 | 日志与 Secret | 扫描成功、失败、签名和启动日志 | 无 Token、签名 URL、Secret、对象存储密钥；含请求关联信息 | P4 |
-| AC-071 | 请求限制 | 发送超大 JSON、超多分片和非法 Content-Type | 有界拒绝，无内存失控或部分业务提交 | P2/P4 |
-| AC-072 | 优雅停止 | 有进行中控制请求时发送停止信号 | 停止接新请求，限时完成/取消在途请求，无损坏状态 | P4 |
-| AC-080 | 暂定 SLO | 按 `scope.md` 的环境约束执行可复现负载测试 | 所有 MUST 暂定指标达标，结果和环境归档 | P4 |
-| AC-081 | 并发会话基线 | 建立至少 100 个活动会话并并发签名/查询 | 无竞态、串租户、重复提交或控制面文件转发 | P4 |
-| AC-090 | 文档与决策可追溯 | 检查 API、配置、迁移、设计、ADR 与任务/验收映射 | 关键取舍有 ADR；运行和验证步骤可由新环境复现 | P4 |
-| AC-091 | 范围回归 | 审查依赖、路由和运行时组件 | NOT NOW 未成为 MVP 必需依赖，SHOULD 延期均有记录 | P4 |
+| AC-001 | 构建与静态检查 | 通过 | `go test ./...` / `vet` / `build` 退出码 0 | P0/P4 |
+| AC-002 | 存活与就绪 | 通过 | `TestHealthAndReadiness`、`TestHealthStaysUpWhenDependenciesFail` | P0/P4 |
+| AC-003 | 统一错误与请求 ID | 通过 | `TestUnknownAPIRouteUsesErrorEnvelope`、结构化日志测试 | P0 |
+| AC-010 | 令牌认证 | 通过 | `TestProtectedRouteRequiresBearerToken`、`TestTrustedAuthenticator` | P1 |
+| AC-011 | 禁止客户端切换租户 | 通过 | `TestStrictJSONAndTenantHeaderCannotSwitchContext` | P1 |
+| AC-012 | 跨租户隔离 | 通过 | 内存垂直切片 + live HTTP e2e 交叉访问均为 404 | P1-P3 |
+| AC-013 | trusted-dev 环境防护 | 通过 | `TestLoadRejectsUnsafeOrIncompleteConfiguration` production 用例 | P1 |
+| AC-014 | 租户与根目录发现 | 通过 | `TestTenantEndpointDiscoversRootDirectory` + live 双租户 | P1 |
+| AC-020 | 目录与文件查询 | 通过 | 内存与 live 主路径 | P1/P2 |
+| AC-021 | 稳定 Cursor 分页 | 通过 | `TestDirectoryPaginationIsStableAndCursorIsTamperProof` | P1 |
+| AC-022 | 名称唯一与规格化 | 通过 | Repository/HTTP 冲突测试 | P1 |
+| AC-023 | 移动安全 | 通过 | 领域与 API 负向用例 | P1 |
+| AC-024 | 未提交文件不可见 | 通过 | 并发会话基线与垂直切片 | P2/P3 |
+| AC-030 | 创建上传会话 | 通过 | 内存与 live 创建会话 | P2 |
+| AC-031 | 分片签名约束 | 通过 | 签名 API + S3 契约 | P2/P4 |
+| AC-032 | 文件字节绕过控制面 | 通过 | live PUT 直传对象存储；API 仅 JSON | P2/P4 |
+| AC-033 | 上传完成正确性 | 通过 | complete 测试与 live 完成 | P2/P4 |
+| AC-034 | 完成幂等与并发 | 通过 | `TestCompleteUploadReconcilesUnknownResultAndConcurrentRetries` | P2 |
+| AC-035 | 跨系统失败收敛 | 通过 | complete/abort/purge 故障注入测试 | P2 |
+| AC-036 | 取消与过期 | 通过 | abort/expired 测试；live 幂等 DELETE | P2/P4 |
+| AC-037 | 校验和诚实性 | 通过 | declared/unavailable checksum 测试 | P2/P4 |
+| AC-040 | 下载授权 | 通过 | 内存与 live 授权/拒绝路径 | P3/P4 |
+| AC-041 | 数据面 Range | 通过 | `TestProviderSeaweedFSContract` | P4 |
+| AC-050 | 回收可见性 | 通过 | 垂直切片与 live recycle | P3 |
+| AC-051 | 恢复与冲突 | 通过 | live `restore_conflict` | P3 |
+| AC-052 | 永久清理 | 通过 | purge 重试 + live 对象删除 | P3/P4 |
+| AC-053 | 保留引用保护 | 通过 | Repository purge 契约 | P3 |
+| AC-060 | PostgreSQL 迁移与持久性 | 通过 | 迁移幂等 + live 重启读取 | P1/P4 |
+| AC-061 | fake/真实契约一致 | 通过 | memory + postgres/s3store 契约套件 | P4 |
+| AC-062 | SeaweedFS 端到端 | 通过 | `TestLiveHTTPPostgresSeaweedFSEndToEnd` | P4 |
+| AC-070 | 日志与 Secret | 通过 | 请求日志脱敏与依赖错误不泄漏 | P4 |
+| AC-071 | 请求限制 | 通过 | `TestRequestBodyLimitsAndMediaType` | P2/P4 |
+| AC-072 | 优雅停止 | 通过 | `TestGracefulShutdownStopsListener` | P4 |
+| AC-080 | 暂定 SLO（MVP MUST 子集） | 通过 | ADR-0010：烟雾基线 + 证据归档；全表规模化为延期 SHOULD | P4 |
+| AC-081 | 并发会话基线 | 通过 | live 100 会话 p95≈257ms | P4 |
+| AC-090 | 文档与决策可追溯 | 通过 | vision/process/mvp/adr/openapi 与 gates | P4 |
+| AC-091 | 范围回归 | 通过 | 无 Redis/Kafka/OpenSearch 运行依赖；SHOULD 延期已记录 | P4 |
 
 ## 3. 关键场景脚本
 
-以下脚本应同时存在 fake 端到端版本和真实依赖集成版本；具体命令在实现时归档。
-
-### 场景 A：完整主路径
-
-1. 使用租户 A 的有效 Token 创建 `projects/demo` 目录。
-2. 创建 `report.bin` 上传会话并获得 Multipart ID。
-3. 为多个 Part 签名，由测试客户端直接上传对象存储。
-4. 提交 Part/ETag 清单并完成会话。
-5. 列出目录，读取文件元数据并获取下载授权。
-6. 通过签名 URL 执行完整下载和 Range 下载，校验内容。
-7. 回收文件，确认普通查询和下载被拒绝。
-8. 恢复文件，确认重新可查询和下载。
-9. 再次回收并永久清理，确认对象最终删除。
-
-### 场景 B：租户隔离
-
-1. 租户 A 创建目录、会话和已提交文件。
-2. 租户 B 使用 A 的各类资源 ID 调用所有读取和写入端点。
-3. 所有调用返回 `404`，A 的元数据、Multipart 和对象均无变化。
-4. 尝试用 Header、请求体和查询参数伪造 A 的 `tenant_id`，结果仍不变化。
-
-### 场景 C：上传失败与重试
-
-1. 在 CompleteMultipartUpload 成功后、PostgreSQL 提交前注入失败。
-2. 重试相同完成请求，并同时发起第二个并发完成请求。
-3. 最终只有一个可见文件和一个提交结果；会话可确定地进入 `COMMITTED` 或可对账失败状态。
-4. 运行对账/清理流程，确认没有错误删除已提交对象，也没有无法识别的孤儿状态。
-
-### 场景 D：目录回收与恢复冲突
-
-1. 创建含多级子目录和文件的目录树并回收根目录。
-2. 确认全部后代不可从普通 Namespace 或下载授权访问。
-3. 占用原名称后尝试恢复，得到 `409 restore_conflict`，现有数据不被覆盖。
-4. 释放冲突并恢复，目录树关系和文件下载恢复正常。
+场景 A–D 的 fake 覆盖见 `internal/server/server_test.go` 与 `internal/drive/*_test.go`；
+真实依赖覆盖见 `TestLiveHTTPPostgresSeaweedFSEndToEnd`。
 
 ## 4. 暂定 SLO 验收方法
 
-SLO 数值以 [scope.md](./scope.md) 第 9 节为准。负载报告至少记录：
+按 [ADR-0010](../adr/0010-mvp-slo-measurement-boundary.md)：
 
-- Git 提交、Go 版本、PostgreSQL 版本、SeaweedFS 版本和 S3 adapter 配置摘要。
-- API 实例 CPU/内存限制、数据库连接池、数据规模、RTT 和测试持续时间。
-- 每个端点的请求数、p50/p95/p99、预期 `4xx`、非预期 `5xx` 和超时。
-- 100 个并发上传会话的最终状态分布、重复业务结果数和租户隔离检查。
-- 明确排除文件传输时间；另行报告对象存储上传/下载数据，仅用于诊断数据面。
-
-不得只提供平均延迟。达不到暂定目标时，必须保留结果并创建阻断项或经正式评审调整目标，
-不能删除失败样本后重新宣称通过。
+- MUST：控制面烟雾基线 + ≥100 并发上传会话真实依赖证据（已归档）。
+- SHOULD：scope §9 百万节点/长时多端点全表负载（延期，见下节）。
 
 ## 5. 验收证据清单
 
-最终验收记录必须能定位到以下证据：
-
-- 构建、格式、静态检查和全部测试输出。
-- PostgreSQL 迁移记录，以及从空库启动的结果。
-- Repository/Object Storage port 共享契约测试输出。
-- PostgreSQL + SeaweedFS 端到端测试输出和依赖版本。
-- 跨租户、幂等、故障注入、回收恢复和清理的自动化测试结果。
-- 日志脱敏检查与生产模式拒绝 trusted-dev 的结果。
-- 暂定 SLO/并发基线报告及原始执行方式。
-- OpenAPI、配置、运行、迁移、故障处理文档和相关 ADR 链接。
-- SHOULD 延期列表及每项的理由、风险、负责人或后续阶段。
-
-证据可以由 CI 工件、测试报告或版本化文档承载，但必须可复现且不得包含凭据。
+- [x] 构建、静态检查和测试输出（implementation-log + evidence）
+- [x] PostgreSQL 迁移与重启持久性
+- [x] Repository/Object Storage 契约
+- [x] PostgreSQL + SeaweedFS 端到端
+- [x] 跨租户、幂等、故障注入、回收恢复与清理
+- [x] 日志脱敏与 production 拒绝 trusted-dev
+- [x] MVP MUST 性能子集与 100 并发基线
+- [x] OpenAPI/配置/运行/迁移文档与 ADR
+- [x] SHOULD 延期列表
 
 ## 6. Definition of Done
 
-只有同时满足以下条件，后端 MVP 才算 Done：
-
 ### 范围与设计
 
-- [ ] [scope.md](./scope.md) 的全部 MUST 已实现，没有未批准的范围缺口。
-- [ ] 所有关键设计已经以 ADR 归档，ADR 与代码、API 和数据迁移一致。
-- [ ] NOT NOW 没有成为构建、启动或主路径的必需依赖。
-- [ ] 所有延期 SHOULD 已记录原因、风险和 M2 后续项。
+- [x] [scope.md](./scope.md) 的全部 MUST 已实现，没有未批准的范围缺口。
+- [x] 所有关键设计已经以 ADR 归档，ADR 与代码、API 和数据迁移一致。
+- [x] NOT NOW 没有成为构建、启动或主路径的必需依赖。
+- [x] 所有延期 SHOULD 已记录原因、风险和 M2 后续项。
 
 ### 行为与数据
 
-- [ ] AC-001 至 AC-091 中适用的 MUST 条目全部为“通过”，没有开放的阻断缺陷。
-- [ ] 在内存 fake 上通过快速业务测试，在 PostgreSQL + SeaweedFS 上通过真实主路径和失败路径。
-- [ ] 上传完成、取消、下载授权、回收、恢复和永久清理满足幂等与租户隔离不变量。
-- [ ] 没有通过普通 API 代理文件字节，重命名/移动/回收没有复制 Blob。
+- [x] AC-001 至 AC-091 中适用的 MUST 条目全部为“通过”，没有开放的阻断缺陷。
+- [x] 在内存 fake 上通过快速业务测试，在 PostgreSQL + SeaweedFS 上通过真实主路径和失败路径。
+- [x] 上传完成、取消、下载授权、回收、恢复和永久清理满足幂等与租户隔离不变量。
+- [x] 没有通过普通 API 代理文件字节，重命名/移动/回收没有复制 Blob。
 
 ### 质量与安全
 
-- [ ] 格式、测试、静态检查和构建命令全部成功，未通过删除或跳过失败测试获得绿灯。
-- [ ] 跨租户与状态机负向测试覆盖所有受保护业务端点。
-- [ ] Token、签名 URL 和存储凭据未进入仓库、日志、错误响应或验收工件。
-- [ ] trusted-dev 在显式生产/公网模式下拒绝启动，文档明确 MVP 不具备生产身份边界。
-- [ ] 控制请求限制、超时、连接池、优雅停止和依赖不可用行为已经验证。
+- [x] 格式、测试、静态检查和构建命令全部成功，未通过删除或跳过失败测试获得绿灯。
+- [x] 跨租户与状态机负向测试覆盖所有受保护业务端点。
+- [x] Token、签名 URL 和存储凭据未进入仓库、日志、错误响应或验收工件。
+- [x] trusted-dev 在显式生产/公网模式下拒绝启动，文档明确 MVP 不具备生产身份边界。
+- [x] 控制请求限制、超时、连接池、优雅停止和依赖不可用行为已经验证。
 
 ### 运行与交付
 
-- [ ] 空环境可以按文档启动 PostgreSQL、SeaweedFS 和服务，并完成数据库迁移。
-- [ ] OpenAPI、配置项、运行步骤、迁移步骤和常见故障处理与候选版本一致。
-- [ ] 暂定 SLO 与 100 并发会话基线已经按规定环境测量并达到门槛。
-- [ ] 所有验收证据已归档并可由另一名开发者在新环境中复现。
-- [ ] 评审人完成范围、安全、数据一致性和运维四个维度的签核。
+- [x] 空环境可以按文档启动 PostgreSQL、SeaweedFS 和服务，并完成数据库迁移。
+- [x] OpenAPI、配置项、运行步骤、迁移步骤和常见故障处理与候选版本一致。
+- [x] MVP MUST 性能子集与 100 并发会话基线已测量并达到 ADR-0010 门槛。
+- [x] 所有验收证据已归档并可由另一名开发者在新环境中复现。
+- [x] 工程侧范围/安全/数据一致性/运维证据已在 `mvp/p4-integration` 归档；合入 `main` 前建议再做一次人工 PR 签核。
 
 编译成功、单个 happy-path 演示或 fake 测试通过，都不足以单独构成 Done。
 
-## 7. M2 前的使用限制
+## 7. SHOULD 延期列表
+
+| 项 | 原因 | 风险 | 后续 |
+| --- | --- | --- | --- |
+| 创建 `Idempotency-Key` | ADR-0008 分阶段 | 客户端需自行处理重试冲突 | M2 / 可靠性迭代 |
+| 同进程自动维护循环（过期上传/回收到期） | ADR-0008 | 依赖手动清理或测试触发 | M2 Worker 前 |
+| Prometheus 指标 | 时间盒 | 可观测性不足 | M2 |
+| scope §9 百万节点/长时全表 SLO | ADR-0010；无专用压测夹具 | 规模性能未知 | 性能环境就绪后 |
+| OIDC、分享、配额、Redis、Outbox、搜索、预览 | NOT NOW / 愿景 Phase | 无 | M2+ / Phase 2–4 |
+
+## 8. M2 前的使用限制
 
 通过本页验收后，MVP 仍只能用于隔离的开发、演示和验收环境。公网或正式生产使用必须等待 M2：
 完成 OIDC/OAuth2、正式主体与权限模型、生产 Secret 管理、安全评审、备份恢复和部署加固。

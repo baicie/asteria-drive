@@ -15,6 +15,7 @@
 | [0007](0007-mvp-identity-tenancy-sharing.md) | MVP 身份认证与租户隔离边界 | Accepted |
 | [0008](0008-mvp-staged-reliability-boundary.md) | MVP 创建幂等与维护任务的分阶段交付边界 | Accepted |
 | [0009](0009-independent-nested-recycle-roots.md) | 嵌套回收项保持独立回收根 | Accepted |
+| [0010](0010-mvp-slo-measurement-boundary.md) | MVP 暂定 SLO 测量分阶段边界 | Accepted |
 
 ## Conventions
 

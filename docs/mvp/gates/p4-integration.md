@@ -1,7 +1,7 @@
 # P4 设计门禁：真实集成与发布门槛
 
 - 分支：`mvp/p4-integration`
-- 状态：Accepted（设计）；实现/验收见 implementation-log
+- 状态：Accepted（设计）；实现/验收 **通过**（见 implementation-log 与 evidence）
 - 日期：2026-08-02
 
 ## 目标

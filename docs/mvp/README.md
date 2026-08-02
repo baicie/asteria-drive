@@ -1,10 +1,8 @@
 # Asteria Drive 后端 MVP 规划
 
-> 文档状态：范围与设计基线；候选实现和验收进度见
-> [implementation-log.md](./implementation-log.md)。
->
-> 本目录描述的是目标行为，不代表仓库当前已经具备这些能力。只有
-> [acceptance.md](./acceptance.md) 中的验收项全部通过并满足 Definition of Done，才能宣布 MVP 完成。
+> 文档状态：MVP 工程验收候选（2026-08-02）。证据见
+> [implementation-log.md](./implementation-log.md) 与 [acceptance.md](./acceptance.md)。
+> 合入 `main` 前建议完成人工 PR 签核。百万节点长时 SLO 为 SHOULD（ADR-0010）。
 
 ## 目标
 

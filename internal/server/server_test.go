@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -30,11 +31,13 @@ const (
 )
 
 type testAPI struct {
-	handler http.Handler
-	service *drive.Service
-	storage *memory.Storage
-	tenantA drive.Tenant
-	tenantB drive.Tenant
+	handler    http.Handler
+	server     *Server
+	service    *drive.Service
+	storage    *memory.Storage
+	repository *memory.Repository
+	tenantA    drive.Tenant
+	tenantB    drive.Tenant
 }
 
 func newTestAPI(t *testing.T) testAPI {
@@ -79,7 +82,118 @@ func newTestAPIWithLogger(t *testing.T, logger *slog.Logger) testAPI {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return testAPI{handler: httpServer.Handler(), service: service, storage: storage, tenantA: tenantA, tenantB: tenantB}
+	return testAPI{
+		handler: httpServer.Handler(), server: httpServer, service: service,
+		storage: storage, repository: repository, tenantA: tenantA, tenantB: tenantB,
+	}
+}
+
+func TestHealthStaysUpWhenDependenciesFail(t *testing.T) {
+	api := newTestAPI(t)
+	api.repository.SetReadyError(errors.New("postgres unavailable"))
+	health := api.request(t, http.MethodGet, "/healthz", "", nil, nil)
+	if health.Code != http.StatusOK || !strings.Contains(health.Body.String(), `"status":"ok"`) {
+		t.Fatalf("healthz should stay up: status=%d body=%s", health.Code, health.Body.String())
+	}
+	ready := api.request(t, http.MethodGet, "/readyz", "", nil, nil)
+	if ready.Code != http.StatusServiceUnavailable || !strings.Contains(ready.Body.String(), `"status":"not_ready"`) {
+		t.Fatalf("readyz should fail when metadata is down: status=%d body=%s", ready.Code, ready.Body.String())
+	}
+	api.repository.SetReadyError(nil)
+	api.storage.SetReadyError(errors.New("object storage unavailable"))
+	ready = api.request(t, http.MethodGet, "/readyz", "", nil, nil)
+	if ready.Code != http.StatusServiceUnavailable {
+		t.Fatalf("readyz should fail when object storage is down: status=%d body=%s", ready.Code, ready.Body.String())
+	}
+}
+
+func TestGracefulShutdownStopsListener(t *testing.T) {
+	api := newTestAPI(t)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	api.server.httpServer.Addr = listener.Addr().String()
+	done := make(chan error, 1)
+	go func() {
+		done <- api.server.httpServer.Serve(listener)
+	}()
+	client := &http.Client{Timeout: 2 * time.Second}
+	response, err := client.Get("http://" + listener.Addr().String() + "/healthz")
+	if err != nil {
+		t.Fatalf("health before shutdown: %v", err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("health before shutdown status=%d", response.StatusCode)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := api.server.Shutdown(ctx); err != nil {
+		t.Fatalf("shutdown: %v", err)
+	}
+	select {
+	case err := <-done:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			t.Fatalf("serve after shutdown: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("server did not stop after shutdown")
+	}
+	if _, err := client.Get("http://" + listener.Addr().String() + "/healthz"); err == nil {
+		t.Fatal("listener still accepted requests after shutdown")
+	}
+}
+
+func TestControlPlaneLatencySmokeBaseline(t *testing.T) {
+	api := newTestAPI(t)
+	tenant := decodeData[tenantResponse](t, api.request(t, http.MethodGet, "/api/v1/tenant", testTokenA, nil, nil))
+	directory := decodeData[nodeResponse](t, api.request(t, http.MethodPost, "/api/v1/directories", testTokenA, map[string]any{
+		"parent_id": tenant.RootDirectoryID, "name": "latency-smoke",
+	}, nil))
+	upload := decodeData[uploadResponse](t, api.request(t, http.MethodPost, "/api/v1/uploads", testTokenA, map[string]any{
+		"parent_id": directory.ID, "name": "latency.bin", "size": 1, "mime_type": "application/octet-stream",
+	}, nil))
+
+	measure := func(name string, fn func()) time.Duration {
+		t.Helper()
+		const samples = 50
+		latencies := make([]time.Duration, 0, samples)
+		for range samples {
+			started := time.Now()
+			fn()
+			latencies = append(latencies, time.Since(started))
+		}
+		sort.Slice(latencies, func(i, j int) bool { return latencies[i] < latencies[j] })
+		p95 := latencies[(samples*95)/100]
+		t.Logf("%s p50=%s p95=%s max=%s", name, latencies[samples/2], p95, latencies[samples-1])
+		if p95 > 200*time.Millisecond {
+			t.Fatalf("%s p95=%s exceeds local smoke ceiling 200ms", name, p95)
+		}
+		return p95
+	}
+	measure("healthz", func() {
+		if api.request(t, http.MethodGet, "/healthz", "", nil, nil).Code != http.StatusOK {
+			t.Fatal("healthz failed")
+		}
+	})
+	measure("get_tenant", func() {
+		if api.request(t, http.MethodGet, "/api/v1/tenant", testTokenA, nil, nil).Code != http.StatusOK {
+			t.Fatal("tenant failed")
+		}
+	})
+	measure("list_children", func() {
+		if api.request(t, http.MethodGet, "/api/v1/directories/"+directory.ID+"/children", testTokenA, nil, nil).Code != http.StatusOK {
+			t.Fatal("list failed")
+		}
+	})
+	measure("sign_part", func() {
+		if api.request(t, http.MethodPost, "/api/v1/uploads/"+upload.ID+"/parts/sign", testTokenA, map[string]any{
+			"part_number": 1,
+		}, nil).Code != http.StatusOK {
+			t.Fatal("sign failed")
+		}
+	})
 }
 
 func TestStructuredRequestLogIsCorrelatedAndRedacted(t *testing.T) {
@@ -390,5 +504,33 @@ func TestStrictJSONAndTenantHeaderCannotSwitchContext(t *testing.T) {
 	api.handler.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("unknown tenant field should be rejected, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestRequestBodyLimitsAndMediaType(t *testing.T) {
+	api := newTestAPI(t)
+	tenant := decodeData[tenantResponse](t, api.request(t, http.MethodGet, "/api/v1/tenant", testTokenA, nil, nil))
+
+	plain := httptest.NewRequest(http.MethodPost, "/api/v1/directories", strings.NewReader(`{"parent_id":"`+tenant.RootDirectoryID+`","name":"x"}`))
+	plain.Header.Set("Content-Type", "text/plain")
+	plain.Header.Set("Authorization", "Bearer "+testTokenA)
+	plainRecorder := httptest.NewRecorder()
+	api.handler.ServeHTTP(plainRecorder, plain)
+	if plainRecorder.Code != http.StatusUnsupportedMediaType || !strings.Contains(plainRecorder.Body.String(), `"code":"unsupported_media_type"`) {
+		t.Fatalf("plain content type: status=%d body=%s", plainRecorder.Code, plainRecorder.Body.String())
+	}
+
+	oversized := strings.NewReader(`{"parent_id":"` + tenant.RootDirectoryID + `","name":"` + strings.Repeat("n", maxJSONBody) + `"}`)
+	large := httptest.NewRequest(http.MethodPost, "/api/v1/directories", oversized)
+	large.Header.Set("Content-Type", "application/json")
+	large.Header.Set("Authorization", "Bearer "+testTokenA)
+	largeRecorder := httptest.NewRecorder()
+	api.handler.ServeHTTP(largeRecorder, large)
+	if largeRecorder.Code != http.StatusRequestEntityTooLarge || !strings.Contains(largeRecorder.Body.String(), `"code":"request_too_large"`) {
+		t.Fatalf("oversized JSON: status=%d body=%s", largeRecorder.Code, largeRecorder.Body.String())
+	}
+	children := api.request(t, http.MethodGet, "/api/v1/directories/"+tenant.RootDirectoryID+"/children", testTokenA, nil, nil)
+	if children.Code != http.StatusOK || strings.Contains(children.Body.String(), `"name":"`+strings.Repeat("n", 32)) {
+		t.Fatalf("oversized request must not partially create nodes: %s", children.Body.String())
 	}
 }

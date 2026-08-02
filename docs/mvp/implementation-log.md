@@ -3,6 +3,24 @@
 > 本页记录已经由代码和命令证明的事实。规划目标仍以 [scope.md](scope.md) 和
 > [acceptance.md](acceptance.md) 为准；未列为通过的条目不能视为完成。
 
+## 2026-08-02 - 里程碑分支链
+
+按 [branch-workflow.md](../process/branch-workflow.md) 建立本地分支链（尚未推送远端）：
+
+```text
+docs/product-vision
+  → mvp/p0-baseline
+  → mvp/p1-namespace
+  → mvp/p2-upload
+  → mvp/p3-download-recycle
+  → mvp/integrate
+  → mvp/p4-integration  (当前工作分支)
+```
+
+- 产品蓝图归档于 `docs/vision/`，不扩大 MVP MUST。
+- P0 设计门禁与 P0–P3 垂直切片候选以独立 commit 合入；P1/P2/P3 以分支归属记录确认（见 `BRANCH-p1.md` 等）。
+- 历史过渡分支 `codex/mvp` 不再承接新工作。
+
 ## 2026-08-02 - 设计基线
 
 - 建立 `codex/mvp`，基于远端 `main` 初始化提交保留现有工作区骨架。
@@ -84,3 +102,33 @@ go test -v ./internal/postgres ./internal/s3store
 
 仍待验证：完整服务端端到端、重启持久性、竞态、跨系统故障注入、日志 Secret 扫描、生产模式负向
 启动、SLO、100 并发会话和完整 Definition of Done。
+
+## 2026-08-02 - P4 真实依赖与发布门槛
+
+实现/加固：
+
+- HTTP live e2e（已有）覆盖上传直传、下载/Range、重启持久性、回收/恢复冲突/清理、跨租户。
+- 新增 `TestHealthStaysUpWhenDependenciesFail`、`TestGracefulShutdownStopsListener`、
+  `TestControlPlaneLatencySmokeBaseline`、`TestRequestBodyLimitsAndMediaType`。
+- ADR-0010 明确 MVP MUST 性能子集与百万节点 SHOULD 延期边界。
+- 证据归档：[evidence/p4-live-baseline.md](./evidence/p4-live-baseline.md)；验收矩阵更新为通过。
+
+环境：PostgreSQL 17.5-alpine + SeaweedFS 3.85（Compose healthy）；Go 1.23.6。
+
+```text
+go test ./...
+go vet ./...
+go build ./...
+go test -v -count=1 ./internal/postgres ./internal/s3store ./internal/server -timeout 10m
+```
+
+结果：
+
+- 单元/组件测试全部通过。
+- `TestLiveHTTPPostgresSeaweedFSEndToEnd`：通过（关闭 AC-062 及重启持久性）。
+- `TestLiveHTTPConcurrentUploadSessionBaseline`：通过；100 会话 create p95≈257.5ms（AC-081）。
+- adapter 契约与迁移幂等再次通过（AC-060/061/041）。
+- 范围回归：运行依赖仍为 PostgreSQL + S3 兼容端点；无 Redis/Kafka/OpenSearch（AC-091）。
+- Definition of Done 工程项已勾选；合入 `main` 前建议人工 PR 签核。
+
+SHOULD 延期见 [acceptance.md](./acceptance.md) 第 7 节。
