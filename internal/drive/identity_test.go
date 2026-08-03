@@ -7,8 +7,8 @@ func TestRBACPermissionMatrix(t *testing.T) {
 		role        AccessRole
 		permissions []Permission
 	}{
-		{RoleOwner, []Permission{PermissionTenantRead, PermissionFilesRead, PermissionFilesWrite, PermissionFilesDelete}},
-		{RoleAdmin, []Permission{PermissionTenantRead, PermissionFilesRead, PermissionFilesWrite, PermissionFilesDelete}},
+		{RoleOwner, []Permission{PermissionTenantRead, PermissionMembersRead, PermissionMembersManage, PermissionFilesRead, PermissionFilesWrite, PermissionFilesDelete}},
+		{RoleAdmin, []Permission{PermissionTenantRead, PermissionMembersRead, PermissionMembersManage, PermissionFilesRead, PermissionFilesWrite, PermissionFilesDelete}},
 		{RoleEditor, []Permission{PermissionFilesRead, PermissionFilesWrite}},
 		{RoleViewer, []Permission{PermissionFilesRead}},
 	}

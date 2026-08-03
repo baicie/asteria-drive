@@ -311,6 +311,8 @@ SHA-256 值使用标准 Base64 编码的 32-byte 摘要。后端返回并验证�
 | GET | `/healthz` | 200 |
 | GET | `/readyz` | 200/503 |
 | GET | `/api/v1/tenant` | 200 |
+| GET | `/api/v1/tenant/members` | 200 |
+| PATCH | `/api/v1/tenant/members/{principal_id}` | 200 |
 | POST | `/api/v1/directories` | 201 |
 | GET | `/api/v1/directories/{id}` | 200 |
 | GET | `/api/v1/directories/{id}/children` | 200 |

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -103,6 +104,104 @@ func TestRepositoryOIDCMemberContract(t *testing.T) {
 		t.Fatalf("principal identity remap should conflict, got %v", err)
 	}
 }
+
+func TestRepositoryMemberLifecycleContract(t *testing.T) {
+	repository := integrationRepository(t)
+	ctx := context.Background()
+	now := time.Date(2026, 8, 3, 11, 0, 0, 0, time.UTC)
+	tenantID := testID(720)
+	if _, err := repository.EnsureTenant(ctx, drive.TenantSeed{TenantID: tenantID, DisplayName: "Members", RootNodeID: testID(721), Now: now}); err != nil {
+		t.Fatal(err)
+	}
+	ownerID, secondOwnerID, adminID, viewerID := testID(722), testID(723), testID(724), testID(725)
+	for _, member := range []struct {
+		id   string
+		role drive.AccessRole
+	}{
+		{ownerID, drive.RoleOwner}, {secondOwnerID, drive.RoleOwner}, {adminID, drive.RoleAdmin}, {viewerID, drive.RoleViewer},
+	} {
+		if _, err := repository.EnsureOIDCMember(ctx, drive.OIDCMemberSeed{
+			PrincipalID: member.id, TenantID: tenantID, Issuer: "https://issuer.pg-members.test", Subject: member.id,
+			DisplayName: member.id, Role: member.role, Now: now,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	items, more, err := repository.ListMembers(ctx, tenantID, drive.CursorPosition{}, 2)
+	if err != nil || len(items) != 2 || !more {
+		t.Fatalf("first member page: items=%d more=%v err=%v", len(items), more, err)
+	}
+	if _, more, err = repository.ListMembers(ctx, tenantID, drive.CursorPosition{Name: items[1].Identity.PrincipalID, ID: items[1].Identity.PrincipalID}, 2); err != nil || more {
+		t.Fatalf("second member page: more=%v err=%v", more, err)
+	}
+	if _, err := repository.UpdateMember(ctx, drive.UpdateMemberCommand{
+		TenantID: tenantID, PrincipalID: viewerID, ActorPrincipalID: adminID, ActorRole: drive.RoleAdmin,
+		Status: memberStatusPtr(drive.MemberStatusSuspended), Now: now,
+	}); err != nil {
+		t.Fatalf("admin member update: %v", err)
+	}
+	if _, err := repository.UpdateMember(ctx, drive.UpdateMemberCommand{
+		TenantID: tenantID, PrincipalID: ownerID, ActorPrincipalID: adminID, ActorRole: drive.RoleAdmin,
+		Role: accessRolePtr(drive.RoleViewer), Now: now,
+	}); drive.CodeOf(err) != drive.CodeForbidden {
+		t.Fatalf("admin owner update should be forbidden, got %v", err)
+	}
+	if _, err := repository.UpdateMember(ctx, drive.UpdateMemberCommand{
+		TenantID: tenantID, PrincipalID: secondOwnerID, ActorPrincipalID: secondOwnerID, ActorRole: drive.RoleOwner,
+		Status: memberStatusPtr(drive.MemberStatusSuspended), Now: now,
+	}); err != nil {
+		t.Fatalf("second owner should be able to suspend while first remains: %v", err)
+	}
+	if _, err := repository.UpdateMember(ctx, drive.UpdateMemberCommand{
+		TenantID: tenantID, PrincipalID: ownerID, ActorPrincipalID: ownerID, ActorRole: drive.RoleOwner,
+		Status: memberStatusPtr(drive.MemberStatusSuspended), Now: now,
+	}); drive.CodeOf(err) != drive.CodeInvalidState {
+		t.Fatalf("last active owner should be protected, got %v", err)
+	}
+
+	concurrentRepository := integrationRepository(t)
+	concurrentTenant := testID(726)
+	if _, err := concurrentRepository.EnsureTenant(ctx, drive.TenantSeed{TenantID: concurrentTenant, DisplayName: "Concurrent", RootNodeID: testID(727), Now: now}); err != nil {
+		t.Fatal(err)
+	}
+	for _, member := range []string{ownerID, secondOwnerID} {
+		if _, err := concurrentRepository.EnsureOIDCMember(ctx, drive.OIDCMemberSeed{
+			PrincipalID: member, TenantID: concurrentTenant, Issuer: "https://issuer.pg-concurrent.test", Subject: member,
+			Role: drive.RoleOwner, Now: now,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var wg sync.WaitGroup
+	for _, pair := range [][2]string{{ownerID, secondOwnerID}, {secondOwnerID, ownerID}} {
+		wg.Add(1)
+		go func(actor, target string) {
+			defer wg.Done()
+			_, _ = concurrentRepository.UpdateMember(ctx, drive.UpdateMemberCommand{
+				TenantID: concurrentTenant, PrincipalID: target, ActorPrincipalID: actor, ActorRole: drive.RoleOwner,
+				Role: accessRolePtr(drive.RoleViewer), Now: now,
+			})
+		}(pair[0], pair[1])
+	}
+	wg.Wait()
+	final, _, err := concurrentRepository.ListMembers(ctx, concurrentTenant, drive.CursorPosition{}, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	activeOwners := 0
+	for _, member := range final {
+		if member.Role == drive.RoleOwner && member.Status == drive.MemberStatusActive {
+			activeOwners++
+		}
+	}
+	if activeOwners < 1 {
+		t.Fatalf("owner invariant was violated: %+v", final)
+	}
+}
+
+func accessRolePtr(value drive.AccessRole) *drive.AccessRole { return &value }
+
+func memberStatusPtr(value drive.MemberStatus) *drive.MemberStatus { return &value }
 
 func TestRepositoryNamespaceAndUploadContract(t *testing.T) {
 	repository := integrationRepository(t)

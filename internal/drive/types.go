@@ -19,10 +19,12 @@ const (
 type Permission string
 
 const (
-	PermissionTenantRead  Permission = "tenant:read"
-	PermissionFilesRead   Permission = "files:read"
-	PermissionFilesWrite  Permission = "files:write"
-	PermissionFilesDelete Permission = "files:delete"
+	PermissionTenantRead    Permission = "tenant:read"
+	PermissionMembersRead   Permission = "tenant:members:read"
+	PermissionMembersManage Permission = "tenant:members:manage"
+	PermissionFilesRead     Permission = "files:read"
+	PermissionFilesWrite    Permission = "files:write"
+	PermissionFilesDelete   Permission = "files:delete"
 )
 
 func ValidAccessRole(role AccessRole) bool {
@@ -39,11 +41,15 @@ func PermissionsForRole(role AccessRole) map[Permission]struct{} {
 	switch role {
 	case RoleOwner:
 		permissions[PermissionTenantRead] = struct{}{}
+		permissions[PermissionMembersRead] = struct{}{}
+		permissions[PermissionMembersManage] = struct{}{}
 		permissions[PermissionFilesRead] = struct{}{}
 		permissions[PermissionFilesWrite] = struct{}{}
 		permissions[PermissionFilesDelete] = struct{}{}
 	case RoleAdmin:
 		permissions[PermissionTenantRead] = struct{}{}
+		permissions[PermissionMembersRead] = struct{}{}
+		permissions[PermissionMembersManage] = struct{}{}
 		permissions[PermissionFilesRead] = struct{}{}
 		permissions[PermissionFilesWrite] = struct{}{}
 		permissions[PermissionFilesDelete] = struct{}{}
@@ -85,6 +91,16 @@ type OIDCMemberSeed struct {
 	DisplayName string
 	Role        AccessRole
 	Now         time.Time
+}
+
+type UpdateMemberCommand struct {
+	TenantID         string
+	PrincipalID      string
+	ActorPrincipalID string
+	ActorRole        AccessRole
+	Role             *AccessRole
+	Status           *MemberStatus
+	Now              time.Time
 }
 
 type Tenant struct {

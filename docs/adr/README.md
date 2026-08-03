@@ -21,6 +21,8 @@
 | [0013](0013-completed-upload-reconciliation.md) | 已完成对象的 Namespace 接纳失败与幂等对账 | Accepted |
 | [0014](0014-oidc-resource-server-and-tenant-rbac.md) | OIDC Resource Server 与租户 RBAC 边界 | Accepted |
 
+| [0015](0015-tenant-member-lifecycle.md) | Tenant member lifecycle management and last-owner protection | Accepted |
+
 ## Conventions
 
 - 新决策先以 `Proposed` 起草，经评审后改为 `Accepted`。

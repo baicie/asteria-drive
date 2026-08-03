@@ -139,6 +139,67 @@ func (r *Repository) SetOIDCMemberStatus(_ context.Context, tenantID, principalI
 	return nil
 }
 
+func (r *Repository) ListMembers(_ context.Context, tenantID string, after drive.CursorPosition, limit int) ([]drive.PrincipalRecord, bool, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if _, ok := r.tenants[tenantID]; !ok {
+		return nil, false, drive.E(drive.CodeNotFound, "tenant was not found")
+	}
+	items := make([]drive.PrincipalRecord, 0)
+	for _, member := range r.members {
+		if member.Identity.TenantID == tenantID && afterMemberPosition(member, after) {
+			items = append(items, member)
+		}
+	}
+	sort.Slice(items, func(i, j int) bool {
+		return items[i].Identity.PrincipalID < items[j].Identity.PrincipalID
+	})
+	more := len(items) > limit
+	if more {
+		items = items[:limit]
+	}
+	return items, more, nil
+}
+
+func (r *Repository) UpdateMember(_ context.Context, command drive.UpdateMemberCommand) (drive.PrincipalRecord, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if command.TenantID == "" || command.PrincipalID == "" || command.ActorPrincipalID == "" ||
+		!drive.ValidAccessRole(command.ActorRole) || (command.Role == nil && command.Status == nil) ||
+		command.Role != nil && !drive.ValidAccessRole(*command.Role) ||
+		command.Status != nil && !drive.ValidMemberStatus(*command.Status) {
+		return drive.PrincipalRecord{}, drive.E(drive.CodeInvalidRequest, "member update is invalid")
+	}
+	actor, ok := r.members[memberKey(command.TenantID, command.ActorPrincipalID)]
+	if !ok || actor.Status != drive.MemberStatusActive || actor.Role != command.ActorRole ||
+		(command.ActorRole != drive.RoleOwner && command.ActorRole != drive.RoleAdmin) {
+		return drive.PrincipalRecord{}, drive.E(drive.CodeForbidden, "only active owners and admins may manage members")
+	}
+	key := memberKey(command.TenantID, command.PrincipalID)
+	member, ok := r.members[key]
+	if !ok {
+		return drive.PrincipalRecord{}, drive.E(drive.CodeNotFound, "tenant member was not found")
+	}
+	if command.ActorRole == drive.RoleAdmin && (member.Role == drive.RoleOwner || command.Role != nil && *command.Role == drive.RoleOwner) {
+		return drive.PrincipalRecord{}, drive.E(drive.CodeForbidden, "admins cannot modify owners or grant the owner role")
+	}
+	newRole, newStatus := member.Role, member.Status
+	if command.Role != nil {
+		newRole = *command.Role
+	}
+	if command.Status != nil {
+		newStatus = *command.Status
+	}
+	if member.Role == drive.RoleOwner && member.Status == drive.MemberStatusActive &&
+		(newRole != drive.RoleOwner || newStatus != drive.MemberStatusActive) && r.activeOwnerCount(command.TenantID, command.PrincipalID) == 0 {
+		return drive.PrincipalRecord{}, drive.E(drive.CodeInvalidState, "the last active owner cannot be removed")
+	}
+	member.Role, member.Status = newRole, newStatus
+	member.TenantDisplayName = r.tenants[command.TenantID].DisplayName
+	r.members[key] = member
+	return member, nil
+}
+
 func (r *Repository) CreateDirectory(_ context.Context, command drive.CreateDirectoryCommand) (drive.Node, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -689,6 +750,21 @@ func nodeLess(a, b drive.Node) bool {
 func principalKey(issuer, subject string) string { return issuer + "\x00" + subject }
 
 func memberKey(tenantID, principalID string) string { return tenantID + "\x00" + principalID }
+
+func afterMemberPosition(member drive.PrincipalRecord, after drive.CursorPosition) bool {
+	return after.ID == "" || member.Identity.PrincipalID > after.Name
+}
+
+func (r *Repository) activeOwnerCount(tenantID, excludePrincipalID string) int {
+	count := 0
+	for _, member := range r.members {
+		if member.Identity.TenantID == tenantID && member.Identity.PrincipalID != excludePrincipalID &&
+			member.Role == drive.RoleOwner && member.Status == drive.MemberStatusActive {
+			count++
+		}
+	}
+	return count
+}
 
 func sortNodes(nodes []drive.Node) {
 	sort.Slice(nodes, func(i, j int) bool { return nodeLess(nodes[i], nodes[j]) })
