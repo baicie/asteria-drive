@@ -300,9 +300,19 @@ func (r *Repository) CommitUpload(_ context.Context, command drive.CommitUploadC
 	}
 	parent, ok := r.activeNode(command.Identity.TenantID, session.ParentID)
 	if !ok || parent.Kind != drive.NodeDirectory {
+		session.Status = drive.UploadFailed
+		session.FailureCode = drive.UploadFailureParentUnavailable
+		session.Revision++
+		session.UpdatedAt = command.Now
+		r.uploads[session.ID] = session
 		return drive.CompleteResult{}, false, drive.E(drive.CodeNotFound, "parent directory was not found")
 	}
 	if r.nameExists(session.TenantID, session.ParentID, session.NormalizedName, "") {
+		session.Status = drive.UploadFailed
+		session.FailureCode = drive.UploadFailureNameConflict
+		session.Revision++
+		session.UpdatedAt = command.Now
+		r.uploads[session.ID] = session
 		return drive.CompleteResult{}, false, drive.E(drive.CodeNameConflict, "an active item with this name already exists")
 	}
 	r.blobs[command.Blob.ID] = command.Blob

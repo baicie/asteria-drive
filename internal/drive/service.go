@@ -82,6 +82,9 @@ func (s *Service) Ready(ctx context.Context) error {
 }
 
 func (s *Service) EnsureTenant(ctx context.Context, tenantID, displayName string) (Tenant, error) {
+	if err := validateID(tenantID); err != nil {
+		return Tenant{}, err
+	}
 	rootID, err := NewID()
 	if err != nil {
 		return Tenant{}, E(CodeInternal, "could not generate root id", err)
@@ -90,10 +93,16 @@ func (s *Service) EnsureTenant(ctx context.Context, tenantID, displayName string
 }
 
 func (s *Service) Tenant(ctx context.Context, tenantID string) (Tenant, error) {
+	if err := validateID(tenantID); err != nil {
+		return Tenant{}, err
+	}
 	return s.repository.Tenant(ctx, tenantID)
 }
 
 func (s *Service) CreateDirectory(ctx context.Context, identity Identity, parentID, name string) (Node, error) {
+	if err := validateID(parentID); err != nil {
+		return Node{}, err
+	}
 	display, normalized, err := NormalizeName(name)
 	if err != nil {
 		return Node{}, err
@@ -108,6 +117,9 @@ func (s *Service) CreateDirectory(ctx context.Context, identity Identity, parent
 }
 
 func (s *Service) Node(ctx context.Context, identity Identity, id string, kind NodeKind) (Node, error) {
+	if err := validateID(id); err != nil {
+		return Node{}, err
+	}
 	node, err := s.repository.Node(ctx, identity, id, false)
 	if err != nil {
 		return Node{}, err
@@ -119,6 +131,9 @@ func (s *Service) Node(ctx context.Context, identity Identity, id string, kind N
 }
 
 func (s *Service) ListChildren(ctx context.Context, identity Identity, parentID, cursor string, limit int) (Page[Node], error) {
+	if err := validateID(parentID); err != nil {
+		return Page[Node]{}, err
+	}
 	if limit == 0 {
 		limit = 50
 	}
@@ -145,6 +160,14 @@ func (s *Service) UpdateNode(ctx context.Context, identity Identity, nodeID stri
 	if revision <= 0 || (name == nil && parentID == nil) {
 		return Node{}, E(CodeInvalidRequest, "revision and at least one update are required")
 	}
+	if err := validateID(nodeID); err != nil {
+		return Node{}, err
+	}
+	if parentID != nil {
+		if err := validateID(*parentID); err != nil {
+			return Node{}, err
+		}
+	}
 	var display, normalized *string
 	if name != nil {
 		d, n, err := NormalizeName(*name)
@@ -168,6 +191,9 @@ type CreateUploadInput struct {
 }
 
 func (s *Service) CreateUpload(ctx context.Context, identity Identity, input CreateUploadInput) (UploadSession, error) {
+	if err := validateID(input.ParentID); err != nil {
+		return UploadSession{}, err
+	}
 	display, normalized, err := NormalizeName(input.Name)
 	if err != nil {
 		return UploadSession{}, err
@@ -214,10 +240,16 @@ func (s *Service) CreateUpload(ctx context.Context, identity Identity, input Cre
 }
 
 func (s *Service) Upload(ctx context.Context, identity Identity, uploadID string) (UploadSession, error) {
+	if err := validateID(uploadID); err != nil {
+		return UploadSession{}, err
+	}
 	return s.repository.Upload(ctx, identity, uploadID)
 }
 
 func (s *Service) SignUploadPart(ctx context.Context, identity Identity, uploadID string, partNumber int, checksum Checksum) (SignedPart, error) {
+	if err := validateID(uploadID); err != nil {
+		return SignedPart{}, err
+	}
 	if partNumber < 1 || partNumber > 10000 || !ValidChecksum(checksum) {
 		return SignedPart{}, E(CodeInvalidRequest, "part number or checksum is invalid")
 	}
@@ -256,6 +288,9 @@ type CompleteOutput struct {
 }
 
 func (s *Service) CompleteUpload(ctx context.Context, identity Identity, uploadID string, parts []CompletedPart) (CompleteOutput, error) {
+	if err := validateID(uploadID); err != nil {
+		return CompleteOutput{}, err
+	}
 	if err := validateParts(parts); err != nil {
 		return CompleteOutput{}, err
 	}
@@ -265,8 +300,10 @@ func (s *Service) CompleteUpload(ctx context.Context, identity Identity, uploadI
 		return CompleteOutput{}, err
 	}
 	if session.Status == UploadCommitted {
-		node, _, err := s.repository.DownloadBlob(ctx, identity, session.CommittedNodeID)
-		return CompleteOutput{Upload: session, Node: node, First: false}, err
+		result, _, err := s.repository.CommitUpload(ctx, CommitUploadCommand{
+			Identity: identity, SessionID: uploadID, Digest: digest,
+		})
+		return CompleteOutput{Upload: result.Upload, Node: result.Node, First: false}, err
 	}
 
 	var object ObjectInfo
@@ -291,7 +328,13 @@ func (s *Service) CompleteUpload(ctx context.Context, identity Identity, uploadI
 			if CodeOf(mappedStat) == CodeDependencyUnavailable {
 				return CompleteOutput{}, mappedStat
 			}
-			return CompleteOutput{}, mappedComplete
+			if CodeOf(mappedComplete) == CodeNotFound && CodeOf(mappedStat) == CodeNotFound {
+				return CompleteOutput{}, Retryable(CodeDependencyUnavailable, "multipart completion result is not yet observable", completeErr)
+			}
+			if CodeOf(mappedComplete) == CodeDependencyUnavailable {
+				return CompleteOutput{}, mappedComplete
+			}
+			return CompleteOutput{}, Retryable(CodeDependencyUnavailable, "multipart completion result is unknown", completeErr)
 		}
 	}
 	if err != nil {
@@ -299,14 +342,14 @@ func (s *Service) CompleteUpload(ctx context.Context, identity Identity, uploadI
 	}
 	if err := normalizeObjectChecksum(&object, session.DeclaredChecksum); err != nil {
 		if CodeOf(err) == CodeInvalidRequest {
-			if failErr := s.failUploadCompletion(ctx, identity, session, digest, "checksum_mismatch", true); failErr != nil {
+			if failErr := s.failUploadCompletion(ctx, identity, session, digest, UploadFailureChecksumMismatch, true); failErr != nil {
 				return CompleteOutput{}, failErr
 			}
 		}
 		return CompleteOutput{}, err
 	}
 	if object.Size != session.ExpectedSize {
-		if failErr := s.failUploadCompletion(ctx, identity, session, digest, "size_mismatch", true); failErr != nil {
+		if failErr := s.failUploadCompletion(ctx, identity, session, digest, UploadFailureSizeMismatch, true); failErr != nil {
 			return CompleteOutput{}, failErr
 		}
 		return CompleteOutput{}, E(CodeInvalidRequest, "completed object size does not match the declared size")
@@ -348,6 +391,12 @@ func (s *Service) CompleteUpload(ctx context.Context, identity Identity, uploadI
 		Identity: identity, SessionID: uploadID, Digest: digest, Blob: blob, Version: version, Node: node, Parts: parts, Now: now,
 	})
 	if err != nil {
+		switch CodeOf(err) {
+		case CodeNameConflict, CodeNotFound:
+			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+			defer cancel()
+			_ = s.storage.DeleteObject(cleanupCtx, session.ObjectKey)
+		}
 		return CompleteOutput{}, err
 	}
 	return CompleteOutput{Upload: result.Upload, Node: result.Node, First: first}, nil
@@ -368,12 +417,17 @@ func (s *Service) failUploadCompletion(ctx context.Context, identity Identity, s
 }
 
 func (s *Service) AbortUpload(ctx context.Context, identity Identity, uploadID string) error {
-	session, err := s.repository.Upload(ctx, identity, uploadID)
+	if err := validateID(uploadID); err != nil {
+		return err
+	}
+	session, err := s.repository.AbortUpload(ctx, identity, uploadID, UploadAborted, s.clock.Now())
 	if err != nil {
 		return err
 	}
-	if _, err = s.repository.AbortUpload(ctx, identity, uploadID, UploadAborted, s.clock.Now()); err != nil {
-		return err
+	if session.Status == UploadFailed && failedUploadHasObject(session.FailureCode) {
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		defer cancel()
+		return mapStorageError(s.storage.DeleteObject(cleanupCtx, session.ObjectKey))
 	}
 	return s.abortMultipart(ctx, session)
 }
@@ -388,6 +442,9 @@ func (s *Service) abortMultipart(ctx context.Context, session UploadSession) err
 }
 
 func (s *Service) Download(ctx context.Context, identity Identity, nodeID string) (SignedDownload, error) {
+	if err := validateID(nodeID); err != nil {
+		return SignedDownload{}, err
+	}
 	node, blob, err := s.repository.DownloadBlob(ctx, identity, nodeID)
 	if err != nil {
 		return SignedDownload{}, err
@@ -402,6 +459,9 @@ func (s *Service) Download(ctx context.Context, identity Identity, nodeID string
 func (s *Service) Recycle(ctx context.Context, identity Identity, nodeID string, revision int64) error {
 	if revision <= 0 {
 		return E(CodeInvalidRequest, "revision is required")
+	}
+	if err := validateID(nodeID); err != nil {
+		return err
 	}
 	return s.repository.Recycle(ctx, identity, nodeID, revision, s.clock.Now())
 }
@@ -433,12 +493,18 @@ func (s *Service) Restore(ctx context.Context, identity Identity, nodeID string,
 	if revision <= 0 {
 		return Node{}, E(CodeInvalidRequest, "revision is required")
 	}
+	if err := validateID(nodeID); err != nil {
+		return Node{}, err
+	}
 	return s.repository.Restore(ctx, identity, nodeID, revision, s.clock.Now())
 }
 
 func (s *Service) Purge(ctx context.Context, identity Identity, nodeID string, revision int64) error {
 	if revision <= 0 {
 		return E(CodeInvalidRequest, "revision is required")
+	}
+	if err := validateID(nodeID); err != nil {
+		return err
 	}
 	plan, err := s.repository.PreparePurge(ctx, identity, nodeID, revision, s.clock.Now())
 	if err != nil {
@@ -467,6 +533,23 @@ func validateParts(parts []CompletedPart) error {
 		previous = part.PartNumber
 	}
 	return nil
+}
+
+func validateID(value string) error {
+	if !ValidID(value) {
+		return E(CodeInvalidRequest, "identifier must be a valid UUID")
+	}
+	return nil
+}
+
+func failedUploadHasObject(failureCode string) bool {
+	switch failureCode {
+	case UploadFailureSizeMismatch, UploadFailureChecksumMismatch,
+		UploadFailureParentUnavailable, UploadFailureNameConflict:
+		return true
+	default:
+		return false
+	}
 }
 
 func partsDigest(parts []CompletedPart) string {

@@ -60,6 +60,24 @@ func TestNormalizeName(t *testing.T) {
 	}
 }
 
+func TestValidID(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		value string
+		valid bool
+	}{
+		{value: "11111111-1111-4111-8111-111111111111", valid: true},
+		{value: "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA", valid: true},
+		{value: "not-a-uuid", valid: false},
+		{value: "11111111111141118111111111111111", valid: false},
+		{value: "11111111-1111-4111-8111-11111111111z", valid: false},
+	} {
+		if got := ValidID(test.value); got != test.valid {
+			t.Errorf("ValidID(%q)=%v, want %v", test.value, got, test.valid)
+		}
+	}
+}
+
 func TestChecksumAndMediaTypeValidation(t *testing.T) {
 	validSHA256 := "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
 	for _, test := range []struct {

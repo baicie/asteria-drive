@@ -55,11 +55,16 @@ func mapError(err error, fallback drive.ErrorCode, message string) error {
 		switch pgErr.Code {
 		case "23505":
 			if pgErr.ConstraintName == "file_node_active_name_unique" {
+				if fallback == drive.CodeRestoreConflict {
+					return drive.E(drive.CodeRestoreConflict, "original location is unavailable")
+				}
 				return drive.E(drive.CodeNameConflict, "an active item with this name already exists")
 			}
 			return drive.E(fallback, message, err)
 		case "23503":
 			return drive.E(drive.CodeNotFound, "related resource was not found")
+		case "22P02":
+			return drive.E(drive.CodeInvalidRequest, "identifier must be a valid UUID")
 		case "40001", "40P01", "55P03":
 			return drive.Retryable(drive.CodeDependencyUnavailable, "database transaction must be retried", err)
 		}

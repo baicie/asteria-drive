@@ -287,8 +287,8 @@ func TestRepositoryCommitRollbackAndPurgeContract(t *testing.T) {
 	}
 	failedSession, err := repository.Upload(ctx, identity, secondSession.ID)
 	assertNoError(t, err)
-	if failedSession.Status != drive.UploadObjectCompleted {
-		t.Fatalf("failed commit changed session state: %+v", failedSession)
+	if failedSession.Status != drive.UploadFailed || failedSession.FailureCode != drive.UploadFailureNameConflict {
+		t.Fatalf("failed commit was not durably rejected: %+v", failedSession)
 	}
 
 	sharedVersionID, sharedNodeID := testID(130), testID(131)
