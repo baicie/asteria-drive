@@ -1,0 +1,1287 @@
+openapi: 3.1.0
+info:
+  title: Asteria Drive MVP API
+  version: 0.1.0-mvp
+  summary: Control-plane API for the isolated Asteria Drive MVP
+  description: |
+    Asteria Drive coordinates tenant-scoped namespace operations, S3 multipart
+    uploads, download authorizations, and recycle-bin operations. File bytes do
+    not pass through this API.
+
+    All business operations use a server-configured trusted-development bearer
+    token. This authentication mode is intentionally rejected in production and
+    is not a production security contract.
+servers:
+  - url: http://127.0.0.1:8080
+    description: Isolated local development
+jsonSchemaDialect: https://json-schema.org/draft/2020-12/schema
+security:
+  - trustedDevBearer: []
+tags:
+  - name: Probes
+    description: Unauthenticated process and dependency health checks.
+  - name: Tenant
+    description: Discovery of the tenant fixed by the authenticated token.
+  - name: Namespace
+    description: Tenant-scoped file and directory metadata operations.
+  - name: Uploads
+    description: S3 multipart upload coordination without file-byte proxying.
+  - name: Downloads
+    description: Short-lived direct-download authorization.
+  - name: Recycle bin
+    description: Logical deletion, strict restore, and reference-safe purge.
+
+paths:
+  /healthz:
+    get:
+      tags: [Probes]
+      operationId: getHealth
+      summary: Check process liveness
+      description: Does not call PostgreSQL or object storage.
+      security: []
+      responses:
+        "200":
+          description: Process is alive.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/RequestID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /readyz:
+    get:
+      tags: [Probes]
+      operationId: getReadiness
+      summary: Check required dependencies
+      security: []
+      responses:
+        "200":
+          description: Metadata and object-storage dependencies are ready.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/RequestID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Ready"
+        "503":
+          description: At least one required dependency is unavailable.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/RequestID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotReady"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/tenant:
+    get:
+      tags: [Tenant]
+      operationId: getCurrentTenant
+      summary: Get the authenticated tenant and root directory
+      description: |
+        The tenant is derived only from the bearer-token mapping. The operation
+        accepts no tenant selector in a header, query parameter, or request body.
+      responses:
+        "200":
+          description: Current tenant.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/RequestID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantEnvelope"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/DependencyUnavailable"
+
+  /api/v1/directories:
+    post:
+      tags: [Namespace]
+      operationId: createDirectory
+      summary: Create a directory
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateDirectoryRequest"
+      responses:
+        "201":
+          description: Directory created.
+          headers:
+            Location:
+              description: Relative URL of the created directory.
+              schema:
+                type: string
+              example: /api/v1/directories/17da10b8-70d1-4f83-8d37-e127d110ef75
+            ETag:
+              $ref: "#/components/headers/ETag"
+            X-Request-ID:
+              $ref: "#/components/headers/RequestID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NodeEnvelope"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/RequestTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/DependencyUnavailable"
+
+  /api/v1/directories/{id}:
+    parameters:
+      - $ref: "#/components/parameters/ResourceID"
+    get:
+      tags: [Namespace]
+      operationId: getDirectory
+      summary: Get an active directory
+      responses:
+        "200":
+          description: Directory metadata.
+          headers:
+            ETag:
+              $ref: "#/components/headers/ETag"
+            X-Request-ID:
+              $ref: "#/components/headers/RequestID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NodeEnvelope"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/DependencyUnavailable"
+
+  /api/v1/directories/{id}/children:
+    parameters:
+      - $ref: "#/components/parameters/ResourceID"
+    get:
+      tags: [Namespace]
+      operationId: listDirectoryChildren
+      summary: List direct active children
+      parameters:
+        - $ref: "#/components/parameters/PageLimit"
+        - $ref: "#/components/parameters/PageCursor"
+      responses:
+        "200":
+          description: Stable keyset page ordered by normalized name and ID.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/RequestID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NodePage"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/DependencyUnavailable"
+
+  /api/v1/files/{id}:
+    parameters:
+      - $ref: "#/components/parameters/ResourceID"
+    get:
+      tags: [Namespace]
+      operationId: getFile
+      summary: Get an active committed file
+      responses:
+        "200":
+          description: File metadata.
+          headers:
+            ETag:
+              $ref: "#/components/headers/ETag"
+            X-Request-ID:
+              $ref: "#/components/headers/RequestID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NodeEnvelope"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/DependencyUnavailable"
+
+  /api/v1/nodes/{id}:
+    parameters:
+      - $ref: "#/components/parameters/ResourceID"
+    patch:
+      tags: [Namespace]
+      operationId: updateNode
+      summary: Rename or move a file or directory
+      parameters:
+        - $ref: "#/components/parameters/IfMatch"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateNodeRequest"
+      responses:
+        "200":
+          description: Updated node.
+          headers:
+            ETag:
+              $ref: "#/components/headers/ETag"
+            X-Request-ID:
+              $ref: "#/components/headers/RequestID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NodeEnvelope"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "412":
+          $ref: "#/components/responses/RevisionMismatch"
+        "413":
+          $ref: "#/components/responses/RequestTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/DependencyUnavailable"
+    delete:
+      tags: [Recycle bin]
+      operationId: recycleNode
+      summary: Move a file or directory tree to the recycle bin
+      parameters:
+        - $ref: "#/components/parameters/IfMatch"
+      responses:
+        "204":
+          description: Node was moved to the recycle bin.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/RequestID"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "412":
+          $ref: "#/components/responses/RevisionMismatch"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/DependencyUnavailable"
+
+  /api/v1/uploads:
+    post:
+      tags: [Uploads]
+      operationId: createUpload
+      summary: Create an S3 multipart upload session
+      description: The response never exposes the bucket, object key, or storage upload ID.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateUploadRequest"
+      responses:
+        "201":
+          description: Upload session created.
+          headers:
+            Location:
+              description: Relative URL of the upload session.
+              schema:
+                type: string
+              example: /api/v1/uploads/55f5efc1-51e8-43be-9408-e4b6bcda92e0
+            X-Request-ID:
+              $ref: "#/components/headers/RequestID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UploadEnvelope"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/RequestTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/DependencyUnavailable"
+
+  /api/v1/uploads/{id}:
+    parameters:
+      - $ref: "#/components/parameters/ResourceID"
+    get:
+      tags: [Uploads]
+      operationId: getUpload
+      summary: Get an upload session
+      responses:
+        "200":
+          description: Current upload session.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/RequestID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UploadEnvelope"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/DependencyUnavailable"
+    delete:
+      tags: [Uploads]
+      operationId: abortUpload
+      summary: Idempotently abort an uncommitted upload
+      responses:
+        "204":
+          description: Upload is aborted or was already in an abort-compatible terminal state.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/RequestID"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/DependencyUnavailable"
+
+  /api/v1/uploads/{id}/parts/sign:
+    parameters:
+      - $ref: "#/components/parameters/ResourceID"
+    post:
+      tags: [Uploads]
+      operationId: signUploadPart
+      summary: Authorize one multipart PUT
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SignUploadPartRequest"
+      responses:
+        "200":
+          description: Short-lived authorization for exactly one part.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/RequestID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SignedPartEnvelope"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/RequestTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/DependencyUnavailable"
+
+  /api/v1/uploads/{id}/complete:
+    parameters:
+      - $ref: "#/components/parameters/ResourceID"
+    post:
+      tags: [Uploads]
+      operationId: completeUpload
+      summary: Complete multipart storage and atomically commit file metadata
+      description: |
+        Parts must be strictly ordered by part_number. Repeating the same list
+        returns the original result with 200. Repeating a different list returns
+        idempotency_conflict.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CompleteUploadRequest"
+      responses:
+        "200":
+          description: The same completion was already committed.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/RequestID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CompleteUploadEnvelope"
+        "201":
+          description: First successful commit of the upload session.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/RequestID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CompleteUploadEnvelope"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/RequestTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/DependencyUnavailable"
+
+  /api/v1/files/{id}/download-authorizations:
+    parameters:
+      - $ref: "#/components/parameters/ResourceID"
+    post:
+      tags: [Downloads]
+      operationId: createDownloadAuthorization
+      summary: Authorize a direct object-storage download
+      description: The request may have no body or one empty JSON object.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EmptyObject"
+      responses:
+        "201":
+          description: Short-lived GET authorization.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/RequestID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SignedDownloadEnvelope"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "413":
+          $ref: "#/components/responses/RequestTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/DependencyUnavailable"
+
+  /api/v1/recycle-bin:
+    get:
+      tags: [Recycle bin]
+      operationId: listRecycleBin
+      summary: List recycle-bin roots
+      parameters:
+        - $ref: "#/components/parameters/PageLimit"
+        - $ref: "#/components/parameters/PageCursor"
+      responses:
+        "200":
+          description: Stable keyset page of recycle-bin root entries.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/RequestID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecyclePage"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/DependencyUnavailable"
+
+  /api/v1/recycle-bin/{id}/restore:
+    parameters:
+      - $ref: "#/components/parameters/ResourceID"
+    post:
+      tags: [Recycle bin]
+      operationId: restoreNode
+      summary: Restore a recycle-bin root to its original location
+      description: The request may have no body or one empty JSON object.
+      parameters:
+        - $ref: "#/components/parameters/IfMatch"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EmptyObject"
+      responses:
+        "200":
+          description: Restored node.
+          headers:
+            ETag:
+              $ref: "#/components/headers/ETag"
+            X-Request-ID:
+              $ref: "#/components/headers/RequestID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NodeEnvelope"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "412":
+          $ref: "#/components/responses/RevisionMismatch"
+        "413":
+          $ref: "#/components/responses/RequestTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/DependencyUnavailable"
+
+  /api/v1/recycle-bin/{id}:
+    parameters:
+      - $ref: "#/components/parameters/ResourceID"
+    delete:
+      tags: [Recycle bin]
+      operationId: purgeNode
+      summary: Permanently purge a recycle-bin root
+      description: |
+        The operation first makes metadata non-visible and deletes only blobs
+        selected by the repository's reference-safe purge plan.
+      parameters:
+        - $ref: "#/components/parameters/IfMatch"
+      responses:
+        "204":
+          description: The synchronous reference-safe purge completed.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/RequestID"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "412":
+          $ref: "#/components/responses/RevisionMismatch"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/DependencyUnavailable"
+
+components:
+  securitySchemes:
+    trustedDevBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: opaque trusted-development token
+      description: |
+        A high-entropy server-configured token mapped to exactly one tenant and
+        principal. This mode is only for isolated development and acceptance.
+
+  parameters:
+    ResourceID:
+      name: id
+      in: path
+      required: true
+      description: Tenant-scoped resource UUID. Foreign-tenant IDs are returned as not found.
+      schema:
+        type: string
+        format: uuid
+    PageLimit:
+      name: limit
+      in: query
+      required: false
+      description: Number of items to return.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 200
+        default: 50
+    PageCursor:
+      name: cursor
+      in: query
+      required: false
+      description: Opaque HMAC-protected cursor bound to tenant and listing scope.
+      schema:
+        type: string
+        minLength: 1
+    IfMatch:
+      name: If-Match
+      in: header
+      required: true
+      description: Quoted positive decimal node revision.
+      schema:
+        type: string
+        pattern: '^"[1-9][0-9]*"$'
+      example: '"1"'
+
+  headers:
+    RequestID:
+      description: Validated incoming request ID or a server-generated request ID.
+      required: true
+      schema:
+        type: string
+        minLength: 8
+        maxLength: 128
+        pattern: '^[A-Za-z0-9_.-]+$'
+    ETag:
+      description: Quoted decimal node revision used by If-Match.
+      required: true
+      schema:
+        type: string
+        pattern: '^"[1-9][0-9]*"$'
+      example: '"1"'
+
+  responses:
+    BadRequest:
+      description: Request JSON, cursor, field value, or precondition syntax is invalid.
+      headers:
+        X-Request-ID:
+          $ref: "#/components/headers/RequestID"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Unauthenticated:
+      description: A valid bearer token is required.
+      headers:
+        X-Request-ID:
+          $ref: "#/components/headers/RequestID"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    NotFound:
+      description: Resource is missing, belongs to another tenant, or is not visible in its current state.
+      headers:
+        X-Request-ID:
+          $ref: "#/components/headers/RequestID"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Conflict:
+      description: Name, state, restore target, or idempotency digest conflicts with the operation.
+      headers:
+        X-Request-ID:
+          $ref: "#/components/headers/RequestID"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    RevisionMismatch:
+      description: The current node revision differs from If-Match.
+      headers:
+        X-Request-ID:
+          $ref: "#/components/headers/RequestID"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    RequestTooLarge:
+      description: JSON request body exceeds 1 MiB.
+      headers:
+        X-Request-ID:
+          $ref: "#/components/headers/RequestID"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    UnsupportedMediaType:
+      description: A request with a JSON body must use application/json.
+      headers:
+        X-Request-ID:
+          $ref: "#/components/headers/RequestID"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    DependencyUnavailable:
+      description: A required metadata or object-storage dependency is unavailable.
+      headers:
+        X-Request-ID:
+          $ref: "#/components/headers/RequestID"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    InternalError:
+      description: Unclassified internal error.
+      headers:
+        X-Request-ID:
+          $ref: "#/components/headers/RequestID"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+  schemas:
+    Health:
+      type: object
+      additionalProperties: false
+      required: [service, status]
+      properties:
+        service:
+          const: asteria-server
+        status:
+          const: ok
+      example:
+        service: asteria-server
+        status: ok
+    Ready:
+      type: object
+      additionalProperties: false
+      required: [service, status]
+      properties:
+        service:
+          const: asteria-server
+        status:
+          const: ready
+      example:
+        service: asteria-server
+        status: ready
+    NotReady:
+      type: object
+      additionalProperties: false
+      required: [service, status]
+      properties:
+        service:
+          const: asteria-server
+        status:
+          const: not_ready
+      example:
+        service: asteria-server
+        status: not_ready
+
+    Tenant:
+      type: object
+      additionalProperties: false
+      required: [id, display_name, root_directory_id, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        display_name:
+          type: string
+          minLength: 1
+        root_directory_id:
+          type: string
+          format: uuid
+        created_at:
+          type: string
+          format: date-time
+      example:
+        id: 11111111-1111-4111-8111-111111111111
+        display_name: Local Asteria
+        root_directory_id: 7ce1b22b-dd38-4037-b337-f67f5ab84042
+        created_at: "2026-08-02T10:00:00Z"
+    TenantEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          $ref: "#/components/schemas/Tenant"
+
+    NodeKind:
+      type: string
+      enum: [directory, file]
+    Node:
+      type: object
+      additionalProperties: false
+      required: [id, kind, name, revision, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        parent_id:
+          type: string
+          format: uuid
+          description: Omitted for the tenant root directory.
+        kind:
+          $ref: "#/components/schemas/NodeKind"
+        name:
+          type: string
+          minLength: 1
+          maxLength: 255
+          description: NFC-normalized display name.
+        size:
+          type: integer
+          format: int64
+          minimum: 1
+          description: File size in bytes; omitted for directories.
+        mime_type:
+          type: string
+          minLength: 1
+          maxLength: 255
+          description: Omitted for directories.
+        revision:
+          type: integer
+          format: int64
+          minimum: 1
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      example:
+        id: 17da10b8-70d1-4f83-8d37-e127d110ef75
+        parent_id: 7ce1b22b-dd38-4037-b337-f67f5ab84042
+        kind: file
+        name: report.bin
+        size: 1048576
+        mime_type: application/octet-stream
+        revision: 1
+        created_at: "2026-08-02T10:00:00Z"
+        updated_at: "2026-08-02T10:00:00Z"
+    NodeEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          $ref: "#/components/schemas/Node"
+
+    UploadStatus:
+      type: string
+      enum:
+        - created
+        - uploading
+        - completing
+        - object_completed
+        - committed
+        - aborted
+        - expired
+        - failed
+    Upload:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - parent_id
+        - name
+        - expected_size
+        - mime_type
+        - status
+        - part_size
+        - expires_at
+        - committed_file_id
+      properties:
+        id:
+          type: string
+          format: uuid
+        parent_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          minLength: 1
+          maxLength: 255
+        expected_size:
+          type: integer
+          format: int64
+          minimum: 1
+        mime_type:
+          type: string
+          minLength: 1
+          maxLength: 255
+        status:
+          $ref: "#/components/schemas/UploadStatus"
+        part_size:
+          type: integer
+          format: int64
+          minimum: 5242880
+          maximum: 5368709120
+        expires_at:
+          type: string
+          format: date-time
+        committed_file_id:
+          type: [string, "null"]
+          format: uuid
+      example:
+        id: 55f5efc1-51e8-43be-9408-e4b6bcda92e0
+        parent_id: 7ce1b22b-dd38-4037-b337-f67f5ab84042
+        name: report.bin
+        expected_size: 1048576
+        mime_type: application/octet-stream
+        status: created
+        part_size: 8388608
+        expires_at: "2026-08-03T10:00:00Z"
+        committed_file_id: null
+    UploadEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          $ref: "#/components/schemas/Upload"
+
+    Checksum:
+      description: Empty or an explicitly declared SHA-256 value.
+      oneOf:
+        - type: object
+          additionalProperties: false
+          properties:
+            algorithm:
+              const: ""
+            value:
+              const: ""
+        - type: object
+          additionalProperties: false
+          required: [algorithm, value]
+          properties:
+            algorithm:
+              const: sha256
+            value:
+              type: string
+              minLength: 44
+              maxLength: 44
+              pattern: '^[A-Za-z0-9+/]{43}=$'
+    CompletedPart:
+      type: object
+      additionalProperties: false
+      required: [part_number, etag]
+      properties:
+        part_number:
+          type: integer
+          minimum: 1
+          maximum: 10000
+        etag:
+          type: string
+          minLength: 1
+          maxLength: 1024
+        checksum:
+          $ref: "#/components/schemas/Checksum"
+        size:
+          type: integer
+          format: int64
+
+    CreateDirectoryRequest:
+      type: object
+      additionalProperties: false
+      required: [parent_id, name]
+      properties:
+        parent_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          minLength: 1
+          maxLength: 255
+      example:
+        parent_id: 7ce1b22b-dd38-4037-b337-f67f5ab84042
+        name: Projects
+    UpdateNodeRequest:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 255
+        parent_id:
+          type: string
+          format: uuid
+      example:
+        name: Reports
+    CreateUploadRequest:
+      type: object
+      additionalProperties: false
+      required: [parent_id, name, size, mime_type]
+      properties:
+        parent_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          minLength: 1
+          maxLength: 255
+        size:
+          type: integer
+          format: int64
+          minimum: 1
+          description: Must not exceed the deployment's configured maximum; default is 50 GiB.
+        mime_type:
+          type: string
+          minLength: 1
+          maxLength: 255
+        checksum:
+          $ref: "#/components/schemas/Checksum"
+      example:
+        parent_id: 7ce1b22b-dd38-4037-b337-f67f5ab84042
+        name: report.bin
+        size: 1048576
+        mime_type: application/octet-stream
+        checksum:
+          algorithm: sha256
+          value: 47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=
+    SignUploadPartRequest:
+      type: object
+      additionalProperties: false
+      required: [part_number]
+      properties:
+        part_number:
+          type: integer
+          minimum: 1
+          maximum: 10000
+        checksum:
+          $ref: "#/components/schemas/Checksum"
+      example:
+        part_number: 1
+        checksum:
+          algorithm: sha256
+          value: 47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=
+    CompleteUploadRequest:
+      type: object
+      additionalProperties: false
+      required: [parts]
+      properties:
+        parts:
+          type: array
+          minItems: 1
+          maxItems: 10000
+          description: Must be strictly increasing by part_number.
+          items:
+            $ref: "#/components/schemas/CompletedPart"
+
+    SignedPart:
+      type: object
+      additionalProperties: false
+      required: [part_number, method, url, required_headers, expires_at]
+      properties:
+        part_number:
+          type: integer
+          minimum: 1
+          maximum: 10000
+        method:
+          const: PUT
+        url:
+          type: string
+          format: uri
+          description: Sensitive bearer URL; do not log.
+        required_headers:
+          type: object
+          additionalProperties:
+            type: string
+        expires_at:
+          type: string
+          format: date-time
+      example:
+        part_number: 1
+        method: PUT
+        url: "http://127.0.0.1:18333/asteria-drive-local/...?redacted"
+        required_headers: {}
+        expires_at: "2026-08-02T10:15:00Z"
+    SignedPartEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          $ref: "#/components/schemas/SignedPart"
+    SignedDownload:
+      type: object
+      additionalProperties: false
+      required: [method, url, expires_at]
+      properties:
+        method:
+          const: GET
+        url:
+          type: string
+          format: uri
+          description: Sensitive bearer URL; do not log.
+        expires_at:
+          type: string
+          format: date-time
+      example:
+        method: GET
+        url: "http://127.0.0.1:18333/asteria-drive-local/...?redacted"
+        expires_at: "2026-08-02T10:15:00Z"
+    SignedDownloadEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          $ref: "#/components/schemas/SignedDownload"
+    CompleteUploadResult:
+      type: object
+      additionalProperties: false
+      required: [upload, file]
+      properties:
+        upload:
+          $ref: "#/components/schemas/Upload"
+        file:
+          $ref: "#/components/schemas/Node"
+    CompleteUploadEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          $ref: "#/components/schemas/CompleteUploadResult"
+
+    Page:
+      type: object
+      additionalProperties: false
+      required: [next_cursor]
+      properties:
+        next_cursor:
+          type: [string, "null"]
+          description: Opaque cursor for the next page; null on the final page.
+    NodePage:
+      type: object
+      additionalProperties: false
+      required: [data, page]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Node"
+        page:
+          $ref: "#/components/schemas/Page"
+    RecycleEntry:
+      type: object
+      additionalProperties: false
+      required: [node, original_parent_id, deleted_at]
+      properties:
+        node:
+          $ref: "#/components/schemas/Node"
+        original_parent_id:
+          type: string
+          format: uuid
+        deleted_at:
+          type: string
+          format: date-time
+    RecyclePage:
+      type: object
+      additionalProperties: false
+      required: [data, page]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/RecycleEntry"
+        page:
+          $ref: "#/components/schemas/Page"
+    EmptyObject:
+      type: object
+      additionalProperties: false
+      maxProperties: 0
+
+    ErrorCode:
+      type: string
+      enum:
+        - invalid_request
+        - invalid_cursor
+        - unauthenticated
+        - not_found
+        - name_conflict
+        - invalid_state
+        - idempotency_conflict
+        - restore_conflict
+        - revision_mismatch
+        - request_too_large
+        - unsupported_media_type
+        - dependency_unavailable
+        - internal_error
+    ErrorDetail:
+      type: object
+      additionalProperties: false
+      required: [code, message, request_id]
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+          minLength: 1
+        request_id:
+          type: string
+          minLength: 8
+          maxLength: 128
+    ErrorResponse:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          $ref: "#/components/schemas/ErrorDetail"
+      example:
+        error:
+          code: name_conflict
+          message: an active item with this name already exists
+          request_id: req_2f5f0000-0000-4000-8000-000000000000
