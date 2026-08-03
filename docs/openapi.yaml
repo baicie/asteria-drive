@@ -113,6 +113,86 @@ paths:
         "503":
           $ref: "#/components/responses/DependencyUnavailable"
 
+  /api/v1/tenant/members:
+    parameters:
+      - $ref: "#/components/parameters/TenantSelector"
+    get:
+      tags: [Tenant]
+      operationId: listTenantMembers
+      summary: List tenant members
+      description: Lists active and suspended members for owner/admin principals.
+      parameters:
+        - $ref: "#/components/parameters/PageLimit"
+        - $ref: "#/components/parameters/PageCursor"
+      responses:
+        "200":
+          description: Stable keyset page ordered by principal ID.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/RequestID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MemberPage"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/DependencyUnavailable"
+
+  /api/v1/tenant/members/{principal_id}:
+    parameters:
+      - name: principal_id
+        in: path
+        required: true
+        description: Tenant-scoped principal UUID.
+        schema:
+          type: string
+          format: uuid
+      - $ref: "#/components/parameters/TenantSelector"
+    patch:
+      tags: [Tenant]
+      operationId: updateTenantMember
+      summary: Change a tenant member role or status
+      description: Owners may update any member. Admins cannot modify owners or grant the owner role.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateMemberRequest"
+      responses:
+        "200":
+          description: Updated member.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/RequestID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MemberEnvelope"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/DependencyUnavailable"
+
   /api/v1/directories:
     parameters:
       - $ref: "#/components/parameters/TenantSelector"
@@ -1135,6 +1215,17 @@ components:
           format: uuid
       example:
         name: Reports
+    UpdateMemberRequest:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        role:
+          type: string
+          enum: [owner, admin, editor, viewer]
+        status:
+          type: string
+          enum: [active, suspended]
     CreateUploadRequest:
       type: object
       additionalProperties: false
@@ -1289,6 +1380,40 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Node"
+        page:
+          $ref: "#/components/schemas/Page"
+    Member:
+      type: object
+      additionalProperties: false
+      required: [principal_id, display_name, role, status]
+      properties:
+        principal_id:
+          type: string
+          format: uuid
+        display_name:
+          type: string
+        role:
+          type: string
+          enum: [owner, admin, editor, viewer]
+        status:
+          type: string
+          enum: [active, suspended]
+    MemberEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          $ref: "#/components/schemas/Member"
+    MemberPage:
+      type: object
+      additionalProperties: false
+      required: [data, page]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Member"
         page:
           $ref: "#/components/schemas/Page"
     RecycleEntry:

@@ -29,6 +29,17 @@ type tenantResponse struct {
 	CreatedAt       time.Time `json:"created_at"`
 }
 
+type memberResponse struct {
+	PrincipalID string             `json:"principal_id"`
+	DisplayName string             `json:"display_name"`
+	Role        drive.AccessRole   `json:"role"`
+	Status      drive.MemberStatus `json:"status"`
+}
+
+func toMemberResponse(member drive.PrincipalRecord) memberResponse {
+	return memberResponse{PrincipalID: member.Identity.PrincipalID, DisplayName: member.DisplayName, Role: member.Role, Status: member.Status}
+}
+
 type nodeResponse struct {
 	ID        string         `json:"id"`
 	ParentID  string         `json:"parent_id,omitempty"`
@@ -98,6 +109,46 @@ func (a *api) getTenant(w http.ResponseWriter, r *http.Request) {
 		ID: tenant.ID, DisplayName: tenant.DisplayName,
 		RootDirectoryID: tenant.RootNodeID, CreatedAt: tenant.CreatedAt,
 	})
+}
+
+func (a *api) listMembers(w http.ResponseWriter, r *http.Request) {
+	limit, err := parseLimit(r.URL.Query().Get("limit"))
+	if err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	page, err := a.service.ListMembers(r.Context(), identity(r), r.URL.Query().Get("cursor"), limit)
+	if err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	items := make([]memberResponse, len(page.Items))
+	for i := range page.Items {
+		items[i] = toMemberResponse(page.Items[i])
+	}
+	a.writeJSON(w, http.StatusOK, map[string]any{"data": items, "page": map[string]any{"next_cursor": nullableString(page.NextCursor)}})
+}
+
+func (a *api) updateMember(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		Role   *drive.AccessRole   `json:"role"`
+		Status *drive.MemberStatus `json:"status"`
+	}
+	if err := decodeJSON(w, r, &input, maxJSONBody, false); err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	principal, ok := auth.FromContext(r.Context())
+	if !ok {
+		a.writeError(w, r, drive.E(drive.CodeUnauthenticated, "a valid bearer token is required"))
+		return
+	}
+	member, err := a.service.UpdateMember(r.Context(), drive.MemberActor{Identity: principal.Identity, Role: principal.Role}, r.PathValue("principal_id"), input.Role, input.Status)
+	if err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	a.writeData(w, http.StatusOK, toMemberResponse(member))
 }
 
 func (a *api) createDirectory(w http.ResponseWriter, r *http.Request) {

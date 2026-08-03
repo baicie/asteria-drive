@@ -233,3 +233,26 @@ go vet ./...
 go build ./...
 git diff --check
 ```
+
+## 2026-08-03 - M2-2 tenant member lifecycle management
+
+Design is archived in [ADR-0015](../adr/0015-tenant-member-lifecycle.md) and
+[member-management.md](../m2/member-management.md). The implementation adds
+tenant member listing plus owner/admin role and active/suspended status updates.
+PostgreSQL and memory repositories share an atomic update contract that preserves
+at least one active owner under concurrent changes. Invitations, self-registration,
+member deletion, fine-grained ACLs, and audit export remain deferred.
+
+Verification for this increment:
+
+```text
+go test ./... -count=1
+go vet ./...
+go build ./...
+git diff --check
+pnpm --package='@redocly/cli@latest' dlx redocly lint docs/openapi.yaml
+
+# With local Compose PostgreSQL on 127.0.0.1:15432:
+$env:ASTERIA_TEST_DATABASE_URL='postgres://asteria:local-asteria-password@127.0.0.1:15432/asteria?sslmode=disable'
+go test ./internal/postgres -count=1
+```

@@ -44,6 +44,8 @@ func New(options Options) (*Server, error) {
 		return options.Authenticator.Middleware(api.writeError)(api.captureIdentity(api.authorize(permission)(next)))
 	}
 	mux.Handle("GET /api/v1/tenant", protected(drive.PermissionTenantRead, http.HandlerFunc(api.getTenant)))
+	mux.Handle("GET /api/v1/tenant/members", protected(drive.PermissionMembersRead, http.HandlerFunc(api.listMembers)))
+	mux.Handle("PATCH /api/v1/tenant/members/{principal_id}", protected(drive.PermissionMembersManage, http.HandlerFunc(api.updateMember)))
 	mux.Handle("POST /api/v1/directories", protected(drive.PermissionFilesWrite, http.HandlerFunc(api.createDirectory)))
 	mux.Handle("GET /api/v1/directories/{id}", protected(drive.PermissionFilesRead, http.HandlerFunc(api.getDirectory)))
 	mux.Handle("GET /api/v1/directories/{id}/children", protected(drive.PermissionFilesRead, http.HandlerFunc(api.listChildren)))

@@ -746,3 +746,81 @@ func TestOIDCAuthorizationEnforcesTenantSelectorMembershipAndRBAC(t *testing.T) 
 		t.Fatalf("member of another tenant should be forbidden, got %d: %s", wrongTenant.Code, wrongTenant.Body.String())
 	}
 }
+
+func TestTenantMemberLifecycleAPIEnforcesRBACAndOwnerInvariant(t *testing.T) {
+	base := newTestAPI(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	issuer := "https://issuer.member-api.test"
+	ownerToken := "owner-member-token-000000000000000000000000"
+	adminToken := "admin-member-token-000000000000000000000000"
+	viewerToken := "viewer-member-token-000000000000000000000000"
+	for _, member := range []struct {
+		id   string
+		role drive.AccessRole
+		sub  string
+	}{
+		{testPrincipalA, drive.RoleOwner, "owner"},
+		{testPrincipalB, drive.RoleAdmin, "admin"},
+		{testPrincipalC, drive.RoleViewer, "viewer"},
+	} {
+		if _, err := base.repository.EnsureOIDCMember(ctx, drive.OIDCMemberSeed{
+			PrincipalID: member.id, TenantID: testTenantA, Issuer: issuer, Subject: member.sub,
+			DisplayName: member.sub, Role: member.role, Now: now,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	authenticator, err := auth.NewTrusted(map[string]auth.Principal{
+		ownerToken:  {Identity: drive.Identity{TenantID: testTenantA, PrincipalID: testPrincipalA}, Role: drive.RoleOwner},
+		adminToken:  {Identity: drive.Identity{TenantID: testTenantA, PrincipalID: testPrincipalB}, Role: drive.RoleAdmin},
+		viewerToken: {Identity: drive.Identity{TenantID: testTenantA, PrincipalID: testPrincipalC}, Role: drive.RoleViewer},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpServer, err := New(Options{Address: ":0", Service: base.service, Authenticator: authenticator, Logger: slog.Default(), ReadHeaderTimeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	base.handler = httpServer.Handler()
+	list := base.request(t, http.MethodGet, "/api/v1/tenant/members?limit=2", ownerToken, nil, nil)
+	if list.Code != http.StatusOK {
+		t.Fatalf("owner member list: %d %s", list.Code, list.Body.String())
+	}
+	var envelope struct {
+		Data []memberResponse `json:"data"`
+		Page struct {
+			NextCursor *string `json:"next_cursor"`
+		} `json:"page"`
+	}
+	if err := json.NewDecoder(list.Body).Decode(&envelope); err != nil {
+		t.Fatal(err)
+	}
+	if len(envelope.Data) != 2 || envelope.Page.NextCursor == nil || *envelope.Page.NextCursor == "" {
+		t.Fatalf("unexpected first member page: %+v", envelope)
+	}
+	viewerList := base.request(t, http.MethodGet, "/api/v1/tenant/members", viewerToken, nil, nil)
+	if viewerList.Code != http.StatusForbidden {
+		t.Fatalf("viewer member list should be forbidden: %d %s", viewerList.Code, viewerList.Body.String())
+	}
+	adminOwner := base.request(t, http.MethodPatch, "/api/v1/tenant/members/"+testPrincipalA, adminToken, map[string]any{"role": "viewer"}, nil)
+	if adminOwner.Code != http.StatusForbidden {
+		t.Fatalf("admin owner update should be forbidden: %d %s", adminOwner.Code, adminOwner.Body.String())
+	}
+	adminViewer := base.request(t, http.MethodPatch, "/api/v1/tenant/members/"+testPrincipalC, adminToken, map[string]any{"status": "suspended"}, nil)
+	if adminViewer.Code != http.StatusOK {
+		t.Fatalf("admin viewer update should succeed: %d %s", adminViewer.Code, adminViewer.Body.String())
+	}
+	lastOwner := base.request(t, http.MethodPatch, "/api/v1/tenant/members/"+testPrincipalA, ownerToken, map[string]any{"status": "suspended"}, nil)
+	if lastOwner.Code != http.StatusConflict || !strings.Contains(lastOwner.Body.String(), `"code":"invalid_state"`) {
+		t.Fatalf("last owner update should be a conflict: %d %s", lastOwner.Code, lastOwner.Body.String())
+	}
+	foreign := base.request(t, http.MethodPatch, "/api/v1/tenant/members/"+testPrincipalD, ownerToken, map[string]any{"role": "viewer"}, nil)
+	if foreign.Code != http.StatusNotFound {
+		t.Fatalf("foreign/non-member update should be not found: %d %s", foreign.Code, foreign.Body.String())
+	}
+	if _, err := base.repository.ResolveOIDCPrincipal(ctx, issuer, "viewer", testTenantA); drive.CodeOf(err) != drive.CodeForbidden {
+		t.Fatalf("suspended member should not resolve: %v", err)
+	}
+}

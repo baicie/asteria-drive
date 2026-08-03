@@ -99,6 +99,68 @@ func (s *Service) Tenant(ctx context.Context, tenantID string) (Tenant, error) {
 	return s.repository.Tenant(ctx, tenantID)
 }
 
+type MemberActor struct {
+	Identity Identity
+	Role     AccessRole
+}
+
+func (s *Service) ListMembers(ctx context.Context, identity Identity, cursor string, limit int) (Page[PrincipalRecord], error) {
+	if err := validateID(identity.TenantID); err != nil {
+		return Page[PrincipalRecord]{}, err
+	}
+	if limit == 0 {
+		limit = 50
+	}
+	if limit < 1 || limit > 200 {
+		return Page[PrincipalRecord]{}, E(CodeInvalidRequest, "limit must be between 1 and 200")
+	}
+	position, err := s.cursor.Decode(cursor, identity.TenantID, "members")
+	if err != nil {
+		return Page[PrincipalRecord]{}, err
+	}
+	items, more, err := s.repository.ListMembers(ctx, identity.TenantID, position, limit)
+	if err != nil {
+		return Page[PrincipalRecord]{}, err
+	}
+	page := Page[PrincipalRecord]{Items: items}
+	if more && len(items) > 0 {
+		last := items[len(items)-1]
+		page.NextCursor, err = s.cursor.Encode(identity.TenantID, "members", CursorPosition{Name: last.Identity.PrincipalID, ID: last.Identity.PrincipalID})
+	}
+	return page, err
+}
+
+func (s *Service) UpdateMember(ctx context.Context, actor MemberActor, principalID string, role *AccessRole, status *MemberStatus) (PrincipalRecord, error) {
+	if err := validateID(actor.Identity.TenantID); err != nil {
+		return PrincipalRecord{}, err
+	}
+	if err := validateID(actor.Identity.PrincipalID); err != nil {
+		return PrincipalRecord{}, err
+	}
+	if err := validateID(principalID); err != nil {
+		return PrincipalRecord{}, err
+	}
+	if actor.Role != RoleOwner && actor.Role != RoleAdmin {
+		return PrincipalRecord{}, E(CodeForbidden, "only owners and admins may manage members")
+	}
+	if role == nil && status == nil {
+		return PrincipalRecord{}, E(CodeInvalidRequest, "at least one member field is required")
+	}
+	if role != nil && !ValidAccessRole(*role) {
+		return PrincipalRecord{}, E(CodeInvalidRequest, "member role is invalid")
+	}
+	if status != nil && !ValidMemberStatus(*status) {
+		return PrincipalRecord{}, E(CodeInvalidRequest, "member status is invalid")
+	}
+	if actor.Role == RoleAdmin && role != nil && *role == RoleOwner {
+		return PrincipalRecord{}, E(CodeForbidden, "admins cannot grant the owner role")
+	}
+	return s.repository.UpdateMember(ctx, UpdateMemberCommand{
+		TenantID: actor.Identity.TenantID, PrincipalID: principalID, ActorPrincipalID: actor.Identity.PrincipalID,
+		ActorRole: actor.Role, Role: role, Status: status, Now: s.clock.Now(),
+	})
+}
+
 func (s *Service) CreateDirectory(ctx context.Context, identity Identity, parentID, name string) (Node, error) {
 	if err := validateID(parentID); err != nil {
 		return Node{}, err
