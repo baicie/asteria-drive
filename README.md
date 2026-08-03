@@ -4,10 +4,9 @@ Asteria Drive 是一个面向个人网盘和企业文件平台的开源控制面
 上传协调、下载授权、内部文件版本和回收站，不自行实现底层分布式对象存储。文件正文通过短期签名 URL
 在客户端与 S3-compatible 数据面之间直接传输。
 
-> 当前状态：后端 MVP 工程验收候选（`mvp/p4-integration`）。PostgreSQL + SeaweedFS 主路径、
-> 故障注入、ADR-0011 上传完成失败分流、100 并发会话与 ADR-0010 MUST 性能子集已有可复现证据（Go 1.23.12）。认证仅支持 `trusted-dev`，
-> 进程会拒绝以该模式在 `production` 环境启动。本仓库当前版本只能用于隔离的本地开发和验收环境，
-> 不能直接暴露到公网或描述为生产就绪。百万节点长时 SLO 为 SHOULD 延期。
+> 当前状态：后端 MVP 工程验收基线（`main`）上实现 M2-1。M2-1 增加 OIDC/OAuth2 Resource Server、内部主体、
+> 租户成员和基础 RBAC；`trusted-dev` 仍只允许 development，production 必须使用 OIDC + PostgreSQL + S3。
+> 生产部署仍需完成成员管理、正式 ACL、审计和安全评审，不能仅凭本阶段描述为完整生产就绪。
 
 ## MVP 能力
 
@@ -18,7 +17,7 @@ Asteria Drive 是一个面向个人网盘和企业文件平台的开源控制面
 - 已提交文件查询、短期下载授权、回收、恢复和永久清理。
 - 统一 JSON 错误、请求 ID、health/readiness、版本化迁移和优雅停止。
 
-OIDC/OAuth2、正式 ACL、分享、配额、桌面同步、预览、搜索、Outbox 和独立 Worker 属于后续阶段。
+M2-1 已加入 OIDC/OAuth2 Resource Server、内部主体、租户成员和基础 RBAC；成员管理、正式 ACL、分享、配额、桌面同步、预览、搜索、Outbox 和独立 Worker 属于后续阶段。
 完整范围与完成条件见 [MVP 文档](docs/mvp/README.md)。
 
 ## 本地启动
@@ -92,8 +91,11 @@ $tenant.data
 | --- | --- | --- |
 | `ASTERIA_ENV` | `development` | `development` 或 `production`；当前 `production` 会拒绝 trusted-dev |
 | `ASTERIA_SERVER_ADDRESS` | `127.0.0.1:8080` | HTTP 监听地址；MVP 应只绑定回环或受控网络 |
-| `ASTERIA_AUTH_MODE` | `trusted-dev` | 当前唯一模式，不是生产认证 |
-| `ASTERIA_TRUSTED_TOKENS_JSON` | 无 | 必填；Token 到 UUID tenant/principal 和租户显示名的 JSON 映射 |
+| `ASTERIA_AUTH_MODE` | `trusted-dev` | `trusted-dev` 仅允许 development；production 必须使用 `oidc` |
+| `ASTERIA_TRUSTED_TOKENS_JSON` | 无 | `trusted-dev` 时必填；Token 到 UUID tenant/principal 和租户显示名的 JSON 映射 |
+| `ASTERIA_OIDC_ISSUER` | 无 | OIDC issuer URL；production 必须使用 HTTPS |
+| `ASTERIA_OIDC_CLIENT_ID` | 无 | API access-token 的 audience/client ID |
+| `ASTERIA_OIDC_BOOTSTRAP_JSON` | 无 | 预置 issuer/subject、内部 principal、tenant member 和 role 的 JSON 数组 |
 | `ASTERIA_CURSOR_HMAC_KEY` | 无 | 必填；至少 32 bytes，不得复用示例值 |
 | `ASTERIA_METADATA_DRIVER` | `memory` | `memory` 或 `postgres` |
 | `ASTERIA_DATABASE_URL` | 无 | PostgreSQL DSN；使用 `postgres` 时必填 |

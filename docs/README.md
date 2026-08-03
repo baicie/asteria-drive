@@ -11,6 +11,7 @@
 | [vision/anti-patterns.md](vision/anti-patterns.md) | 明确避免的设计 | 长期约束 |
 | [process/branch-workflow.md](process/branch-workflow.md) | 里程碑分支、PR 门禁、ADR 触发条件 | 工程流程 |
 | [mvp/README.md](mvp/README.md) | MVP 文档入口、范围、路线、验收与实施记录 | **当前交付边界** |
+| [m2/identity-access.md](m2/identity-access.md) | M2-1 OIDC、主体、成员、RBAC 边界和交付拆分 | M2-1 实现设计与证据入口 |
 | [openapi.yaml](openapi.yaml) | 已注册 HTTP 路由的 OpenAPI 3.1 契约 | HTTP 机器可读契约 |
 | [design/api.md](design/api.md) | HTTP 语义、状态机和示例说明 | HTTP 人读设计 |
 | [design/architecture.md](design/architecture.md) | 模块、运行时、数据流与扩展边界 | 详细架构设计 |

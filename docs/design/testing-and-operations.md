@@ -5,7 +5,7 @@
 
 ## 1. 范围与原则
 
-本文只覆盖 P0-P4 后端 MVP：trusted-dev 租户边界、PostgreSQL Namespace、S3 Multipart 直传、下载授权和回收站。OIDC、分享、配额、Outbox、独立 Worker、预览和搜索是 M2，不是本轮测试环境或启动依赖。
+本文覆盖 P0-P4 后端 MVP 以及 M2-1 身份边界：trusted-dev/OIDC 租户边界、PostgreSQL Namespace、S3 Multipart 直传、下载授权和回收站。成员管理、正式 ACL、分享、配额、Outbox、独立 Worker、预览和搜索属于后续 M2 阶段。
 
 测试投入按风险排序：
 
@@ -29,6 +29,8 @@ fake 证明业务规则，真实 PostgreSQL/SeaweedFS 证明 SQL、事务和 S3 
 - 回收/恢复/清理规则与引用保护。
 - S3 错误分类和统一领域错误映射。
 - trusted-dev Token 常量时间匹配、缺失上下文默认拒绝。
+- OIDC discovery/JWKS 签名、issuer/audience/azp、过期/nbf、未知 kid、非法算法、尾随 JSON 和 provider 依赖故障。
+- `(issuer, subject)` 主体幂等映射、多租户成员选择、active/suspended 状态和 RBAC 角色权限。
 
 Clock、ID Generator 和 Storage/Repository port 均可注入。并发测试不得依赖 `time.Sleep` 猜测顺序。
 
@@ -37,7 +39,7 @@ Clock、ID Generator 和 Storage/Repository port 均可注入。并发测试不�
 使用 `httptest` 和内存 adapter 覆盖：
 
 - 路由、方法、Content-Type、未知字段、Body/Part 数量上限。
-- 缺失/错误/正确 Token 的 `401/2xx`，伪造租户字段无效。
+- 缺失/错误/正确 Token 的 `401/2xx`，OIDC 缺失/非法 `X-Tenant-ID` 的 `400`，未加入租户/权限不足的 `403`，伪造租户字段无效。
 - 跨租户资源统一 `404`。
 - 稳定错误 `code`、`request_id` 和响应 Header。
 - handler 只接收有界 JSON，不接收或返回文件正文。
@@ -126,8 +128,11 @@ OpenAPI syntax/route coverage check
 | --- | --- |
 | `ASTERIA_ENV` | `development` 或 `production`；production 禁止 trusted-dev |
 | `ASTERIA_SERVER_ADDRESS` | 开发默认回环地址；公网监听需显式配置 |
-| `ASTERIA_AUTH_MODE` | MVP 仅 `trusted-dev`；production 启动失败 |
+| `ASTERIA_AUTH_MODE` | `trusted-dev` 仅 development；production 必须为 `oidc` |
 | `ASTERIA_TRUSTED_TOKENS_JSON` | Secret；Token 到 tenant/principal 映射，不得记录 |
+| `ASTERIA_OIDC_ISSUER` | OIDC issuer URL；production 必须 HTTPS |
+| `ASTERIA_OIDC_CLIENT_ID` | API access-token audience/client ID |
+| `ASTERIA_OIDC_BOOTSTRAP_JSON` | 预置 `(issuer, subject)`、principal、tenant member 和 role 的 JSON 数组 |
 | `ASTERIA_METADATA_DRIVER` | `memory` 仅测试/演示；P4 使用 `postgres` |
 | `ASTERIA_DATABASE_URL` | postgres 时必需，日志脱敏 |
 | `ASTERIA_AUTO_MIGRATE` | 开发/验收可开；生产迁移流程单独执行 |

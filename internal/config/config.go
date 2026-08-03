@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -15,11 +16,24 @@ type Token struct {
 	TenantName  string `json:"tenant_name"`
 }
 
+type OIDCBootstrap struct {
+	Issuer      string `json:"issuer"`
+	Subject     string `json:"subject"`
+	PrincipalID string `json:"principal_id"`
+	TenantID    string `json:"tenant_id"`
+	TenantName  string `json:"tenant_name"`
+	DisplayName string `json:"display_name"`
+	Role        string `json:"role"`
+}
+
 type Config struct {
 	Environment       string
 	Address           string
 	AuthMode          string
 	Tokens            map[string]Token
+	OIDCIssuer        string
+	OIDCClientID      string
+	OIDCBootstrap     []OIDCBootstrap
 	CursorKey         []byte
 	MetadataDriver    string
 	DatabaseURL       string
@@ -67,6 +81,11 @@ func load(lookup func(string) (string, bool)) (Config, error) {
 	if cfg.Tokens, err = parseTokens(get("ASTERIA_TRUSTED_TOKENS_JSON", "")); err != nil {
 		return Config{}, err
 	}
+	cfg.OIDCIssuer = get("ASTERIA_OIDC_ISSUER", "")
+	cfg.OIDCClientID = get("ASTERIA_OIDC_CLIENT_ID", "")
+	if cfg.OIDCBootstrap, err = parseOIDCBootstrap(get("ASTERIA_OIDC_BOOTSTRAP_JSON", "")); err != nil {
+		return Config{}, err
+	}
 	cfg.CursorKey = []byte(get("ASTERIA_CURSOR_HMAC_KEY", ""))
 	if cfg.AutoMigrate, err = parseBool(get("ASTERIA_AUTO_MIGRATE", "false")); err != nil {
 		return Config{}, fmt.Errorf("ASTERIA_AUTO_MIGRATE: %w", err)
@@ -110,14 +129,51 @@ func (c Config) Validate() error {
 	if c.Environment != "development" && c.Environment != "production" {
 		return fmt.Errorf("ASTERIA_ENV must be development or production")
 	}
-	if c.AuthMode != "trusted-dev" {
-		return fmt.Errorf("MVP only supports ASTERIA_AUTH_MODE=trusted-dev")
+	if c.AuthMode != "trusted-dev" && c.AuthMode != "oidc" {
+		return fmt.Errorf("ASTERIA_AUTH_MODE must be trusted-dev or oidc")
 	}
-	if c.Environment == "production" {
-		return fmt.Errorf("trusted-dev authentication is forbidden in production")
-	}
-	if len(c.Tokens) == 0 {
-		return fmt.Errorf("ASTERIA_TRUSTED_TOKENS_JSON is required")
+	if c.AuthMode == "trusted-dev" {
+		if c.Environment == "production" {
+			return fmt.Errorf("trusted-dev authentication is forbidden in production")
+		}
+		if len(c.Tokens) == 0 {
+			return fmt.Errorf("ASTERIA_TRUSTED_TOKENS_JSON is required")
+		}
+	} else {
+		if c.OIDCIssuer == "" || c.OIDCClientID == "" || len(c.OIDCBootstrap) == 0 {
+			return fmt.Errorf("OIDC issuer, client id and bootstrap members are required")
+		}
+		parsed, err := parseIssuerURL(c.OIDCIssuer)
+		if err != nil {
+			return err
+		}
+		if c.Environment == "production" && parsed.Scheme != "https" {
+			return fmt.Errorf("production OIDC issuer must use HTTPS")
+		}
+		seenMembership := make(map[string]struct{}, len(c.OIDCBootstrap))
+		seenPrincipal := make(map[string]string, len(c.OIDCBootstrap))
+		for _, member := range c.OIDCBootstrap {
+			memberIssuer, err := parseIssuerURL(member.Issuer)
+			if err != nil {
+				return fmt.Errorf("OIDC bootstrap issuer is invalid: %w", err)
+			}
+			if memberIssuer.String() != parsed.String() {
+				return fmt.Errorf("OIDC bootstrap issuer must match ASTERIA_OIDC_ISSUER")
+			}
+			external := member.Issuer + "\x00" + member.Subject
+			membership := member.TenantID + "\x00" + external
+			if _, exists := seenMembership[membership]; exists {
+				return fmt.Errorf("OIDC bootstrap contains duplicate tenant membership")
+			}
+			seenMembership[membership] = struct{}{}
+			if previous, exists := seenPrincipal[member.PrincipalID]; exists && previous != external {
+				return fmt.Errorf("OIDC bootstrap principal id maps to multiple external identities")
+			}
+			seenPrincipal[member.PrincipalID] = external
+		}
+		if c.Environment == "production" && (c.MetadataDriver != "postgres" || c.StorageDriver != "s3") {
+			return fmt.Errorf("production OIDC mode requires postgres metadata and s3 storage")
+		}
 	}
 	if len(c.CursorKey) < 32 {
 		return fmt.Errorf("ASTERIA_CURSOR_HMAC_KEY must contain at least 32 bytes")
@@ -134,6 +190,12 @@ func (c Config) Validate() error {
 	if c.StorageDriver == "s3" && (c.S3Endpoint == "" || c.S3Region == "" || c.S3Bucket == "") {
 		return fmt.Errorf("S3 endpoint, region and bucket are required for s3")
 	}
+	if c.Environment == "production" && c.StorageDriver == "s3" {
+		endpoint, err := url.Parse(c.S3Endpoint)
+		if err != nil || endpoint.Host == "" || endpoint.Scheme != "https" || endpoint.User != nil {
+			return fmt.Errorf("production S3 endpoint must use HTTPS without credentials")
+		}
+	}
 	if c.MaxFileSize <= 0 || c.PartSize < 5*1024*1024 || c.PartSize > 5*1024*1024*1024 {
 		return fmt.Errorf("file and part size limits are invalid")
 	}
@@ -144,6 +206,14 @@ func (c Config) Validate() error {
 		return fmt.Errorf("HTTP timeout values must be positive")
 	}
 	return nil
+}
+
+func parseIssuerURL(value string) (*url.URL, error) {
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return nil, fmt.Errorf("ASTERIA_OIDC_ISSUER must be an HTTP(S) URL without credentials, query, or fragment")
+	}
+	return parsed, nil
 }
 
 func parseTokens(value string) (map[string]Token, error) {
@@ -164,6 +234,37 @@ func parseTokens(value string) (map[string]Token, error) {
 		}
 	}
 	return tokens, nil
+}
+
+func parseOIDCBootstrap(value string) ([]OIDCBootstrap, error) {
+	if value == "" {
+		return nil, nil
+	}
+	var members []OIDCBootstrap
+	if err := json.Unmarshal([]byte(value), &members); err != nil {
+		return nil, fmt.Errorf("ASTERIA_OIDC_BOOTSTRAP_JSON must be a JSON array: %w", err)
+	}
+	for index, member := range members {
+		if member.Issuer == "" || member.Subject == "" || !validUUID(member.PrincipalID) || !validUUID(member.TenantID) || !validAccessRole(member.Role) {
+			return nil, fmt.Errorf("OIDC bootstrap members require issuer, subject, UUID ids and a valid role")
+		}
+		if member.TenantName == "" {
+			members[index].TenantName = "Asteria tenant"
+		}
+		if member.DisplayName == "" {
+			members[index].DisplayName = member.Subject
+		}
+	}
+	return members, nil
+}
+
+func validAccessRole(role string) bool {
+	switch role {
+	case "owner", "admin", "editor", "viewer":
+		return true
+	default:
+		return false
+	}
 }
 
 func validUUID(value string) bool {

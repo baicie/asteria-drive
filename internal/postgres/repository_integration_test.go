@@ -36,12 +36,71 @@ func TestMigrateIsIdempotent(t *testing.T) {
 	if err := conn.QueryRow(ctx, `
 		SELECT count(*) FROM information_schema.tables
 		WHERE table_schema=current_schema()
-		  AND table_name IN ('tenant','file_node','blob','file_version','upload_session','upload_part')`,
+		  AND table_name IN ('tenant','file_node','blob','file_version','upload_session','upload_part','principal','tenant_member')`,
 	).Scan(&tables); err != nil {
 		t.Fatalf("count MVP tables: %v", err)
 	}
-	if migrations != 1 || tables != 6 {
+	if migrations != 2 || tables != 8 {
 		t.Fatalf("unexpected migration result: migrations=%d tables=%d", migrations, tables)
+	}
+}
+
+func TestRepositoryOIDCMemberContract(t *testing.T) {
+	repository := integrationRepository(t)
+	ctx := context.Background()
+	now := time.Date(2026, 8, 3, 10, 0, 0, 0, time.UTC)
+	tenantA := testID(701)
+	tenantB := testID(702)
+	principalID := testID(703)
+	if _, err := repository.EnsureTenant(ctx, drive.TenantSeed{TenantID: tenantA, DisplayName: "Tenant A", RootNodeID: testID(704), Now: now}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.EnsureTenant(ctx, drive.TenantSeed{TenantID: tenantB, DisplayName: "Tenant B", RootNodeID: testID(705), Now: now}); err != nil {
+		t.Fatal(err)
+	}
+	seed := drive.OIDCMemberSeed{
+		PrincipalID: principalID, TenantID: tenantA, Issuer: "https://issuer.example.test", Subject: "subject-1",
+		DisplayName: "User", Role: drive.RoleViewer, Now: now,
+	}
+	first, err := repository.EnsureOIDCMember(ctx, seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := repository.EnsureOIDCMember(ctx, seed)
+	if err != nil || second.Role != first.Role || second.Status != drive.MemberStatusActive {
+		t.Fatalf("OIDC bootstrap was not idempotent: first=%+v second=%+v err=%v", first, second, err)
+	}
+	seed.TenantID = tenantB
+	seed.Role = drive.RoleEditor
+	if _, err := repository.EnsureOIDCMember(ctx, seed); err != nil {
+		t.Fatal(err)
+	}
+	resolvedA, err := repository.ResolveOIDCPrincipal(ctx, seed.Issuer, seed.Subject, tenantA)
+	if err != nil || resolvedA.Role != drive.RoleViewer || resolvedA.Identity.TenantID != tenantA {
+		t.Fatalf("resolve tenant A: record=%+v err=%v", resolvedA, err)
+	}
+	resolvedB, err := repository.ResolveOIDCPrincipal(ctx, seed.Issuer, seed.Subject, tenantB)
+	if err != nil || resolvedB.Role != drive.RoleEditor || resolvedB.Identity.TenantID != tenantB {
+		t.Fatalf("resolve tenant B: record=%+v err=%v", resolvedB, err)
+	}
+	if err := repository.SetOIDCMemberStatus(ctx, tenantB, principalID, drive.MemberStatusSuspended); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.ResolveOIDCPrincipal(ctx, seed.Issuer, seed.Subject, tenantB); drive.CodeOf(err) != drive.CodeForbidden {
+		t.Fatalf("suspended member should be forbidden, got %v", err)
+	}
+	if err := repository.SetOIDCMemberStatus(ctx, tenantB, principalID, drive.MemberStatusActive); err != nil {
+		t.Fatal(err)
+	}
+	conflict := seed
+	conflict.PrincipalID = testID(706)
+	if _, err := repository.EnsureOIDCMember(ctx, conflict); drive.CodeOf(err) != drive.CodeNameConflict {
+		t.Fatalf("external identity remap should conflict, got %v", err)
+	}
+	conflict = seed
+	conflict.Subject = "subject-2"
+	if _, err := repository.EnsureOIDCMember(ctx, conflict); drive.CodeOf(err) != drive.CodeNameConflict {
+		t.Fatalf("principal identity remap should conflict, got %v", err)
 	}
 }
 

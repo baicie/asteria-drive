@@ -8,14 +8,16 @@ info:
     uploads, download authorizations, and recycle-bin operations. File bytes do
     not pass through this API.
 
-    All business operations use a server-configured trusted-development bearer
-    token. This authentication mode is intentionally rejected in production and
-    is not a production security contract.
+    Business operations use either an OIDC/OAuth2 Bearer JWT (production) or a
+    server-configured trusted-development bearer token (isolated development).
+    OIDC requests select an active tenant with X-Tenant-ID; tenant membership
+    and role are read from PostgreSQL rather than trusted from JWT claims.
 servers:
   - url: http://127.0.0.1:8080
     description: Isolated local development
 jsonSchemaDialect: https://json-schema.org/draft/2020-12/schema
 security:
+  - oidcBearer: []
   - trustedDevBearer: []
 tags:
   - name: Probes
@@ -81,13 +83,15 @@ paths:
           $ref: "#/components/responses/InternalError"
 
   /api/v1/tenant:
+    parameters:
+      - $ref: "#/components/parameters/TenantSelector"
     get:
       tags: [Tenant]
       operationId: getCurrentTenant
       summary: Get the authenticated tenant and root directory
       description: |
-        The tenant is derived only from the bearer-token mapping. The operation
-        accepts no tenant selector in a header, query parameter, or request body.
+        In trusted-dev the tenant is fixed by the bearer-token mapping. In OIDC
+        mode the request must include X-Tenant-ID for an active membership.
       responses:
         "200":
           description: Current tenant.
@@ -100,6 +104,8 @@ paths:
                 $ref: "#/components/schemas/TenantEnvelope"
         "401":
           $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
         "500":
@@ -108,6 +114,8 @@ paths:
           $ref: "#/components/responses/DependencyUnavailable"
 
   /api/v1/directories:
+    parameters:
+      - $ref: "#/components/parameters/TenantSelector"
     post:
       tags: [Namespace]
       operationId: createDirectory
@@ -139,6 +147,8 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
@@ -155,6 +165,7 @@ paths:
   /api/v1/directories/{id}:
     parameters:
       - $ref: "#/components/parameters/ResourceID"
+      - $ref: "#/components/parameters/TenantSelector"
     get:
       tags: [Namespace]
       operationId: getDirectory
@@ -173,6 +184,8 @@ paths:
                 $ref: "#/components/schemas/NodeEnvelope"
         "401":
           $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
         "500":
@@ -183,6 +196,7 @@ paths:
   /api/v1/directories/{id}/children:
     parameters:
       - $ref: "#/components/parameters/ResourceID"
+      - $ref: "#/components/parameters/TenantSelector"
     get:
       tags: [Namespace]
       operationId: listDirectoryChildren
@@ -204,6 +218,8 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
         "500":
@@ -214,6 +230,7 @@ paths:
   /api/v1/files/{id}:
     parameters:
       - $ref: "#/components/parameters/ResourceID"
+      - $ref: "#/components/parameters/TenantSelector"
     get:
       tags: [Namespace]
       operationId: getFile
@@ -232,6 +249,8 @@ paths:
                 $ref: "#/components/schemas/NodeEnvelope"
         "401":
           $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
         "500":
@@ -242,6 +261,7 @@ paths:
   /api/v1/nodes/{id}:
     parameters:
       - $ref: "#/components/parameters/ResourceID"
+      - $ref: "#/components/parameters/TenantSelector"
     patch:
       tags: [Namespace]
       operationId: updateNode
@@ -270,6 +290,8 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
@@ -300,6 +322,8 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
@@ -312,6 +336,8 @@ paths:
           $ref: "#/components/responses/DependencyUnavailable"
 
   /api/v1/uploads:
+    parameters:
+      - $ref: "#/components/parameters/TenantSelector"
     post:
       tags: [Uploads]
       operationId: createUpload
@@ -342,6 +368,8 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
@@ -358,6 +386,7 @@ paths:
   /api/v1/uploads/{id}:
     parameters:
       - $ref: "#/components/parameters/ResourceID"
+      - $ref: "#/components/parameters/TenantSelector"
     get:
       tags: [Uploads]
       operationId: getUpload
@@ -374,6 +403,8 @@ paths:
                 $ref: "#/components/schemas/UploadEnvelope"
         "401":
           $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
         "500":
@@ -392,6 +423,8 @@ paths:
               $ref: "#/components/headers/RequestID"
         "401":
           $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
@@ -404,6 +437,7 @@ paths:
   /api/v1/uploads/{id}/parts/sign:
     parameters:
       - $ref: "#/components/parameters/ResourceID"
+      - $ref: "#/components/parameters/TenantSelector"
     post:
       tags: [Uploads]
       operationId: signUploadPart
@@ -428,6 +462,8 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
@@ -444,6 +480,7 @@ paths:
   /api/v1/uploads/{id}/complete:
     parameters:
       - $ref: "#/components/parameters/ResourceID"
+      - $ref: "#/components/parameters/TenantSelector"
     post:
       tags: [Uploads]
       operationId: completeUpload
@@ -481,6 +518,8 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
@@ -497,6 +536,7 @@ paths:
   /api/v1/files/{id}/download-authorizations:
     parameters:
       - $ref: "#/components/parameters/ResourceID"
+      - $ref: "#/components/parameters/TenantSelector"
     post:
       tags: [Downloads]
       operationId: createDownloadAuthorization
@@ -522,6 +562,8 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
         "413":
@@ -534,6 +576,8 @@ paths:
           $ref: "#/components/responses/DependencyUnavailable"
 
   /api/v1/recycle-bin:
+    parameters:
+      - $ref: "#/components/parameters/TenantSelector"
     get:
       tags: [Recycle bin]
       operationId: listRecycleBin
@@ -555,6 +599,8 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "500":
           $ref: "#/components/responses/InternalError"
         "503":
@@ -563,6 +609,7 @@ paths:
   /api/v1/recycle-bin/{id}/restore:
     parameters:
       - $ref: "#/components/parameters/ResourceID"
+      - $ref: "#/components/parameters/TenantSelector"
     post:
       tags: [Recycle bin]
       operationId: restoreNode
@@ -592,6 +639,8 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
@@ -610,6 +659,7 @@ paths:
   /api/v1/recycle-bin/{id}:
     parameters:
       - $ref: "#/components/parameters/ResourceID"
+      - $ref: "#/components/parameters/TenantSelector"
     delete:
       tags: [Recycle bin]
       operationId: purgeNode
@@ -629,6 +679,8 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
@@ -642,6 +694,14 @@ paths:
 
 components:
   securitySchemes:
+    oidcBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        OIDC/OAuth2 access token validated as a Resource Server. The token's
+        issuer, signature, audience, expiry, and subject are verified; tenant
+        and role come from PostgreSQL membership.
     trustedDevBearer:
       type: http
       scheme: bearer
@@ -677,6 +737,14 @@ components:
       schema:
         type: string
         minLength: 1
+    TenantSelector:
+      name: X-Tenant-ID
+      in: header
+      required: false
+      description: Required in OIDC mode; UUID of a tenant with an active membership. Ignored by trusted-dev.
+      schema:
+        type: string
+        format: uuid
     IfMatch:
       name: If-Match
       in: header
@@ -716,6 +784,15 @@ components:
             $ref: "#/components/schemas/ErrorResponse"
     Unauthenticated:
       description: A valid bearer token is required.
+      headers:
+        X-Request-ID:
+          $ref: "#/components/headers/RequestID"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Forbidden:
+      description: The principal is authenticated but is not an active member or lacks the required role permission.
       headers:
         X-Request-ID:
           $ref: "#/components/headers/RequestID"
@@ -1249,6 +1326,7 @@ components:
         - invalid_request
         - invalid_cursor
         - unauthenticated
+        - forbidden
         - not_found
         - name_conflict
         - invalid_state

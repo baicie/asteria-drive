@@ -445,6 +445,8 @@ func statusFor(code drive.ErrorCode) int {
 		return http.StatusBadRequest
 	case drive.CodeUnauthenticated:
 		return http.StatusUnauthorized
+	case drive.CodeForbidden:
+		return http.StatusForbidden
 	case drive.CodeNotFound:
 		return http.StatusNotFound
 	case drive.CodeNameConflict, drive.CodeInvalidState, drive.CodeIdempotencyConflict, drive.CodeRestoreConflict:
@@ -466,6 +468,8 @@ func externalMessage(code drive.ErrorCode) string {
 	switch code {
 	case drive.CodeUnauthenticated:
 		return "a valid bearer token is required"
+	case drive.CodeForbidden:
+		return "the authenticated principal is not allowed to perform this operation"
 	case drive.CodeNotFound:
 		return "resource was not found"
 	case drive.CodeNameConflict:
