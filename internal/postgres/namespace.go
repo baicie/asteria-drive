@@ -58,21 +58,37 @@ func (r *Repository) Tenant(ctx context.Context, tenantID string) (drive.Tenant,
 }
 
 func (r *Repository) CreateDirectory(ctx context.Context, command drive.CreateDirectoryCommand) (drive.Node, error) {
-	row := r.pool.QueryRow(ctx, `
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return drive.Node{}, mapError(err, drive.CodeInternal, "could not create directory")
+	}
+	defer tx.Rollback(ctx)
+	if _, err := lockNamespace(ctx, tx, command.Identity.TenantID); err != nil {
+		return drive.Node{}, err
+	}
+	if _, err := lockActiveDirectory(ctx, tx, command.Identity.TenantID, command.ParentID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return drive.Node{}, drive.E(drive.CodeNotFound, "parent directory was not found")
+		}
+		return drive.Node{}, mapError(err, drive.CodeInternal, "could not lock parent directory")
+	}
+	node, err := scanNode(tx.QueryRow(ctx, `
 		INSERT INTO file_node(
 			id,tenant_id,parent_id,kind,display_name,normalized_name,current_version_id,
 			size_bytes,mime_type,status,revision,created_at,updated_at
 		)
-		SELECT $1,$2,p.id,'directory',$3,$4,NULL,0,'','active',1,$5,$5
-		FROM file_node p
-		WHERE p.id=$6 AND p.tenant_id=$2 AND p.kind='directory'
-		  AND p.status='active' AND p.trashed_root_id IS NULL
+		VALUES($1,$2,$6,'directory',$3,$4,NULL,0,'','active',1,$5,$5)
 		RETURNING `+nodeColumns,
 		command.ID, command.Identity.TenantID, command.DisplayName, command.NormalizedName,
 		command.Now, command.ParentID,
-	)
-	node, err := scanNode(row)
-	return node, mapError(err, drive.CodeInternal, "could not create directory")
+	))
+	if err != nil {
+		return drive.Node{}, mapError(err, drive.CodeInternal, "could not create directory")
+	}
+	if err := commit(tx, ctx); err != nil {
+		return drive.Node{}, err
+	}
+	return node, nil
 }
 
 func (r *Repository) Node(ctx context.Context, identity drive.Identity, id string, includeTrashed bool) (drive.Node, error) {
@@ -131,16 +147,16 @@ func (r *Repository) UpdateNode(ctx context.Context, command drive.UpdateNodeCom
 		return drive.Node{}, mapError(err, drive.CodeInternal, "could not update node")
 	}
 	defer tx.Rollback(ctx)
+	rootID, err := lockNamespace(ctx, tx, command.Identity.TenantID)
+	if err != nil {
+		return drive.Node{}, err
+	}
 	node, err := scanNode(tx.QueryRow(ctx, `
 		SELECT `+nodeColumns+` FROM file_node
 		WHERE tenant_id=$1 AND id=$2 AND status='active' AND trashed_root_id IS NULL
 		FOR UPDATE`, command.Identity.TenantID, command.NodeID))
 	if err != nil {
 		return drive.Node{}, mapError(err, drive.CodeInternal, "could not read node")
-	}
-	var rootID string
-	if err := tx.QueryRow(ctx, `SELECT root_node_id::text FROM tenant WHERE id=$1`, command.Identity.TenantID).Scan(&rootID); err != nil {
-		return drive.Node{}, mapError(err, drive.CodeInternal, "could not read tenant root")
 	}
 	if node.ID == rootID {
 		return drive.Node{}, drive.E(drive.CodeInvalidRequest, "root directory cannot be changed")
@@ -151,27 +167,24 @@ func (r *Repository) UpdateNode(ctx context.Context, command drive.UpdateNodeCom
 	parentID := node.ParentID
 	if command.ParentID != nil {
 		parentID = *command.ParentID
-		var parentExists bool
-		if err := tx.QueryRow(ctx, `
-			SELECT EXISTS(SELECT 1 FROM file_node WHERE tenant_id=$1 AND id=$2
-			AND kind='directory' AND status='active' AND trashed_root_id IS NULL)`,
-			command.Identity.TenantID, parentID).Scan(&parentExists); err != nil {
-			return drive.Node{}, mapError(err, drive.CodeInternal, "could not read target directory")
-		}
-		if !parentExists {
-			return drive.Node{}, drive.E(drive.CodeNotFound, "target directory was not found")
+		if _, err := lockActiveDirectory(ctx, tx, command.Identity.TenantID, parentID); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return drive.Node{}, drive.E(drive.CodeNotFound, "target directory was not found")
+			}
+			return drive.Node{}, mapError(err, drive.CodeInternal, "could not lock target directory")
 		}
 		if node.Kind == drive.NodeDirectory {
 			var createsCycle bool
 			if err := tx.QueryRow(ctx, `
-				WITH RECURSIVE descendants(id) AS (
-					SELECT id FROM file_node WHERE tenant_id=$1 AND id=$2
-					UNION ALL
-					SELECT child.id FROM file_node child JOIN descendants d ON child.parent_id=d.id
-					WHERE child.tenant_id=$1
+				WITH RECURSIVE ancestors(id,parent_id) AS (
+					SELECT id,parent_id FROM file_node WHERE tenant_id=$1 AND id=$2
+					UNION
+					SELECT parent.id,parent.parent_id
+					FROM file_node parent JOIN ancestors a ON parent.id=a.parent_id
+					WHERE parent.tenant_id=$1
 				)
-				SELECT EXISTS(SELECT 1 FROM descendants WHERE id=$3)`,
-				command.Identity.TenantID, node.ID, parentID).Scan(&createsCycle); err != nil {
+				SELECT EXISTS(SELECT 1 FROM ancestors WHERE id=$3)`,
+				command.Identity.TenantID, parentID, node.ID).Scan(&createsCycle); err != nil {
 				return drive.Node{}, mapError(err, drive.CodeInternal, "could not validate directory move")
 			}
 			if createsCycle {
@@ -197,6 +210,3 @@ func (r *Repository) UpdateNode(ctx context.Context, command drive.UpdateNodeCom
 	}
 	return updated, nil
 }
-
-var _ = errors.Is
-var _ = pgx.ErrNoRows

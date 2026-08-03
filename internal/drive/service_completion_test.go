@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -31,6 +32,15 @@ func (c *fixedClock) Now() time.Time { return c.now }
 
 type rejectingCreateRepository struct{ *memory.Repository }
 
+type transitioningAbortRepository struct {
+	*memory.Repository
+	abortResult drive.UploadSession
+}
+
+func (r *transitioningAbortRepository) AbortUpload(context.Context, drive.Identity, string, drive.UploadStatus, time.Time) (drive.UploadSession, error) {
+	return r.abortResult, nil
+}
+
 func (r *rejectingCreateRepository) CreateUpload(context.Context, drive.CreateUploadCommand) (drive.UploadSession, error) {
 	return drive.UploadSession{}, context.Canceled
 }
@@ -45,6 +55,16 @@ type contextAwareAbortStorage struct {
 type unavailableChecksumStorage struct{ *memory.Storage }
 
 type mismatchedVerifiedChecksumStorage struct{ *memory.Storage }
+
+type missingCompletionStorage struct{ *memory.Storage }
+
+func (s *missingCompletionStorage) CompleteMultipart(context.Context, string, string, []drive.CompletedPart) (drive.ObjectInfo, error) {
+	return drive.ObjectInfo{}, drive.E(drive.CodeNotFound, "multipart upload was not found")
+}
+
+func (s *missingCompletionStorage) StatObject(context.Context, string) (drive.ObjectInfo, error) {
+	return drive.ObjectInfo{}, drive.E(drive.CodeNotFound, "object was not found")
+}
 
 func (s *mismatchedVerifiedChecksumStorage) CreateMultipart(ctx context.Context, key, mimeType string, _ drive.Checksum) (string, error) {
 	return s.Storage.CreateMultipart(ctx, key, mimeType, drive.Checksum{})
@@ -199,6 +219,201 @@ func TestCompleteUploadReconcilesUnknownResultAndConcurrentRetries(t *testing.T)
 	}
 }
 
+func TestCompleteUploadKeepsUnknownMissingResultRetryable(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	repository := memory.NewRepository()
+	storage := &missingCompletionStorage{Storage: memory.NewStorage("missing-completion-test")}
+	service := completionService(t, repository, storage, "missing-completion-cursor-key-at-least-32-bytes")
+	identity := drive.Identity{
+		TenantID: "12121212-1212-4212-8212-121212121212", PrincipalID: "abababab-abab-4bab-8bab-abababababab",
+	}
+	tenant, err := service.EnsureTenant(ctx, identity.TenantID, "Missing completion test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	upload, err := service.CreateUpload(ctx, identity, drive.CreateUploadInput{
+		ParentID: tenant.RootNodeID, Name: "unknown.bin", Size: 7, MimeType: "application/octet-stream",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	part, err := storage.Storage.PutPart(upload.StorageUploadID, 1, []byte("unknown"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = service.CompleteUpload(ctx, identity, upload.ID, []drive.CompletedPart{part})
+	var domainErr *drive.Error
+	if drive.CodeOf(err) != drive.CodeDependencyUnavailable || !errors.As(err, &domainErr) || !domainErr.Retryable {
+		t.Fatalf("completion error=%v, want retryable dependency_unavailable", err)
+	}
+	persisted, err := service.Upload(ctx, identity, upload.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.Status != drive.UploadCompleting {
+		t.Fatalf("upload status=%s, want completing", persisted.Status)
+	}
+}
+
+func TestCompleteUploadNameConflictPersistsFailureAndRetriesObjectCleanup(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	repository := memory.NewRepository()
+	storage := &retryingDeleteStorage{Storage: memory.NewStorage("name-conflict-cleanup-test")}
+	storage.failFirst.Store(true)
+	service := completionService(t, repository, storage, "name-conflict-cleanup-cursor-key-at-least-32-bytes")
+	identity := drive.Identity{
+		TenantID: "13131313-1313-4313-8313-131313131313", PrincipalID: "bcbcbcbc-bcbc-4cbc-8cbc-bcbcbcbcbcbc",
+	}
+	tenant, err := service.EnsureTenant(ctx, identity.TenantID, "Name conflict cleanup test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	create := func() drive.UploadSession {
+		upload, createErr := service.CreateUpload(ctx, identity, drive.CreateUploadInput{
+			ParentID: tenant.RootNodeID, Name: "same.bin", Size: 4, MimeType: "application/octet-stream",
+		})
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		return upload
+	}
+	firstUpload, secondUpload := create(), create()
+	firstPart, err := storage.PutPart(firstUpload.StorageUploadID, 1, []byte("one!"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondPart, err := storage.PutPart(secondUpload.StorageUploadID, 1, []byte("two!"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := service.CompleteUpload(ctx, identity, firstUpload.ID, []drive.CompletedPart{firstPart})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.CompleteUpload(ctx, identity, secondUpload.ID, []drive.CompletedPart{secondPart}); drive.CodeOf(err) != drive.CodeNameConflict {
+		t.Fatalf("second completion code=%s err=%v, want name_conflict", drive.CodeOf(err), err)
+	}
+	failed, err := service.Upload(ctx, identity, secondUpload.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if failed.Status != drive.UploadFailed || failed.FailureCode != drive.UploadFailureNameConflict {
+		t.Fatalf("failed upload=%+v", failed)
+	}
+	if _, _, exists := storage.Object(secondUpload.ObjectKey); !exists {
+		t.Fatal("simulated failed cleanup unexpectedly removed the conflicting object")
+	}
+	if err := service.AbortUpload(ctx, identity, secondUpload.ID); err != nil {
+		t.Fatalf("retry failed-object cleanup: %v", err)
+	}
+	if storage.deleteCalls.Load() != 2 {
+		t.Fatalf("delete calls=%d, want 2", storage.deleteCalls.Load())
+	}
+	if _, _, exists := storage.Object(secondUpload.ObjectKey); exists {
+		t.Fatal("failed upload object remains after DELETE retry")
+	}
+	if _, _, err := repository.DownloadBlob(ctx, identity, first.Node.ID); err != nil {
+		t.Fatalf("conflict cleanup affected the committed file: %v", err)
+	}
+}
+
+func TestCompleteUploadFailsWhenParentWasRecycledAndDeletesObject(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	repository := memory.NewRepository()
+	storage := memory.NewStorage("parent-recycled-completion-test")
+	service := completionService(t, repository, storage, "parent-recycled-cursor-key-at-least-32-bytes")
+	identity := drive.Identity{
+		TenantID: "14141414-1414-4414-8414-141414141414", PrincipalID: "cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd",
+	}
+	tenant, err := service.EnsureTenant(ctx, identity.TenantID, "Parent recycled completion test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent, err := service.CreateDirectory(ctx, identity, tenant.RootNodeID, "Parent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	upload, err := service.CreateUpload(ctx, identity, drive.CreateUploadInput{
+		ParentID: parent.ID, Name: "orphan.bin", Size: 6, MimeType: "application/octet-stream",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	part, err := storage.PutPart(upload.StorageUploadID, 1, []byte("orphan"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Recycle(ctx, identity, parent.ID, parent.Revision); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.CompleteUpload(ctx, identity, upload.ID, []drive.CompletedPart{part}); drive.CodeOf(err) != drive.CodeNotFound {
+		t.Fatalf("completion code=%s err=%v, want not_found", drive.CodeOf(err), err)
+	}
+	failed, err := service.Upload(ctx, identity, upload.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if failed.Status != drive.UploadFailed || failed.FailureCode != drive.UploadFailureParentUnavailable {
+		t.Fatalf("failed upload=%+v", failed)
+	}
+	if _, _, exists := storage.Object(upload.ObjectKey); exists {
+		t.Fatal("completed object remained after parent admission failure")
+	}
+}
+
+func TestCommittedCompletionReplaySurvivesRecycleAndPurge(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	repository := memory.NewRepository()
+	storage := memory.NewStorage("committed-replay-test")
+	service := completionService(t, repository, storage, "committed-replay-cursor-key-at-least-32-bytes")
+	identity := drive.Identity{
+		TenantID: "15151515-1515-4515-8515-151515151515", PrincipalID: "dededede-dede-4ede-8ede-dededededede",
+	}
+	tenant, err := service.EnsureTenant(ctx, identity.TenantID, "Committed replay test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := []byte("persisted")
+	upload, err := service.CreateUpload(ctx, identity, drive.CreateUploadInput{
+		ParentID: tenant.RootNodeID, Name: "persisted.bin", Size: int64(len(body)), MimeType: "application/octet-stream",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	part, err := storage.PutPart(upload.StorageUploadID, 1, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	completed, err := service.CompleteUpload(ctx, identity, upload.ID, []drive.CompletedPart{part})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Recycle(ctx, identity, completed.Node.ID, completed.Node.Revision); err != nil {
+		t.Fatal(err)
+	}
+	replayed, err := service.CompleteUpload(ctx, identity, upload.ID, []drive.CompletedPart{part})
+	if err != nil {
+		t.Fatalf("replay after recycle: %v", err)
+	}
+	if replayed.First || replayed.Node.ID != completed.Node.ID {
+		t.Fatalf("replay after recycle=%+v, want file %s", replayed, completed.Node.ID)
+	}
+	if err := service.Purge(ctx, identity, completed.Node.ID, completed.Node.Revision+1); err != nil {
+		t.Fatal(err)
+	}
+	replayed, err = service.CompleteUpload(ctx, identity, upload.ID, []drive.CompletedPart{part})
+	if err != nil {
+		t.Fatalf("replay after purge: %v", err)
+	}
+	if replayed.First || replayed.Node.ID != completed.Node.ID {
+		t.Fatalf("replay after purge=%+v, want file %s", replayed, completed.Node.ID)
+	}
+}
+
 func TestAbortUploadPersistsTerminalStateAndRetriesStorageCleanup(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -247,6 +462,43 @@ func TestAbortUploadPersistsTerminalStateAndRetriesStorageCleanup(t *testing.T) 
 	}
 	if _, err := storage.Storage.SignUploadPart(ctx, upload.ObjectKey, upload.StorageUploadID, 1, drive.Checksum{}, time.Minute); drive.CodeOf(err) != drive.CodeNotFound {
 		t.Fatalf("multipart upload still exists after retry: code=%s err=%v", drive.CodeOf(err), err)
+	}
+}
+
+func TestAbortUploadUsesAtomicTransitionResultForCleanup(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	repository := &transitioningAbortRepository{Repository: memory.NewRepository()}
+	storage := memory.NewStorage("abort-transition-test")
+	service := completionService(t, repository, storage, "abort-transition-cursor-key-at-least-32-bytes")
+	identity := drive.Identity{
+		TenantID: "16161616-1616-4616-8616-161616161616", PrincipalID: "efefefef-efef-4fef-8fef-efefefefefef",
+	}
+	tenant, err := service.EnsureTenant(ctx, identity.TenantID, "Abort transition test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	upload, err := service.CreateUpload(ctx, identity, drive.CreateUploadInput{
+		ParentID: tenant.RootNodeID, Name: "transition.bin", Size: 6, MimeType: "application/octet-stream",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	part, err := storage.PutPart(upload.StorageUploadID, 1, []byte("object"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := storage.CompleteMultipart(ctx, upload.ObjectKey, upload.StorageUploadID, []drive.CompletedPart{part}); err != nil {
+		t.Fatal(err)
+	}
+	repository.abortResult = upload
+	repository.abortResult.Status = drive.UploadFailed
+	repository.abortResult.FailureCode = drive.UploadFailureParentUnavailable
+	if err := service.AbortUpload(ctx, identity, upload.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, exists := storage.Object(upload.ObjectKey); exists {
+		t.Fatal("abort cleanup used the stale pre-transition state and left a completed object")
 	}
 }
 

@@ -185,7 +185,7 @@ func (p *Provider) DeleteObject(ctx context.Context, key string) error {
 func (p *Provider) ensureBucket(ctx context.Context, region string) error {
 	if _, err := p.client.HeadBucket(ctx, &s3.HeadBucketInput{Bucket: aws.String(p.bucket)}); err == nil {
 		return nil
-	} else if !isNotFound(err) {
+	} else if !isBucketNotFound(err) {
 		return mapError(err, "could not inspect S3 bucket")
 	}
 	input := &s3.CreateBucketInput{Bucket: aws.String(p.bucket)}
@@ -213,7 +213,21 @@ func isNotFound(err error) bool {
 	var apiErr smithy.APIError
 	if errors.As(err, &apiErr) {
 		switch apiErr.ErrorCode() {
-		case "NotFound", "NoSuchKey", "NoSuchBucket", "NoSuchUpload", "404":
+		case "NotFound", "NoSuchKey", "NoSuchUpload", "404":
+			return true
+		}
+	}
+	return false
+}
+
+func isBucketNotFound(err error) bool {
+	if err == nil {
+		return false
+	}
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) {
+		switch apiErr.ErrorCode() {
+		case "NotFound", "NoSuchBucket", "404":
 			return true
 		}
 	}

@@ -109,6 +109,14 @@ const (
 	UploadFailed          UploadStatus = "failed"
 )
 
+const (
+	UploadFailureStorageRejected   = "storage_rejected"
+	UploadFailureSizeMismatch      = "size_mismatch"
+	UploadFailureChecksumMismatch  = "checksum_mismatch"
+	UploadFailureParentUnavailable = "parent_unavailable"
+	UploadFailureNameConflict      = "name_conflict"
+)
+
 func (s UploadStatus) Terminal() bool {
 	return s == UploadCommitted || s == UploadAborted || s == UploadExpired || s == UploadFailed
 }

@@ -433,6 +433,14 @@ func TestTenantEndpointDiscoversRootDirectory(t *testing.T) {
 	}
 }
 
+func TestMalformedPathIdentifierReturnsBadRequest(t *testing.T) {
+	api := newTestAPI(t)
+	response := api.request(t, http.MethodGet, "/api/v1/directories/not-a-uuid", testTokenA, nil, nil)
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), `"code":"invalid_request"`) {
+		t.Fatalf("malformed identifier: got %d: %s", response.Code, response.Body.String())
+	}
+}
+
 func TestDirectoryPaginationIsStableAndCursorIsTamperProof(t *testing.T) {
 	api := newTestAPI(t)
 	names := []string{"Zulu", "alpha", "Echo", "bravo", "Delta"}

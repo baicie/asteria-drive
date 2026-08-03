@@ -222,7 +222,9 @@ M2 配额必须在步骤 1/3 的数据库事务中预留，不能在完成时才
 4. 单个 PostgreSQL 事务创建 Blob、FILE Node、Version，更新 Node 当前版本，并把会话改为 `COMMITTED`。
 5. 同一会话重试先查询提交结果并返回同一节点。
 
-对象完成而事务失败时保留 `OBJECT_COMPLETED`，维护任务可用 `HEAD` 后重放步骤 4。M2 的配额结转和 Outbox 必须加入步骤 4 的同一事务。
+对象完成而数据库或可重试依赖错误导致事务未决时保留 `OBJECT_COMPLETED`，维护任务可用 `HEAD` 后重放步骤 4。
+父目录不可用或名称冲突属于确定性 Namespace 接纳失败，事务把会话改为 `FAILED` 后再精确删除对象；详见
+[ADR-0013](../adr/0013-completed-upload-reconciliation.md)。M2 的配额结转和 Outbox 必须加入步骤 4 的同一事务。
 
 ### 5.5 移动与重命名
 
@@ -255,6 +257,8 @@ Cursor 包含版本、查询作用域、最后的 `normalized_name/id`，使用 
 
 并发规则：
 
+- 改变 Namespace、回收归属或有效 Blob 引用判定的事务先获取 tenant Namespace 锁，固定锁顺序见
+  [ADR-0012](../adr/0012-tenant-namespace-mutation-serialization.md)。
 - 唯一约束是名称冲突最终裁决者。
 - 会话完成使用行锁和条件状态转换；数据库事务结果未知时先读回状态。
 - `revision` 用于 PATCH/恢复的乐观并发；冲突不静默覆盖。

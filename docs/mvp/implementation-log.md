@@ -154,3 +154,54 @@ SHOULD 延期见 [acceptance.md](./acceptance.md) 第 7 节。
 
 仍延期的 SHOULD：`Idempotency-Key`、自动维护/孤儿对账、Prometheus、fuzz/property suite，以及百万节点长时 SLO；
 原因、风险和后续路线见 [acceptance.md](./acceptance.md) 第 7 节。
+
+## 2026-08-03 - PR #2 审查问题修复
+
+分支：`codex/fix-p4-review-findings`。设计与问题映射见
+[ADR-0012](../adr/0012-tenant-namespace-mutation-serialization.md)、
+[ADR-0013](../adr/0013-completed-upload-reconciliation.md) 和
+[review-remediation.md](./review-remediation.md)。
+
+实现与回归：
+
+- tenant 行作为 MVP Namespace 事务互斥点，固定 tenant → upload session → node/parent → Blob 锁顺序；
+  目录创建/移动、上传提交、回收、恢复和清理准备在锁内复查状态。
+- 递归移动/回收使用可终止的 `UNION` 和防御性 active/unowned 条件；并发互相移动最多一个成功，父回收
+  与创建/移动/上传提交/恢复不会产生活动孤儿，父子回收保持独立根。
+- Blob 清理忽略 `purging` owner；两个文件顺序清理共享 Blob 时，最后一个有效引用会安排删除。
+- 父目录不可用和名称冲突在上传提交事务内持久化为 `FAILED`，对象按精确 Key 补偿删除；删除失败可通过
+  上传 DELETE 重试，且取消依据仓储原子转换返回的最新状态选择 Delete 或 Abort Multipart。
+- committed 完成重放不再依赖活动下载可见性；文件回收和永久清理后仍返回同一文件 ID。
+- `NoSuchUpload + HEAD 404` 保持 `COMPLETING` 并返回可重试依赖错误；`NoSuchBucket` 映射为可重试
+  `dependency_unavailable`，`NoSuchKey`/`NoSuchUpload` 保持 `not_found`。
+- 非法 UUID 在 Service 边界返回 `400 invalid_request`，PostgreSQL `22P02` 保留防御性映射；恢复名称
+  唯一冲突稳定返回 `restore_conflict`。
+
+验证环境：Windows `amd64` / Go `1.26.5`；Compose PostgreSQL `17.5-alpine` 与 SeaweedFS `3.85`
+均为 healthy。真实依赖测试使用隔离 PostgreSQL Schema 和专用测试 Bucket。
+
+```text
+go test ./... -count=1
+go vet ./...
+go build ./...
+git diff --check
+
+# 注入仓库本地 Compose 测试变量
+go test -v ./internal/postgres -count=1
+go test -v ./internal/s3store -count=1
+go test -v ./internal/server -count=1
+
+docker run --rm --mount type=bind,source=<workspace>,target=/src -w /src \
+  golang:1.26.5-bookworm go test -race ./... -count=1
+```
+
+结果：
+
+- 全仓测试、`go vet`、`go build`、`git diff --check` 与 Linux race 全部退出码 0。
+- PostgreSQL 真实测试通过：并发互相移动、父回收四类竞态、并发嵌套回收、共享 Blob 顺序清理、迁移和
+  Repository 契约全部通过。
+- SeaweedFS 真实 `TestProviderSeaweedFSContract` 通过；S3 缺失资源分类单元测试全部通过。
+- `TestLiveHTTPPostgresSeaweedFSEndToEnd` 和 100 会话并发基线通过；本次基线
+  `p50=127.9025ms p95=155.9785ms p99=156.4998ms max=156.4998ms`。
+- `TestMalformedPathIdentifierReturnsBadRequest`、上传未知完成、Namespace 接纳失败、对象删除重试、
+  committed 回放和取消状态竞态回归全部通过。

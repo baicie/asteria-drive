@@ -2,9 +2,11 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/baicie/asteria-drive/internal/drive"
+	"github.com/jackc/pgx/v5"
 )
 
 func (r *Repository) DownloadBlob(ctx context.Context, identity drive.Identity, nodeID string) (drive.Node, drive.Blob, error) {
@@ -36,14 +38,14 @@ func (r *Repository) Recycle(ctx context.Context, identity drive.Identity, nodeI
 		return mapError(err, drive.CodeInternal, "could not recycle node")
 	}
 	defer tx.Rollback(ctx)
+	rootID, err := lockNamespace(ctx, tx, identity.TenantID)
+	if err != nil {
+		return err
+	}
 	node, err := scanNode(tx.QueryRow(ctx, `
 		SELECT `+nodeColumns+` FROM file_node WHERE tenant_id=$1 AND id=$2 FOR UPDATE`, identity.TenantID, nodeID))
 	if err != nil {
 		return mapError(err, drive.CodeInternal, "could not read node")
-	}
-	var rootID string
-	if err := tx.QueryRow(ctx, `SELECT root_node_id::text FROM tenant WHERE id=$1`, identity.TenantID).Scan(&rootID); err != nil {
-		return mapError(err, drive.CodeInternal, "could not read tenant root")
 	}
 	if node.ID == rootID {
 		return drive.E(drive.CodeInvalidRequest, "root directory cannot be recycled")
@@ -59,8 +61,9 @@ func (r *Repository) Recycle(ctx context.Context, identity drive.Identity, nodeI
 	}
 	if _, err := tx.Exec(ctx, `
 		WITH RECURSIVE tree(id) AS (
-			SELECT id FROM file_node WHERE tenant_id=$1 AND id=$2
-			UNION ALL
+			SELECT id FROM file_node
+			WHERE tenant_id=$1 AND id=$2 AND status='active' AND trashed_root_id IS NULL
+			UNION
 			SELECT child.id FROM file_node child JOIN tree ON child.parent_id=tree.id
 			WHERE child.tenant_id=$1 AND child.status='active' AND child.trashed_root_id IS NULL
 		)
@@ -71,7 +74,8 @@ func (r *Repository) Recycle(ctx context.Context, identity drive.Identity, nodeI
 			deleted_at=CASE WHEN n.id=$2 THEN $3 ELSE n.deleted_at END,
 			revision=CASE WHEN n.id=$2 THEN n.revision+1 ELSE n.revision END,
 			updated_at=$3
-		WHERE n.tenant_id=$1 AND n.id IN (SELECT id FROM tree)`, identity.TenantID, nodeID, now); err != nil {
+		WHERE n.tenant_id=$1 AND n.id IN (SELECT id FROM tree)
+		  AND n.status='active' AND n.trashed_root_id IS NULL`, identity.TenantID, nodeID, now); err != nil {
 		return mapError(err, drive.CodeInternal, "could not recycle node")
 	}
 	return commit(tx, ctx)
@@ -115,6 +119,9 @@ func (r *Repository) Restore(ctx context.Context, identity drive.Identity, nodeI
 		return drive.Node{}, mapError(err, drive.CodeInternal, "could not restore node")
 	}
 	defer tx.Rollback(ctx)
+	if _, err := lockNamespace(ctx, tx, identity.TenantID); err != nil {
+		return drive.Node{}, err
+	}
 	node, err := scanNode(tx.QueryRow(ctx, `
 		SELECT `+nodeColumns+` FROM file_node
 		WHERE tenant_id=$1 AND id=$2 AND status='trashed' AND trashed_root_id=id FOR UPDATE`,
@@ -125,17 +132,24 @@ func (r *Repository) Restore(ctx context.Context, identity drive.Identity, nodeI
 	if node.Revision != revision {
 		return drive.Node{}, drive.E(drive.CodeRevisionMismatch, "resource revision does not match")
 	}
-	var parentExists, nameExists bool
+	if node.OriginalParentID == "" {
+		return drive.Node{}, drive.E(drive.CodeRestoreConflict, "original location is unavailable")
+	}
+	if _, err := lockActiveDirectory(ctx, tx, identity.TenantID, node.OriginalParentID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return drive.Node{}, drive.E(drive.CodeRestoreConflict, "original location is unavailable")
+		}
+		return drive.Node{}, mapError(err, drive.CodeInternal, "could not lock restore target")
+	}
+	var nameExists bool
 	if err := tx.QueryRow(ctx, `
-		SELECT
-			EXISTS(SELECT 1 FROM file_node WHERE tenant_id=$1 AND id=$2 AND kind='directory'
-				AND status='active' AND trashed_root_id IS NULL),
-			EXISTS(SELECT 1 FROM file_node WHERE tenant_id=$1 AND parent_id=$2 AND normalized_name=$3
-				AND id<>$4 AND status='active' AND trashed_root_id IS NULL)`,
-		identity.TenantID, node.OriginalParentID, node.NormalizedName, node.ID).Scan(&parentExists, &nameExists); err != nil {
+		SELECT EXISTS(SELECT 1 FROM file_node
+		WHERE tenant_id=$1 AND parent_id=$2 AND normalized_name=$3
+		  AND id<>$4 AND status='active' AND trashed_root_id IS NULL)`,
+		identity.TenantID, node.OriginalParentID, node.NormalizedName, node.ID).Scan(&nameExists); err != nil {
 		return drive.Node{}, mapError(err, drive.CodeInternal, "could not validate restore target")
 	}
-	if !parentExists || nameExists {
+	if nameExists {
 		return drive.Node{}, drive.E(drive.CodeRestoreConflict, "original location is unavailable")
 	}
 	if _, err := tx.Exec(ctx, `
@@ -166,6 +180,9 @@ func (r *Repository) PreparePurge(ctx context.Context, identity drive.Identity, 
 		return drive.PurgePlan{}, mapError(err, drive.CodeInternal, "could not prepare purge")
 	}
 	defer tx.Rollback(ctx)
+	if _, err := lockNamespace(ctx, tx, identity.TenantID); err != nil {
+		return drive.PurgePlan{}, err
+	}
 	node, err := scanNode(tx.QueryRow(ctx, `
 		SELECT `+nodeColumns+` FROM file_node
 		WHERE tenant_id=$1 AND id=$2 AND status IN ('trashed','purging') AND trashed_root_id=id
@@ -192,12 +209,15 @@ func (r *Repository) PreparePurge(ctx context.Context, identity drive.Identity, 
 			)
 		  )
 		  AND NOT EXISTS(
-			SELECT 1 FROM file_version outside
+			SELECT 1
+			FROM file_version outside
+			JOIN file_node owner
+			  ON owner.tenant_id=outside.tenant_id AND owner.id=outside.node_id
 			WHERE outside.tenant_id=b.tenant_id AND outside.blob_id=b.id
-			  AND outside.node_id NOT IN (
-				SELECT id FROM file_node WHERE tenant_id=$1 AND trashed_root_id=$2
-			  )
-		  )`, identity.TenantID, nodeID)
+			  AND owner.status<>'purging'
+		  )
+		ORDER BY b.id
+		FOR UPDATE OF b`, identity.TenantID, nodeID)
 	if err != nil {
 		return drive.PurgePlan{}, mapError(err, drive.CodeInternal, "could not identify purge blobs")
 	}

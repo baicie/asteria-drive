@@ -2,14 +2,68 @@ package s3store
 
 import (
 	"context"
+	"errors"
 	"mime"
 	"net/url"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/aws/smithy-go"
 	"github.com/baicie/asteria-drive/internal/drive"
 )
+
+func TestMapErrorClassifiesS3MissingResources(t *testing.T) {
+	tests := []struct {
+		name      string
+		code      string
+		wantCode  drive.ErrorCode
+		retryable bool
+	}{
+		{name: "missing bucket", code: "NoSuchBucket", wantCode: drive.CodeDependencyUnavailable, retryable: true},
+		{name: "missing key", code: "NoSuchKey", wantCode: drive.CodeNotFound},
+		{name: "missing upload", code: "NoSuchUpload", wantCode: drive.CodeNotFound},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			apiErr := &smithy.GenericAPIError{Code: tt.code, Message: "simulated S3 response"}
+			err := mapError(apiErr, "object storage operation failed")
+			if got := drive.CodeOf(err); got != tt.wantCode {
+				t.Fatalf("error code = %q, want %q", got, tt.wantCode)
+			}
+			var domainErr *drive.Error
+			if !errors.As(err, &domainErr) {
+				t.Fatalf("mapped error type = %T, want *drive.Error", err)
+			}
+			if domainErr.Retryable != tt.retryable {
+				t.Fatalf("retryable = %v, want %v", domainErr.Retryable, tt.retryable)
+			}
+		})
+	}
+}
+
+func TestBucketNotFoundClassificationIsScopedToBucketDiscovery(t *testing.T) {
+	missingBucket := &smithy.GenericAPIError{Code: "NoSuchBucket", Message: "simulated S3 response"}
+	if isNotFound(missingBucket) {
+		t.Fatal("NoSuchBucket must not be treated as a missing object or upload")
+	}
+	if !isBucketNotFound(missingBucket) {
+		t.Fatal("NoSuchBucket must trigger the auto-create bucket flow")
+	}
+
+	for _, code := range []string{"NotFound", "404"} {
+		t.Run(code, func(t *testing.T) {
+			err := &smithy.GenericAPIError{Code: code, Message: "simulated HeadBucket response"}
+			if !isBucketNotFound(err) {
+				t.Fatalf("%s must trigger the auto-create bucket flow", code)
+			}
+		})
+	}
+	if isBucketNotFound(&smithy.GenericAPIError{Code: "AccessDenied", Message: "simulated S3 response"}) {
+		t.Fatal("AccessDenied must not trigger the auto-create bucket flow")
+	}
+}
 
 func TestCustomEndpointPresignedDownloadOmitsOptionalChecksumMode(t *testing.T) {
 	provider, err := New(context.Background(), Options{

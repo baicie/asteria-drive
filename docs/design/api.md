@@ -246,13 +246,13 @@ Part 必须严格递增、唯一、数量有界。服务端对正规化清单计
 - 相同清单重试返回 `200` 和同一结果。
 - 不同清单重试返回 `409 idempotency_conflict`。
 
-完成对象后必须 `HEAD`/provider result 校验实际大小和可用 Checksum，再在一个 PostgreSQL 事务中创建 Blob、Node、Version 并提交会话。对象成功但事务失败时保留 `object_completed`，重试不再次创建业务结果。
+完成对象后必须 `HEAD`/provider result 校验实际大小和可用 Checksum，再在一个 PostgreSQL 事务中创建 Blob、Node、Version 并提交会话。对象成功但可重试事务失败时保留 `object_completed`，重试不再次创建业务结果；父目录不可用或名称冲突会持久化为 `failed` 并精确清理对象。
 
 SHA-256 值使用标准 Base64 编码的 32-byte 摘要。后端返回并验证完整摘要时记录 `verified`；不支持 checksum request/response 能力时保留客户端值并记录 `declared`。`ASTERIA_S3_CHECKSUM_HEADERS` 只能在真实后端契约测试通过后开启，SeaweedFS 3.85 参考环境保持关闭。
 
 ### `DELETE /api/v1/uploads/{id}`
 
-幂等取消非提交会话并尽力 Abort Multipart。首次和重复成功都返回 `204`。已提交会话不被取消，返回 `409 invalid_state`。过期维护任务使用同一领域操作。
+幂等取消未完成会话并尽力 Abort Multipart；对已经持久化为 `failed` 且对象曾完成的会话，重复取消会重试精确对象 Delete。首次和重复成功都返回 `204`。`completing`、`object_completed` 和已提交会话不被公开取消，返回 `409 invalid_state`。过期维护任务使用同一领域操作。
 
 ## 10. 下载授权
 
@@ -295,6 +295,7 @@ SHA-256 值使用标准 Base64 编码的 32-byte 摘要。后端返回并验证�
 ## 12. 幂等、并发与限制
 
 - 上传完成以会话 ID + completion digest 强制幂等，是 MUST。
+- 路径和 Body 中格式非法的 UUID 返回 `400 invalid_request`；合法但不存在或跨租户的 UUID 返回 `404 not_found`。
 - 目录/上传创建的 `Idempotency-Key` 是 SHOULD；若尚未实现，客户端只可在明确未收到成功时重新读取/重试并处理 `name_conflict`。
 - PATCH、回收、恢复和清理使用 revision/`If-Match`；格式为带引号的十进制 revision。
 - 默认 JSON Body 1 MiB；完成清单可单独配置但最多 10000 Part。

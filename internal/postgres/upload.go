@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/baicie/asteria-drive/internal/drive"
@@ -229,6 +230,9 @@ func (r *Repository) CommitUpload(ctx context.Context, command drive.CommitUploa
 		return drive.CompleteResult{}, false, mapError(err, drive.CodeInternal, "could not commit upload")
 	}
 	defer tx.Rollback(ctx)
+	if _, err := lockNamespace(ctx, tx, command.Identity.TenantID); err != nil {
+		return drive.CompleteResult{}, false, err
+	}
 	session, err := scanUpload(tx.QueryRow(ctx, `
 		SELECT `+uploadColumns+` FROM upload_session
 		WHERE tenant_id=$1 AND id=$2 FOR UPDATE`, command.Identity.TenantID, command.SessionID))
@@ -251,15 +255,24 @@ func (r *Repository) CommitUpload(ctx context.Context, command drive.CommitUploa
 	if session.Status != drive.UploadObjectCompleted {
 		return drive.CompleteResult{}, false, drive.E(drive.CodeInvalidState, "upload object is not completed")
 	}
-	var parentExists bool
-	if err := tx.QueryRow(ctx, `
-		SELECT EXISTS(SELECT 1 FROM file_node WHERE tenant_id=$1 AND id=$2
-		AND kind='directory' AND status='active' AND trashed_root_id IS NULL)`,
-		command.Identity.TenantID, session.ParentID).Scan(&parentExists); err != nil {
-		return drive.CompleteResult{}, false, mapError(err, drive.CodeInternal, "could not validate upload parent")
+	if _, err := lockActiveDirectory(ctx, tx, command.Identity.TenantID, session.ParentID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return rejectUploadCommit(ctx, tx, session, drive.UploadFailureParentUnavailable, command.Now,
+				drive.E(drive.CodeNotFound, "parent directory was not found"))
+		}
+		return drive.CompleteResult{}, false, mapError(err, drive.CodeInternal, "could not lock upload parent")
 	}
-	if !parentExists {
-		return drive.CompleteResult{}, false, drive.E(drive.CodeNotFound, "parent directory was not found")
+	var nameExists bool
+	if err := tx.QueryRow(ctx, `
+		SELECT EXISTS(SELECT 1 FROM file_node
+		WHERE tenant_id=$1 AND parent_id=$2 AND normalized_name=$3
+		  AND status='active' AND trashed_root_id IS NULL)`,
+		command.Identity.TenantID, session.ParentID, session.NormalizedName).Scan(&nameExists); err != nil {
+		return drive.CompleteResult{}, false, mapError(err, drive.CodeInternal, "could not validate upload name")
+	}
+	if nameExists {
+		return rejectUploadCommit(ctx, tx, session, drive.UploadFailureNameConflict, command.Now,
+			drive.E(drive.CodeNameConflict, "an active item with this name already exists"))
 	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO blob(
@@ -305,6 +318,26 @@ func (r *Repository) CommitUpload(ctx context.Context, command drive.CommitUploa
 		return drive.CompleteResult{}, false, err
 	}
 	return drive.CompleteResult{Upload: session, Node: command.Node, Blob: command.Blob, Version: command.Version}, true, nil
+}
+
+func rejectUploadCommit(
+	ctx context.Context,
+	tx pgx.Tx,
+	session drive.UploadSession,
+	failureCode string,
+	now time.Time,
+	resultErr error,
+) (drive.CompleteResult, bool, error) {
+	if _, err := tx.Exec(ctx, `
+		UPDATE upload_session SET status='failed',failure_code=$4,revision=revision+1,updated_at=$5
+		WHERE tenant_id=$1 AND id=$2 AND completion_digest=$3 AND status='object_completed'`,
+		session.TenantID, session.ID, session.CompletionDigest, failureCode, now); err != nil {
+		return drive.CompleteResult{}, false, mapError(err, drive.CodeInternal, "could not reject upload commit")
+	}
+	if err := commit(tx, ctx); err != nil {
+		return drive.CompleteResult{}, false, err
+	}
+	return drive.CompleteResult{}, false, resultErr
 }
 
 func loadCompleteResult(ctx context.Context, tx pgx.Tx, session drive.UploadSession) (drive.CompleteResult, error) {
