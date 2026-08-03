@@ -160,6 +160,88 @@ func TestRepositoryNamespaceAndUploadContract(t *testing.T) {
 	}
 }
 
+func TestRepositoryFailUploadCompletionContract(t *testing.T) {
+	repository := integrationRepository(t)
+	ctx := context.Background()
+	now := time.Date(2026, 8, 2, 12, 30, 0, 0, time.UTC)
+	identity := drive.Identity{TenantID: testID(301), PrincipalID: testID(303)}
+	other := drive.Identity{TenantID: testID(304), PrincipalID: testID(306)}
+	tenant, err := repository.EnsureTenant(ctx, drive.TenantSeed{
+		TenantID: identity.TenantID, DisplayName: "Tenant A", RootNodeID: testID(302), Now: now,
+	})
+	assertNoError(t, err)
+	_, err = repository.EnsureTenant(ctx, drive.TenantSeed{
+		TenantID: other.TenantID, DisplayName: "Tenant B", RootNodeID: testID(305), Now: now,
+	})
+	assertNoError(t, err)
+
+	failingSession := newUpload(testID(310), identity, tenant.RootNodeID, "failing.bin", "failing.bin", now)
+	_, err = repository.CreateUpload(ctx, drive.CreateUploadCommand{Session: failingSession})
+	assertNoError(t, err)
+	const failingDigest = "digest-failing"
+	completing := advanceUpload(t, repository, identity, failingSession.ID, failingDigest, now.Add(time.Minute))
+
+	_, err = repository.FailUploadCompletion(ctx, other, failingSession.ID, failingDigest, "object_size_mismatch", now.Add(2*time.Minute))
+	assertCode(t, err, drive.CodeNotFound)
+	unchanged, err := repository.Upload(ctx, identity, failingSession.ID)
+	assertNoError(t, err)
+	if unchanged.Status != drive.UploadCompleting || unchanged.Revision != completing.Revision {
+		t.Fatalf("cross-tenant failure changed upload: %+v", unchanged)
+	}
+
+	failedAt := now.Add(3 * time.Minute)
+	failed, err := repository.FailUploadCompletion(ctx, identity, failingSession.ID, failingDigest, "object_size_mismatch", failedAt)
+	assertNoError(t, err)
+	if failed.Status != drive.UploadFailed || failed.FailureCode != "object_size_mismatch" || failed.CompletionDigest != failingDigest {
+		t.Fatalf("unexpected failed upload: %+v", failed)
+	}
+	if failed.Revision != completing.Revision+1 || !failed.UpdatedAt.Equal(failedAt) {
+		t.Fatalf("failed upload metadata was not advanced once: completing=%+v failed=%+v", completing, failed)
+	}
+	persisted, err := repository.Upload(ctx, identity, failingSession.ID)
+	assertNoError(t, err)
+	if persisted.Status != drive.UploadFailed || persisted.FailureCode != failed.FailureCode {
+		t.Fatalf("failure state was not persisted: %+v", persisted)
+	}
+
+	retry, err := repository.FailUploadCompletion(ctx, identity, failingSession.ID, failingDigest, "ignored_retry_code", now.Add(4*time.Minute))
+	assertNoError(t, err)
+	if retry.Status != drive.UploadFailed || retry.FailureCode != failed.FailureCode || retry.Revision != failed.Revision || !retry.UpdatedAt.Equal(failed.UpdatedAt) {
+		t.Fatalf("same-digest retry was not idempotent: first=%+v retry=%+v", failed, retry)
+	}
+	_, err = repository.FailUploadCompletion(ctx, identity, failingSession.ID, "different-digest", "object_size_mismatch", now.Add(5*time.Minute))
+	assertCode(t, err, drive.CodeIdempotencyConflict)
+
+	committedSession := newUpload(testID(320), identity, tenant.RootNodeID, "committed.bin", "committed.bin", now)
+	_, err = repository.CreateUpload(ctx, drive.CreateUploadCommand{Session: committedSession})
+	assertNoError(t, err)
+	const committedDigest = "digest-committed"
+	advanceUpload(t, repository, identity, committedSession.ID, committedDigest, now.Add(6*time.Minute))
+	objectCompleted, err := repository.MarkObjectCompleted(ctx, identity, committedSession.ID, drive.ObjectInfo{}, now.Add(7*time.Minute))
+	assertNoError(t, err)
+	_, err = repository.FailUploadCompletion(ctx, identity, committedSession.ID, committedDigest, "object_size_mismatch", now.Add(8*time.Minute))
+	assertCode(t, err, drive.CodeInvalidState)
+	afterRejectedFailure, err := repository.Upload(ctx, identity, committedSession.ID)
+	assertNoError(t, err)
+	if afterRejectedFailure.Status != drive.UploadObjectCompleted || afterRejectedFailure.Revision != objectCompleted.Revision {
+		t.Fatalf("failed transition changed object-completed upload: %+v", afterRejectedFailure)
+	}
+
+	command := commitCommand(committedSession, identity, testID(321), testID(322), testID(323), committedDigest, now.Add(9*time.Minute))
+	result, created, err := repository.CommitUpload(ctx, command)
+	assertNoError(t, err)
+	if !created || result.Upload.Status != drive.UploadCommitted {
+		t.Fatalf("unexpected committed upload: created=%v result=%+v", created, result)
+	}
+	_, err = repository.FailUploadCompletion(ctx, identity, committedSession.ID, committedDigest, "object_size_mismatch", now.Add(10*time.Minute))
+	assertCode(t, err, drive.CodeInvalidState)
+	afterCommittedFailure, err := repository.Upload(ctx, identity, committedSession.ID)
+	assertNoError(t, err)
+	if afterCommittedFailure.Status != drive.UploadCommitted || afterCommittedFailure.Revision != result.Upload.Revision {
+		t.Fatalf("failed transition changed committed upload: %+v", afterCommittedFailure)
+	}
+}
+
 func TestRepositoryCommitRollbackAndPurgeContract(t *testing.T) {
 	repository := integrationRepository(t)
 	ctx := context.Background()

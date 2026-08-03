@@ -1,6 +1,6 @@
 # 后端 MVP 验收标准
 
-> 状态：验收记录（2026-08-02）。证据见 [implementation-log.md](implementation-log.md) 与
+> 状态：验收记录（2026-08-03）。证据见 [implementation-log.md](implementation-log.md) 与
 > [evidence/p4-live-baseline.md](evidence/p4-live-baseline.md)。未标记通过的条目不能视为完成。
 
 ## 1. 验收原则
@@ -34,25 +34,25 @@
 | AC-030 | 创建上传会话 | 通过 | 内存与 live 创建会话 | P2 |
 | AC-031 | 分片签名约束 | 通过 | 签名 API + S3 契约 | P2/P4 |
 | AC-032 | 文件字节绕过控制面 | 通过 | live PUT 直传对象存储；API 仅 JSON | P2/P4 |
-| AC-033 | 上传完成正确性 | 通过 | complete 测试与 live 完成 | P2/P4 |
+| AC-033 | 上传完成正确性 | 通过 | complete 测试、checksum/size 校验与 live 完成 | P2/P4 |
 | AC-034 | 完成幂等与并发 | 通过 | `TestCompleteUploadReconcilesUnknownResultAndConcurrentRetries` | P2 |
-| AC-035 | 跨系统失败收敛 | 通过 | complete/abort/purge 故障注入测试 | P2 |
+| AC-035 | 跨系统失败收敛 | 通过 | ADR-0011、`FailUploadCompletion` 与 complete/abort/purge 故障注入 | P2/P4 |
 | AC-036 | 取消与过期 | 通过 | abort/expired 测试；live 幂等 DELETE | P2/P4 |
 | AC-037 | 校验和诚实性 | 通过 | declared/unavailable checksum 测试 | P2/P4 |
 | AC-040 | 下载授权 | 通过 | 内存与 live 授权/拒绝路径 | P3/P4 |
 | AC-041 | 数据面 Range | 通过 | `TestProviderSeaweedFSContract` | P4 |
-| AC-050 | 回收可见性 | 通过 | 垂直切片与 live recycle | P3 |
-| AC-051 | 恢复与冲突 | 通过 | live `restore_conflict` | P3 |
-| AC-052 | 永久清理 | 通过 | purge 重试 + live 对象删除 | P3/P4 |
+| AC-050 | 回收可见性 | 通过 | 垂直切片、子树（目录/文件/下载）契约与 live recycle | P3/P4 |
+| AC-051 | 恢复与冲突 | 通过 | parent/child 恢复与 live `restore_conflict` | P3/P4 |
+| AC-052 | 永久清理 | 通过 | purge 重试 + live 对象删除 + 子树回收清理 | P3/P4 |
 | AC-053 | 保留引用保护 | 通过 | Repository purge 契约 | P3 |
 | AC-060 | PostgreSQL 迁移与持久性 | 通过 | 迁移幂等 + live 重启读取 | P1/P4 |
-| AC-061 | fake/真实契约一致 | 通过 | memory + postgres/s3store 契约套件 | P4 |
+| AC-061 | fake/真实契约一致 | 通过 | memory + postgres/s3store + completion failure 契约套件 | P4 |
 | AC-062 | SeaweedFS 端到端 | 通过 | `TestLiveHTTPPostgresSeaweedFSEndToEnd` | P4 |
 | AC-070 | 日志与 Secret | 通过 | 请求日志脱敏与依赖错误不泄漏 | P4 |
 | AC-071 | 请求限制 | 通过 | `TestRequestBodyLimitsAndMediaType` | P2/P4 |
-| AC-072 | 优雅停止 | 通过 | `TestGracefulShutdownStopsListener` | P4 |
+| AC-072 | 优雅停止 | 通过 | `TestGracefulShutdownStopsListener` + `TestGracefulShutdownDrainsInFlightRequest` | P4 |
 | AC-080 | 暂定 SLO（MVP MUST 子集） | 通过 | ADR-0010：烟雾基线 + 证据归档；全表规模化为延期 SHOULD | P4 |
-| AC-081 | 并发会话基线 | 通过 | live 100 会话 p95≈257ms | P4 |
+| AC-081 | 并发会话基线 | 通过 | live 100 会话 p95=122.3139ms | P4 |
 | AC-090 | 文档与决策可追溯 | 通过 | vision/process/mvp/adr/openapi 与 gates | P4 |
 | AC-091 | 范围回归 | 通过 | 无 Redis/Kafka/OpenSearch 运行依赖；SHOULD 延期已记录 | P4 |
 
@@ -77,6 +77,8 @@
 - [x] 跨租户、幂等、故障注入、回收恢复与清理
 - [x] 日志脱敏与 production 拒绝 trusted-dev
 - [x] MVP MUST 性能子集与 100 并发基线
+- [x] ADR-0011 上传完成确定性失败与未知结果分流
+- [x] Linux race（Go 1.24.4 + GCC 容器）
 - [x] OpenAPI/配置/运行/迁移文档与 ADR
 - [x] SHOULD 延期列表
 
@@ -121,6 +123,7 @@
 | 创建 `Idempotency-Key` | ADR-0008 分阶段 | 客户端需自行处理重试冲突 | M2 / 可靠性迭代 |
 | 同进程自动维护循环（过期上传/回收到期） | ADR-0008 | 依赖手动清理或测试触发 | M2 Worker 前 |
 | Prometheus 指标 | 时间盒 | 可观测性不足 | M2 |
+| fuzz/property suite | MVP 时间盒 | 边界组合仍依赖定向契约测试 | M2 可靠性迭代 |
 | scope §9 百万节点/长时全表 SLO | ADR-0010；无专用压测夹具 | 规模性能未知 | 性能环境就绪后 |
 | OIDC、分享、配额、Redis、Outbox、搜索、预览 | NOT NOW / 愿景 Phase | 无 | M2+ / Phase 2–4 |
 

@@ -145,6 +145,109 @@ func TestGracefulShutdownStopsListener(t *testing.T) {
 	}
 }
 
+func TestGracefulShutdownDrainsInFlightRequest(t *testing.T) {
+	api := newTestAPI(t)
+	handlerStarted := make(chan struct{})
+	releaseHandler := make(chan struct{})
+	released := false
+	defer func() {
+		if !released {
+			close(releaseHandler)
+		}
+	}()
+	api.server.httpServer.Handler = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		close(handlerStarted)
+		<-releaseHandler
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	connectionActive := make(chan struct{}, 1)
+	api.server.httpServer.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateActive {
+			select {
+			case connectionActive <- struct{}{}:
+			default:
+			}
+		}
+	}
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	serveDone := make(chan error, 1)
+	go func() {
+		serveDone <- api.server.httpServer.Serve(listener)
+	}()
+
+	type responseResult struct {
+		response *http.Response
+		err      error
+	}
+	responseDone := make(chan responseResult, 1)
+	client := &http.Client{Timeout: 5 * time.Second}
+	go func() {
+		response, err := client.Get("http://" + listener.Addr().String() + "/in-flight")
+		responseDone <- responseResult{response: response, err: err}
+	}()
+
+	select {
+	case <-connectionActive:
+	case <-time.After(2 * time.Second):
+		t.Fatal("request connection did not become active")
+	}
+	select {
+	case <-handlerStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("request handler did not start")
+	}
+
+	shutdownDone := make(chan error, 1)
+	shutdownContext, cancelShutdown := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelShutdown()
+	go func() {
+		shutdownDone <- api.server.Shutdown(shutdownContext)
+	}()
+
+	select {
+	case err := <-serveDone:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			t.Fatalf("serve after shutdown: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("shutdown did not stop the listener")
+	}
+	select {
+	case err := <-shutdownDone:
+		t.Fatalf("shutdown returned before the in-flight request completed: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(releaseHandler)
+	released = true
+	select {
+	case result := <-responseDone:
+		if result.err != nil {
+			t.Fatalf("in-flight request: %v", result.err)
+		}
+		defer result.response.Body.Close()
+		if result.response.StatusCode != http.StatusNoContent {
+			t.Fatalf("in-flight request status=%d, want %d", result.response.StatusCode, http.StatusNoContent)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("in-flight request did not complete after the handler was released")
+	}
+	select {
+	case err := <-shutdownDone:
+		if err != nil {
+			t.Fatalf("shutdown: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("shutdown did not complete after the in-flight request finished")
+	}
+}
+
 func TestControlPlaneLatencySmokeBaseline(t *testing.T) {
 	api := newTestAPI(t)
 	tenant := decodeData[tenantResponse](t, api.request(t, http.MethodGet, "/api/v1/tenant", testTokenA, nil, nil))

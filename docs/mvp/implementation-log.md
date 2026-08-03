@@ -103,7 +103,9 @@ go test -v ./internal/postgres ./internal/s3store
 仍待验证：完整服务端端到端、重启持久性、竞态、跨系统故障注入、日志 Secret 扫描、生产模式负向
 启动、SLO、100 并发会话和完整 Definition of Done。
 
-## 2026-08-02 - P4 真实依赖与发布门槛
+## 2026-08-02 - P4 真实依赖与发布门槛（历史中间快照）
+
+> 本节保留当日测量和当时的待验证状态；后续收尾结果以 2026-08-03 章节为准。
 
 实现/加固：
 
@@ -132,3 +134,23 @@ go test -v -count=1 ./internal/postgres ./internal/s3store ./internal/server -ti
 - Definition of Done 工程项已勾选；合入 `main` 前建议人工 PR 签核。
 
 SHOULD 延期见 [acceptance.md](./acceptance.md) 第 7 节。
+
+## 2026-08-03 - P4 收尾验收与 ADR-0011
+
+本节是前述“仍待验证”清单的关闭记录；旧章节保留为当时的历史状态。
+
+- Go `1.23.12 windows/amd64`：`go test -count=1 ./... -timeout 10m`、`go vet ./...`、
+  `go build ./...` 通过；`git diff --check` 和 `docker compose config --quiet` 通过。
+- Linux race：在 Debian 13 容器中临时安装 Go `1.24.4` 与 GCC 后执行 `go test -race ./...`，全部通过。
+  官方 `golang:1.23` 镜像因本机 Docker Hub 网络不可达未使用，race 仍在 Linux 工具链上完成。
+- OpenAPI：`pnpm --package='@redocly/cli@latest' dlx redocly lint docs/openapi.yaml` 通过，保留 3 个既有 warning
+  （license 缺失、`healthz`/`readyz` 未添加虚构 4xx）。
+- 真实依赖：PostgreSQL `17.5-alpine` 与 SeaweedFS `3.85` healthy；`TestLiveHTTPPostgresSeaweedFSEndToEnd`、
+  Range、重启持久性、跨租户、恢复冲突、清理和 100 会话基线全部通过。
+- 100 会话 create 基线：`p50=101.7472ms p95=122.3139ms p99=123.5448ms max=123.857ms`。
+- ADR-0011 落地：非法 Part 清单在状态变化前拒绝；确定性存储拒绝、大小不符和 verified checksum 不符分别持久化
+  `FAILED` 与 failure code，并进行精确对象/Multipart 清理；超时、连接错误和未知结果继续保留 `COMPLETING`。
+- 新增内存/PostgreSQL `FailUploadCompletion` 契约、并发同名创建、目录子树回收/恢复、恢复冲突和真实在途请求优雅停止测试。
+
+仍延期的 SHOULD：`Idempotency-Key`、自动维护/孤儿对账、Prometheus、fuzz/property suite，以及百万节点长时 SLO；
+原因、风险和后续路线见 [acceptance.md](./acceptance.md) 第 7 节。

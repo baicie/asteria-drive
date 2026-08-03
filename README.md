@@ -5,7 +5,7 @@ Asteria Drive 是一个面向个人网盘和企业文件平台的开源控制面
 在客户端与 S3-compatible 数据面之间直接传输。
 
 > 当前状态：后端 MVP 工程验收候选（`mvp/p4-integration`）。PostgreSQL + SeaweedFS 主路径、
-> 故障注入、100 并发会话与 ADR-0010 MUST 性能子集已有可复现证据。认证仅支持 `trusted-dev`，
+> 故障注入、ADR-0011 上传完成失败分流、100 并发会话与 ADR-0010 MUST 性能子集已有可复现证据（Go 1.23.12）。认证仅支持 `trusted-dev`，
 > 进程会拒绝以该模式在 `production` 环境启动。本仓库当前版本只能用于隔离的本地开发和验收环境，
 > 不能直接暴露到公网或描述为生产就绪。百万节点长时 SLO 为 SHOULD 延期。
 
@@ -141,6 +141,9 @@ go vet ./...
 go build ./...
 git diff --check
 ```
+
+Linux race 也已在 Debian 13 容器中用 Go 1.24.4 + GCC 验证；完整结果、真实依赖地址和 OpenAPI lint
+见 [P4 证据页](docs/mvp/evidence/p4-live-baseline.md)。
 
 不带外部测试环境变量时，快速测试使用内存 fake。真实 PostgreSQL Repository、SeaweedFS Multipart、
 签名下载和 Range 使用显式环境门禁：

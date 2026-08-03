@@ -235,6 +235,33 @@ func (r *Repository) BeginComplete(_ context.Context, identity drive.Identity, i
 	return session, nil
 }
 
+func (r *Repository) FailUploadCompletion(_ context.Context, identity drive.Identity, id, digest, failureCode string, now time.Time) (drive.UploadSession, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if failureCode == "" {
+		return drive.UploadSession{}, drive.E(drive.CodeInvalidRequest, "upload failure code is required")
+	}
+	session, err := r.uploadFor(identity, id)
+	if err != nil {
+		return drive.UploadSession{}, err
+	}
+	if session.CompletionDigest != digest {
+		return drive.UploadSession{}, drive.E(drive.CodeIdempotencyConflict, "completion payload differs from the first request")
+	}
+	if session.Status == drive.UploadFailed {
+		return session, nil
+	}
+	if session.Status != drive.UploadCompleting {
+		return drive.UploadSession{}, drive.E(drive.CodeInvalidState, "upload completion cannot transition to failed")
+	}
+	session.Status = drive.UploadFailed
+	session.FailureCode = failureCode
+	session.Revision++
+	session.UpdatedAt = now
+	r.uploads[id] = session
+	return session, nil
+}
+
 func (r *Repository) MarkObjectCompleted(_ context.Context, identity drive.Identity, id string, _ drive.ObjectInfo, now time.Time) (drive.UploadSession, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

@@ -2,6 +2,40 @@ package drive
 
 import "testing"
 
+func TestValidateCompletedParts(t *testing.T) {
+	valid := []CompletedPart{{PartNumber: 1, ETag: `"etag-1"`}, {PartNumber: 2, ETag: `"etag-2"`}}
+	if err := validateParts(valid); err != nil {
+		t.Fatalf("valid parts: %v", err)
+	}
+	tests := []struct {
+		name  string
+		parts []CompletedPart
+	}{
+		{name: "empty"},
+		{name: "duplicate", parts: []CompletedPart{{PartNumber: 1, ETag: `"a"`}, {PartNumber: 1, ETag: `"b"`}}},
+		{name: "descending", parts: []CompletedPart{{PartNumber: 2, ETag: `"a"`}, {PartNumber: 1, ETag: `"b"`}}},
+		{name: "part zero", parts: []CompletedPart{{PartNumber: 0, ETag: `"a"`}}},
+		{name: "part over limit", parts: []CompletedPart{{PartNumber: 10001, ETag: `"a"`}}},
+		{name: "missing etag", parts: []CompletedPart{{PartNumber: 1}}},
+		{name: "invalid checksum", parts: []CompletedPart{{PartNumber: 1, ETag: `"a"`, Checksum: Checksum{Algorithm: "sha256", Value: "invalid"}}}},
+	}
+	tooMany := make([]CompletedPart, 10001)
+	for index := range tooMany {
+		tooMany[index] = CompletedPart{PartNumber: index + 1, ETag: `"etag"`}
+	}
+	tests = append(tests, struct {
+		name  string
+		parts []CompletedPart
+	}{name: "too many", parts: tooMany})
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if err := validateParts(test.parts); CodeOf(err) != CodeInvalidRequest {
+				t.Fatalf("code=%s err=%v, want invalid_request", CodeOf(err), err)
+			}
+		})
+	}
+}
+
 func TestNormalizeName(t *testing.T) {
 	tests := []struct {
 		input      string

@@ -61,6 +61,7 @@ type Repository interface {
 	Upload(context.Context, Identity, string) (UploadSession, error)
 	MarkUploading(context.Context, Identity, string, time.Time) (UploadSession, error)
 	BeginComplete(context.Context, Identity, string, string, []CompletedPart, time.Time) (UploadSession, error)
+	FailUploadCompletion(context.Context, Identity, string, string, string, time.Time) (UploadSession, error)
 	MarkObjectCompleted(context.Context, Identity, string, ObjectInfo, time.Time) (UploadSession, error)
 	CommitUpload(context.Context, CommitUploadCommand) (CompleteResult, bool, error)
 	AbortUpload(context.Context, Identity, string, UploadStatus, time.Time) (UploadSession, error)

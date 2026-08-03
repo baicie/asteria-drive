@@ -149,6 +149,46 @@ func (r *Repository) BeginComplete(ctx context.Context, identity drive.Identity,
 	return session, nil
 }
 
+func (r *Repository) FailUploadCompletion(ctx context.Context, identity drive.Identity, id, digest, failureCode string, now time.Time) (drive.UploadSession, error) {
+	if failureCode == "" {
+		return drive.UploadSession{}, drive.E(drive.CodeInvalidRequest, "upload failure code is required")
+	}
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return drive.UploadSession{}, mapError(err, drive.CodeInternal, "could not fail upload completion")
+	}
+	defer tx.Rollback(ctx)
+	session, err := scanUpload(tx.QueryRow(ctx, `
+		SELECT `+uploadColumns+` FROM upload_session
+		WHERE tenant_id=$1 AND id=$2 FOR UPDATE`, identity.TenantID, id))
+	if err != nil {
+		return drive.UploadSession{}, mapError(err, drive.CodeInternal, "could not read upload")
+	}
+	if session.CompletionDigest != digest {
+		return drive.UploadSession{}, drive.E(drive.CodeIdempotencyConflict, "completion payload differs from the first request")
+	}
+	if session.Status == drive.UploadFailed {
+		if err := commit(tx, ctx); err != nil {
+			return drive.UploadSession{}, err
+		}
+		return session, nil
+	}
+	if session.Status != drive.UploadCompleting {
+		return drive.UploadSession{}, drive.E(drive.CodeInvalidState, "upload completion cannot transition to failed")
+	}
+	session, err = scanUpload(tx.QueryRow(ctx, `
+		UPDATE upload_session SET status='failed',failure_code=$4,revision=revision+1,updated_at=$5
+		WHERE tenant_id=$1 AND id=$2 AND completion_digest=$3
+		RETURNING `+uploadColumns, identity.TenantID, id, digest, failureCode, now))
+	if err != nil {
+		return drive.UploadSession{}, mapError(err, drive.CodeInternal, "could not fail upload completion")
+	}
+	if err := commit(tx, ctx); err != nil {
+		return drive.UploadSession{}, err
+	}
+	return session, nil
+}
+
 func (r *Repository) MarkObjectCompleted(ctx context.Context, identity drive.Identity, id string, _ drive.ObjectInfo, now time.Time) (drive.UploadSession, error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {

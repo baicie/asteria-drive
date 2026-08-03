@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -42,6 +43,23 @@ type contextAwareAbortStorage struct {
 }
 
 type unavailableChecksumStorage struct{ *memory.Storage }
+
+type mismatchedVerifiedChecksumStorage struct{ *memory.Storage }
+
+func (s *mismatchedVerifiedChecksumStorage) CreateMultipart(ctx context.Context, key, mimeType string, _ drive.Checksum) (string, error) {
+	return s.Storage.CreateMultipart(ctx, key, mimeType, drive.Checksum{})
+}
+
+func (s *mismatchedVerifiedChecksumStorage) StatObject(ctx context.Context, key string) (drive.ObjectInfo, error) {
+	object, err := s.Storage.StatObject(ctx, key)
+	if err != nil {
+		return drive.ObjectInfo{}, err
+	}
+	digest := sha256.Sum256([]byte("different object"))
+	object.Checksum = drive.Checksum{Algorithm: "sha256", Value: base64.StdEncoding.EncodeToString(digest[:])}
+	object.ChecksumStatus = drive.ChecksumVerified
+	return object, nil
+}
 
 func (s *unavailableChecksumStorage) StatObject(ctx context.Context, key string) (drive.ObjectInfo, error) {
 	object, err := s.Storage.StatObject(ctx, key)
@@ -358,6 +376,189 @@ func TestCompleteUploadRetainsDeclaredChecksumWithoutClaimingVerification(t *tes
 	if blob.ChecksumStatus != drive.ChecksumDeclared || blob.Checksum != declared {
 		t.Fatalf("blob checksum=%+v status=%s, want declared %+v", blob.Checksum, blob.ChecksumStatus, declared)
 	}
+}
+
+func TestCompleteUploadPersistsVerifiedChecksum(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	repository := memory.NewRepository()
+	storage := memory.NewStorage("verified-checksum-test")
+	service := completionService(t, repository, storage, "verified-checksum-cursor-key-at-least-32-bytes")
+	identity := drive.Identity{
+		TenantID: "77777777-7777-4777-8777-777777777777", PrincipalID: "11111111-aaaa-4aaa-8aaa-111111111111",
+	}
+	tenant, err := service.EnsureTenant(ctx, identity.TenantID, "Verified checksum test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := []byte("verified checksum")
+	digest := sha256.Sum256(body)
+	declared := drive.Checksum{Algorithm: "sha256", Value: base64.StdEncoding.EncodeToString(digest[:])}
+	upload, err := service.CreateUpload(ctx, identity, drive.CreateUploadInput{
+		ParentID: tenant.RootNodeID, Name: "verified.bin", Size: int64(len(body)),
+		MimeType: "application/octet-stream", Checksum: declared,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	part, err := storage.PutPart(upload.StorageUploadID, 1, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.CompleteUpload(ctx, identity, upload.ID, []drive.CompletedPart{part})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, blob, err := repository.DownloadBlob(ctx, identity, result.Node.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if blob.ChecksumStatus != drive.ChecksumVerified || blob.Checksum != declared {
+		t.Fatalf("blob checksum=%+v status=%s, want verified %+v", blob.Checksum, blob.ChecksumStatus, declared)
+	}
+}
+
+func TestCompleteUploadDeterministicStorageRejectionFailsAndAborts(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	repository := memory.NewRepository()
+	storage := memory.NewStorage("rejected-completion-test")
+	service := completionService(t, repository, storage, "rejected-completion-cursor-key-at-least-32-bytes")
+	identity := drive.Identity{
+		TenantID: "88888888-8888-4888-8888-888888888888", PrincipalID: "22222222-aaaa-4aaa-8aaa-222222222222",
+	}
+	tenant, err := service.EnsureTenant(ctx, identity.TenantID, "Rejected completion test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := []byte("bad etag")
+	upload, err := service.CreateUpload(ctx, identity, drive.CreateUploadInput{
+		ParentID: tenant.RootNodeID, Name: "rejected.bin", Size: int64(len(body)), MimeType: "application/octet-stream",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	part, err := storage.PutPart(upload.StorageUploadID, 1, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrong := part
+	wrong.ETag = `"wrong"`
+	if _, err := service.CompleteUpload(ctx, identity, upload.ID, []drive.CompletedPart{wrong}); drive.CodeOf(err) != drive.CodeInvalidRequest {
+		t.Fatalf("completion code=%s err=%v, want invalid_request", drive.CodeOf(err), err)
+	}
+	failed, err := service.Upload(ctx, identity, upload.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if failed.Status != drive.UploadFailed || failed.FailureCode != "storage_rejected" {
+		t.Fatalf("failed session=%+v", failed)
+	}
+	if _, err := storage.SignUploadPart(ctx, upload.ObjectKey, upload.StorageUploadID, 1, drive.Checksum{}, time.Minute); drive.CodeOf(err) != drive.CodeNotFound {
+		t.Fatalf("rejected multipart was not aborted: code=%s err=%v", drive.CodeOf(err), err)
+	}
+	if _, err := service.CompleteUpload(ctx, identity, upload.ID, []drive.CompletedPart{wrong}); drive.CodeOf(err) != drive.CodeInvalidState {
+		t.Fatalf("same failed completion code=%s err=%v, want invalid_state", drive.CodeOf(err), err)
+	}
+	if _, err := service.CompleteUpload(ctx, identity, upload.ID, []drive.CompletedPart{part}); drive.CodeOf(err) != drive.CodeIdempotencyConflict {
+		t.Fatalf("changed failed completion code=%s err=%v, want idempotency_conflict", drive.CodeOf(err), err)
+	}
+	page, err := service.ListChildren(ctx, identity, tenant.RootNodeID, "", 50)
+	if err != nil || len(page.Items) != 0 {
+		t.Fatalf("failed completion became visible: items=%+v err=%v", page.Items, err)
+	}
+}
+
+func TestCompleteUploadValidationFailureDeletesUncommittedObject(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	tests := []struct {
+		name         string
+		storage      func() drive.StorageProvider
+		expectedSize int64
+		checksum     func([]byte) drive.Checksum
+		failureCode  string
+	}{
+		{
+			name: "size mismatch", storage: func() drive.StorageProvider { return memory.NewStorage("size-mismatch-test") },
+			expectedSize: 99, checksum: func([]byte) drive.Checksum { return drive.Checksum{} }, failureCode: "size_mismatch",
+		},
+		{
+			name: "verified checksum mismatch", storage: func() drive.StorageProvider {
+				return &mismatchedVerifiedChecksumStorage{Storage: memory.NewStorage("checksum-mismatch-test")}
+			},
+			expectedSize: 0, checksum: func(body []byte) drive.Checksum {
+				digest := sha256.Sum256(body)
+				return drive.Checksum{Algorithm: "sha256", Value: base64.StdEncoding.EncodeToString(digest[:])}
+			}, failureCode: "checksum_mismatch",
+		},
+	}
+	for index, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			storage := test.storage()
+			var baseStorage *memory.Storage
+			switch value := storage.(type) {
+			case *memory.Storage:
+				baseStorage = value
+			case *mismatchedVerifiedChecksumStorage:
+				baseStorage = value.Storage
+			default:
+				t.Fatalf("unexpected storage type %T", storage)
+			}
+			repository := memory.NewRepository()
+			service := completionService(t, repository, storage, "validation-failure-cursor-key-at-least-32-bytes")
+			identity := drive.Identity{
+				TenantID:    fmt.Sprintf("99999999-9999-4999-8999-%012d", index+1),
+				PrincipalID: fmt.Sprintf("33333333-aaaa-4aaa-8aaa-%012d", index+1),
+			}
+			tenant, err := service.EnsureTenant(ctx, identity.TenantID, "Validation failure test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			body := []byte("completed but invalid")
+			expectedSize := test.expectedSize
+			if expectedSize == 0 {
+				expectedSize = int64(len(body))
+			}
+			upload, err := service.CreateUpload(ctx, identity, drive.CreateUploadInput{
+				ParentID: tenant.RootNodeID, Name: "invalid.bin", Size: expectedSize,
+				MimeType: "application/octet-stream", Checksum: test.checksum(body),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			part, err := baseStorage.PutPart(upload.StorageUploadID, 1, body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := service.CompleteUpload(ctx, identity, upload.ID, []drive.CompletedPart{part}); drive.CodeOf(err) != drive.CodeInvalidRequest {
+				t.Fatalf("completion code=%s err=%v, want invalid_request", drive.CodeOf(err), err)
+			}
+			failed, err := service.Upload(ctx, identity, upload.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if failed.Status != drive.UploadFailed || failed.FailureCode != test.failureCode {
+				t.Fatalf("failed session=%+v", failed)
+			}
+			if _, _, exists := baseStorage.Object(upload.ObjectKey); exists {
+				t.Fatal("invalid completed object was not deleted")
+			}
+		})
+	}
+}
+
+func completionService(t *testing.T, repository drive.Repository, storage drive.StorageProvider, cursorKey string) *drive.Service {
+	t.Helper()
+	cursor, err := drive.NewCursorCodec([]byte(cursorKey))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := drive.NewService(drive.ServiceOptions{Repository: repository, Storage: storage, Cursor: cursor})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return service
 }
 
 func TestPurgeRemainsInvisibleAndRetriesObjectDeletion(t *testing.T) {

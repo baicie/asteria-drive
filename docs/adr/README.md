@@ -16,6 +16,7 @@
 | [0008](0008-mvp-staged-reliability-boundary.md) | MVP 创建幂等与维护任务的分阶段交付边界 | Accepted |
 | [0009](0009-independent-nested-recycle-roots.md) | 嵌套回收项保持独立回收根 | Accepted |
 | [0010](0010-mvp-slo-measurement-boundary.md) | MVP 暂定 SLO 测量分阶段边界 | Accepted |
+| [0011](0011-deterministic-upload-completion-failure.md) | 上传完成的确定性失败与未知结果分流 | Accepted |
 
 ## Conventions
 

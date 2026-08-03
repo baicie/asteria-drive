@@ -6,7 +6,8 @@
 
 > 实施注记（2026-08-02）：完成请求的会话 ID + completion digest 幂等已经进入候选实现；创建请求
 > `Idempotency-Key` 和自动过期/GC 仍为 SHOULD，阶段边界由
-> [ADR-0008](0008-mvp-staged-reliability-boundary.md) 修订。
+> [ADR-0008](0008-mvp-staged-reliability-boundary.md) 修订。确定性完成失败与未知结果的分流由
+> [ADR-0011](0011-deterministic-upload-completion-failure.md) 补充。
 
 ## Context
 

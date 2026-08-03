@@ -274,18 +274,41 @@ func (s *Service) CompleteUpload(ctx context.Context, identity Identity, uploadI
 		object, err = s.storage.StatObject(ctx, session.ObjectKey)
 	} else {
 		_, completeErr := s.storage.CompleteMultipart(ctx, session.ObjectKey, session.StorageUploadID, parts)
-		object, err = s.storage.StatObject(ctx, session.ObjectKey)
-		if err != nil && completeErr != nil {
-			err = completeErr
+		var statErr error
+		object, statErr = s.storage.StatObject(ctx, session.ObjectKey)
+		if statErr != nil {
+			mappedStat := mapStorageError(statErr)
+			if completeErr == nil {
+				return CompleteOutput{}, Retryable(CodeDependencyUnavailable, "completed object is not yet readable", statErr)
+			}
+			mappedComplete := mapStorageError(completeErr)
+			if CodeOf(mappedComplete) == CodeInvalidRequest && CodeOf(mappedStat) == CodeNotFound {
+				if failErr := s.failUploadCompletion(ctx, identity, session, digest, "storage_rejected", false); failErr != nil {
+					return CompleteOutput{}, failErr
+				}
+				return CompleteOutput{}, mappedComplete
+			}
+			if CodeOf(mappedStat) == CodeDependencyUnavailable {
+				return CompleteOutput{}, mappedStat
+			}
+			return CompleteOutput{}, mappedComplete
 		}
 	}
 	if err != nil {
 		return CompleteOutput{}, mapStorageError(err)
 	}
 	if err := normalizeObjectChecksum(&object, session.DeclaredChecksum); err != nil {
+		if CodeOf(err) == CodeInvalidRequest {
+			if failErr := s.failUploadCompletion(ctx, identity, session, digest, "checksum_mismatch", true); failErr != nil {
+				return CompleteOutput{}, failErr
+			}
+		}
 		return CompleteOutput{}, err
 	}
 	if object.Size != session.ExpectedSize {
+		if failErr := s.failUploadCompletion(ctx, identity, session, digest, "size_mismatch", true); failErr != nil {
+			return CompleteOutput{}, failErr
+		}
 		return CompleteOutput{}, E(CodeInvalidRequest, "completed object size does not match the declared size")
 	}
 	if session.Status != UploadObjectCompleted {
@@ -328,6 +351,20 @@ func (s *Service) CompleteUpload(ctx context.Context, identity Identity, uploadI
 		return CompleteOutput{}, err
 	}
 	return CompleteOutput{Upload: result.Upload, Node: result.Node, First: first}, nil
+}
+
+func (s *Service) failUploadCompletion(ctx context.Context, identity Identity, session UploadSession, digest, failureCode string, objectExists bool) error {
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	if _, err := s.repository.FailUploadCompletion(cleanupCtx, identity, session.ID, digest, failureCode, s.clock.Now()); err != nil {
+		return err
+	}
+	if objectExists {
+		_ = s.storage.DeleteObject(cleanupCtx, session.ObjectKey)
+	} else {
+		_ = s.storage.AbortMultipart(cleanupCtx, session.ObjectKey, session.StorageUploadID)
+	}
+	return nil
 }
 
 func (s *Service) AbortUpload(ctx context.Context, identity Identity, uploadID string) error {
@@ -456,9 +493,15 @@ func normalizeObjectChecksum(object *ObjectInfo, declared Checksum) error {
 		if object.Checksum.Algorithm == "" || !ValidChecksum(object.Checksum) {
 			return Retryable(CodeDependencyUnavailable, "object storage returned an invalid verified checksum", nil)
 		}
+		if declared.Algorithm != "" && object.Checksum != declared {
+			return E(CodeInvalidRequest, "completed object checksum does not match the declared checksum")
+		}
 	case ChecksumDeclared:
 		if object.Checksum.Algorithm == "" || !ValidChecksum(object.Checksum) {
 			return Retryable(CodeDependencyUnavailable, "object storage returned an invalid declared checksum", nil)
+		}
+		if declared.Algorithm != "" && object.Checksum != declared {
+			return E(CodeInvalidRequest, "completed object checksum does not match the declared checksum")
 		}
 	case ChecksumUnavailable, "":
 		if declared.Algorithm != "" {
