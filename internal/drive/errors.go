@@ -11,6 +11,7 @@ const (
 	CodeInvalidRequest        ErrorCode = "invalid_request"
 	CodeInvalidCursor         ErrorCode = "invalid_cursor"
 	CodeUnauthenticated       ErrorCode = "unauthenticated"
+	CodeForbidden             ErrorCode = "forbidden"
 	CodeNotFound              ErrorCode = "not_found"
 	CodeNameConflict          ErrorCode = "name_conflict"
 	CodeInvalidState          ErrorCode = "invalid_state"

@@ -7,6 +7,86 @@ type Identity struct {
 	PrincipalID string
 }
 
+type AccessRole string
+
+const (
+	RoleOwner  AccessRole = "owner"
+	RoleAdmin  AccessRole = "admin"
+	RoleEditor AccessRole = "editor"
+	RoleViewer AccessRole = "viewer"
+)
+
+type Permission string
+
+const (
+	PermissionTenantRead  Permission = "tenant:read"
+	PermissionFilesRead   Permission = "files:read"
+	PermissionFilesWrite  Permission = "files:write"
+	PermissionFilesDelete Permission = "files:delete"
+)
+
+func ValidAccessRole(role AccessRole) bool {
+	switch role {
+	case RoleOwner, RoleAdmin, RoleEditor, RoleViewer:
+		return true
+	default:
+		return false
+	}
+}
+
+func PermissionsForRole(role AccessRole) map[Permission]struct{} {
+	permissions := make(map[Permission]struct{})
+	switch role {
+	case RoleOwner:
+		permissions[PermissionTenantRead] = struct{}{}
+		permissions[PermissionFilesRead] = struct{}{}
+		permissions[PermissionFilesWrite] = struct{}{}
+		permissions[PermissionFilesDelete] = struct{}{}
+	case RoleAdmin:
+		permissions[PermissionTenantRead] = struct{}{}
+		permissions[PermissionFilesRead] = struct{}{}
+		permissions[PermissionFilesWrite] = struct{}{}
+		permissions[PermissionFilesDelete] = struct{}{}
+	case RoleEditor:
+		permissions[PermissionFilesRead] = struct{}{}
+		permissions[PermissionFilesWrite] = struct{}{}
+	case RoleViewer:
+		permissions[PermissionFilesRead] = struct{}{}
+	}
+	return permissions
+}
+
+type MemberStatus string
+
+const (
+	MemberStatusActive    MemberStatus = "active"
+	MemberStatusSuspended MemberStatus = "suspended"
+)
+
+func ValidMemberStatus(status MemberStatus) bool {
+	return status == MemberStatusActive || status == MemberStatusSuspended
+}
+
+type PrincipalRecord struct {
+	Identity          Identity
+	Issuer            string
+	Subject           string
+	DisplayName       string
+	TenantDisplayName string
+	Role              AccessRole
+	Status            MemberStatus
+}
+
+type OIDCMemberSeed struct {
+	PrincipalID string
+	TenantID    string
+	Issuer      string
+	Subject     string
+	DisplayName string
+	Role        AccessRole
+	Now         time.Time
+}
+
 type Tenant struct {
 	ID          string
 	DisplayName string

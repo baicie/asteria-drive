@@ -52,6 +52,9 @@ type Repository interface {
 
 	EnsureTenant(context.Context, TenantSeed) (Tenant, error)
 	Tenant(context.Context, string) (Tenant, error)
+	EnsureOIDCMember(context.Context, OIDCMemberSeed) (PrincipalRecord, error)
+	ResolveOIDCPrincipal(context.Context, string, string, string) (PrincipalRecord, error)
+	SetOIDCMemberStatus(context.Context, string, string, MemberStatus) error
 	CreateDirectory(context.Context, CreateDirectoryCommand) (Node, error)
 	Node(context.Context, Identity, string, bool) (Node, error)
 	ListChildren(context.Context, Identity, string, CursorPosition, int) ([]Node, bool, error)

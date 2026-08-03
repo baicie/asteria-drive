@@ -28,7 +28,19 @@ const (
 	testTenantB    = "22222222-2222-4222-8222-222222222222"
 	testPrincipalA = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 	testPrincipalB = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+	testPrincipalC = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+	testPrincipalD = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
 )
+
+type testOIDCVerifier map[string]auth.OIDCClaims
+
+func (v testOIDCVerifier) Verify(_ context.Context, token string) (auth.OIDCClaims, error) {
+	claims, ok := v[token]
+	if !ok {
+		return auth.OIDCClaims{}, drive.E(drive.CodeUnauthenticated, "unknown test token")
+	}
+	return claims, nil
+}
 
 type testAPI struct {
 	handler    http.Handler
@@ -643,5 +655,94 @@ func TestRequestBodyLimitsAndMediaType(t *testing.T) {
 	children := api.request(t, http.MethodGet, "/api/v1/directories/"+tenant.RootDirectoryID+"/children", testTokenA, nil, nil)
 	if children.Code != http.StatusOK || strings.Contains(children.Body.String(), `"name":"`+strings.Repeat("n", 32)) {
 		t.Fatalf("oversized request must not partially create nodes: %s", children.Body.String())
+	}
+}
+
+func TestOIDCAuthorizationEnforcesTenantSelectorMembershipAndRBAC(t *testing.T) {
+	base := newTestAPI(t)
+	ctx := context.Background()
+	issuer := "https://issuer.example.test"
+	now := time.Now().UTC()
+	seeds := []struct {
+		token       string
+		principalID string
+		role        drive.AccessRole
+	}{
+		{token: "viewer-token", principalID: testPrincipalA, role: drive.RoleViewer},
+		{token: "editor-token", principalID: testPrincipalB, role: drive.RoleEditor},
+		{token: "admin-token", principalID: testPrincipalC, role: drive.RoleAdmin},
+		{token: "suspended-token", principalID: testPrincipalD, role: drive.RoleViewer},
+	}
+	verifier := make(testOIDCVerifier, len(seeds))
+	for _, seed := range seeds {
+		if _, err := base.repository.EnsureOIDCMember(ctx, drive.OIDCMemberSeed{
+			PrincipalID: seed.principalID, TenantID: testTenantA, Issuer: issuer, Subject: seed.token,
+			DisplayName: seed.token, Role: seed.role, Now: now,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		verifier[seed.token] = auth.OIDCClaims{
+			Issuer: issuer, Subject: seed.token, Audience: []string{"asteria-api"}, ExpiresAt: now.Add(time.Hour),
+		}
+	}
+	if err := base.repository.SetOIDCMemberStatus(ctx, testTenantA, testPrincipalD, drive.MemberStatusSuspended); err != nil {
+		t.Fatal(err)
+	}
+	resolver := func(ctx context.Context, issuer, subject, tenantID string) (auth.Principal, error) {
+		record, err := base.repository.ResolveOIDCPrincipal(ctx, issuer, subject, tenantID)
+		if err != nil {
+			return auth.Principal{}, err
+		}
+		return auth.Principal{Identity: record.Identity, TenantDisplayName: record.TenantDisplayName, Role: record.Role}, nil
+	}
+	authenticator, err := auth.NewOIDCWithVerifier(issuer, "asteria-api", verifier, resolver)
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpServer, err := New(Options{Address: ":0", Service: base.service, Authenticator: authenticator, Logger: slog.Default(), ReadHeaderTimeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	base.handler = httpServer.Handler()
+	unauthenticated := base.request(t, http.MethodGet, "/api/v1/directories/"+base.tenantA.RootNodeID, "", nil, map[string]string{auth.TenantHeader: testTenantA})
+	if unauthenticated.Code != http.StatusUnauthorized {
+		t.Fatalf("OIDC request without bearer token should be 401, got %d: %s", unauthenticated.Code, unauthenticated.Body.String())
+	}
+	missingTenant := base.request(t, http.MethodGet, "/api/v1/tenant", "viewer-token", nil, nil)
+	if missingTenant.Code != http.StatusBadRequest {
+		t.Fatalf("OIDC request without tenant selector should be 400, got %d: %s", missingTenant.Code, missingTenant.Body.String())
+	}
+	invalidTenant := base.request(t, http.MethodGet, "/api/v1/tenant", "viewer-token", nil, map[string]string{auth.TenantHeader: "not-a-uuid"})
+	if invalidTenant.Code != http.StatusBadRequest {
+		t.Fatalf("OIDC request with invalid tenant selector should be 400, got %d: %s", invalidTenant.Code, invalidTenant.Body.String())
+	}
+	viewerRead := base.request(t, http.MethodGet, "/api/v1/directories/"+base.tenantA.RootNodeID, "viewer-token", nil, map[string]string{auth.TenantHeader: testTenantA})
+	if viewerRead.Code != http.StatusOK {
+		t.Fatalf("viewer file metadata read should succeed, got %d: %s", viewerRead.Code, viewerRead.Body.String())
+	}
+	viewerWrite := base.request(t, http.MethodPost, "/api/v1/directories", "viewer-token", map[string]any{"parent_id": base.tenantA.RootNodeID, "name": "viewer"}, map[string]string{auth.TenantHeader: testTenantA})
+	if viewerWrite.Code != http.StatusForbidden {
+		t.Fatalf("viewer write should be forbidden, got %d: %s", viewerWrite.Code, viewerWrite.Body.String())
+	}
+	editorWrite := base.request(t, http.MethodPost, "/api/v1/directories", "editor-token", map[string]any{"parent_id": base.tenantA.RootNodeID, "name": "editor"}, map[string]string{auth.TenantHeader: testTenantA})
+	if editorWrite.Code != http.StatusCreated {
+		t.Fatalf("editor write should succeed, got %d: %s", editorWrite.Code, editorWrite.Body.String())
+	}
+	editorDirectory := decodeData[nodeResponse](t, editorWrite)
+	editorDelete := base.request(t, http.MethodDelete, "/api/v1/nodes/"+editorDirectory.ID, "editor-token", nil, map[string]string{auth.TenantHeader: testTenantA, "If-Match": `"1"`})
+	if editorDelete.Code != http.StatusForbidden {
+		t.Fatalf("editor delete should be forbidden, got %d: %s", editorDelete.Code, editorDelete.Body.String())
+	}
+	adminDelete := base.request(t, http.MethodDelete, "/api/v1/nodes/"+editorDirectory.ID, "admin-token", nil, map[string]string{auth.TenantHeader: testTenantA, "If-Match": `"1"`})
+	if adminDelete.Code != http.StatusNoContent {
+		t.Fatalf("admin delete should succeed, got %d: %s", adminDelete.Code, adminDelete.Body.String())
+	}
+	suspended := base.request(t, http.MethodGet, "/api/v1/tenant", "suspended-token", nil, map[string]string{auth.TenantHeader: testTenantA})
+	if suspended.Code != http.StatusForbidden {
+		t.Fatalf("suspended member should be forbidden, got %d: %s", suspended.Code, suspended.Body.String())
+	}
+	wrongTenant := base.request(t, http.MethodGet, "/api/v1/tenant", "viewer-token", nil, map[string]string{auth.TenantHeader: testTenantB})
+	if wrongTenant.Code != http.StatusForbidden {
+		t.Fatalf("member of another tenant should be forbidden, got %d: %s", wrongTenant.Code, wrongTenant.Body.String())
 	}
 }

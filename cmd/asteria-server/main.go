@@ -74,20 +74,56 @@ func main() {
 		logger.Error("service initialization failed", "error", err)
 		os.Exit(1)
 	}
-	principals := make(map[string]auth.Principal, len(cfg.Tokens))
-	for token, configured := range cfg.Tokens {
-		principals[token] = auth.Principal{
-			Identity:          drive.Identity{TenantID: configured.TenantID, PrincipalID: configured.PrincipalID},
-			TenantDisplayName: configured.TenantName,
+	var authenticator auth.Authenticator
+	switch cfg.AuthMode {
+	case "trusted-dev":
+		principals := make(map[string]auth.Principal, len(cfg.Tokens))
+		for token, configured := range cfg.Tokens {
+			principals[token] = auth.Principal{
+				Identity:          drive.Identity{TenantID: configured.TenantID, PrincipalID: configured.PrincipalID},
+				TenantDisplayName: configured.TenantName, Role: drive.RoleOwner,
+			}
+			if _, err := service.EnsureTenant(startupCtx, configured.TenantID, configured.TenantName); err != nil {
+				logger.Error("tenant initialization failed", "tenant_id", configured.TenantID, "error", err)
+				os.Exit(1)
+			}
 		}
-		if _, err := service.EnsureTenant(startupCtx, configured.TenantID, configured.TenantName); err != nil {
-			logger.Error("tenant initialization failed", "tenant_id", configured.TenantID, "error", err)
+		authenticator, err = auth.NewTrusted(principals)
+		if err != nil {
+			logger.Error("authentication configuration is invalid", "error", err)
 			os.Exit(1)
 		}
-	}
-	authenticator, err := auth.NewTrusted(principals)
-	if err != nil {
-		logger.Error("authentication configuration is invalid", "error", err)
+	case "oidc":
+		for _, configured := range cfg.OIDCBootstrap {
+			if _, err := service.EnsureTenant(startupCtx, configured.TenantID, configured.TenantName); err != nil {
+				logger.Error("tenant initialization failed", "tenant_id", configured.TenantID, "error", err)
+				os.Exit(1)
+			}
+			if _, err := repository.EnsureOIDCMember(startupCtx, drive.OIDCMemberSeed{
+				PrincipalID: configured.PrincipalID, TenantID: configured.TenantID,
+				Issuer: configured.Issuer, Subject: configured.Subject,
+				DisplayName: configured.DisplayName, Role: drive.AccessRole(configured.Role), Now: time.Now().UTC(),
+			}); err != nil {
+				logger.Error("OIDC member bootstrap failed", "tenant_id", configured.TenantID, "error", err)
+				os.Exit(1)
+			}
+		}
+		resolver := func(ctx context.Context, issuer, subject, tenantID string) (auth.Principal, error) {
+			record, err := repository.ResolveOIDCPrincipal(ctx, issuer, subject, tenantID)
+			if err != nil {
+				return auth.Principal{}, err
+			}
+			return auth.Principal{
+				Identity: record.Identity, TenantDisplayName: record.TenantDisplayName, Role: record.Role,
+			}, nil
+		}
+		authenticator, err = auth.NewOIDC(startupCtx, cfg.OIDCIssuer, cfg.OIDCClientID, resolver)
+		if err != nil {
+			logger.Error("OIDC initialization failed", "error", err)
+			os.Exit(1)
+		}
+	default:
+		logger.Error("authentication mode is unsupported", "mode", cfg.AuthMode)
 		os.Exit(1)
 	}
 	httpServer, err := server.New(server.Options{

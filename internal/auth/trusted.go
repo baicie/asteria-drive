@@ -13,6 +13,11 @@ import (
 type Principal struct {
 	Identity          drive.Identity
 	TenantDisplayName string
+	Role              drive.AccessRole
+}
+
+type Authenticator interface {
+	Middleware(func(http.ResponseWriter, *http.Request, error)) func(http.Handler) http.Handler
 }
 
 type trustedEntry struct {
@@ -33,9 +38,20 @@ func NewTrusted(tokens map[string]Principal) (*Trusted, error) {
 		if len(token) < 32 || principal.Identity.TenantID == "" || principal.Identity.PrincipalID == "" {
 			return nil, drive.E(drive.CodeInvalidRequest, "trusted tokens must be high entropy and map to tenant and principal ids")
 		}
+		if principal.Role == "" {
+			principal.Role = drive.RoleOwner
+		}
+		if !drive.ValidAccessRole(principal.Role) {
+			return nil, drive.E(drive.CodeInvalidRequest, "trusted token role is invalid")
+		}
 		authenticator.entries = append(authenticator.entries, trustedEntry{hash: sha256.Sum256([]byte(token)), principal: principal})
 	}
 	return authenticator, nil
+}
+
+func (p Principal) HasPermission(permission drive.Permission) bool {
+	_, ok := drive.PermissionsForRole(p.Role)[permission]
+	return ok
 }
 
 func (a *Trusted) Authenticate(header string) (Principal, error) {

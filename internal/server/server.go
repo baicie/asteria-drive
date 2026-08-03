@@ -15,7 +15,7 @@ import (
 type Options struct {
 	Address           string
 	Service           *drive.Service
-	Authenticator     *auth.Trusted
+	Authenticator     auth.Authenticator
 	Logger            *slog.Logger
 	ReadHeaderTimeout time.Duration
 	ReadTimeout       time.Duration
@@ -40,26 +40,26 @@ func New(options Options) (*Server, error) {
 	mux.HandleFunc("GET /healthz", api.health)
 	mux.HandleFunc("GET /readyz", api.ready)
 
-	protected := func(next http.Handler) http.Handler {
-		return options.Authenticator.Middleware(api.writeError)(api.captureIdentity(next))
+	protected := func(permission drive.Permission, next http.Handler) http.Handler {
+		return options.Authenticator.Middleware(api.writeError)(api.captureIdentity(api.authorize(permission)(next)))
 	}
-	mux.Handle("GET /api/v1/tenant", protected(http.HandlerFunc(api.getTenant)))
-	mux.Handle("POST /api/v1/directories", protected(http.HandlerFunc(api.createDirectory)))
-	mux.Handle("GET /api/v1/directories/{id}", protected(http.HandlerFunc(api.getDirectory)))
-	mux.Handle("GET /api/v1/directories/{id}/children", protected(http.HandlerFunc(api.listChildren)))
-	mux.Handle("GET /api/v1/files/{id}", protected(http.HandlerFunc(api.getFile)))
-	mux.Handle("POST /api/v1/files/{id}/download-authorizations", protected(http.HandlerFunc(api.createDownloadAuthorization)))
-	mux.Handle("PATCH /api/v1/nodes/{id}", protected(http.HandlerFunc(api.updateNode)))
-	mux.Handle("DELETE /api/v1/nodes/{id}", protected(http.HandlerFunc(api.recycleNode)))
-	mux.Handle("POST /api/v1/uploads", protected(http.HandlerFunc(api.createUpload)))
-	mux.Handle("GET /api/v1/uploads/{id}", protected(http.HandlerFunc(api.getUpload)))
-	mux.Handle("POST /api/v1/uploads/{id}/parts/sign", protected(http.HandlerFunc(api.signUploadPart)))
-	mux.Handle("POST /api/v1/uploads/{id}/complete", protected(http.HandlerFunc(api.completeUpload)))
-	mux.Handle("DELETE /api/v1/uploads/{id}", protected(http.HandlerFunc(api.abortUpload)))
-	mux.Handle("GET /api/v1/recycle-bin", protected(http.HandlerFunc(api.listRecycle)))
-	mux.Handle("POST /api/v1/recycle-bin/{id}/restore", protected(http.HandlerFunc(api.restoreNode)))
-	mux.Handle("DELETE /api/v1/recycle-bin/{id}", protected(http.HandlerFunc(api.purgeNode)))
-	mux.Handle("/api/", protected(http.HandlerFunc(api.notFound)))
+	mux.Handle("GET /api/v1/tenant", protected(drive.PermissionTenantRead, http.HandlerFunc(api.getTenant)))
+	mux.Handle("POST /api/v1/directories", protected(drive.PermissionFilesWrite, http.HandlerFunc(api.createDirectory)))
+	mux.Handle("GET /api/v1/directories/{id}", protected(drive.PermissionFilesRead, http.HandlerFunc(api.getDirectory)))
+	mux.Handle("GET /api/v1/directories/{id}/children", protected(drive.PermissionFilesRead, http.HandlerFunc(api.listChildren)))
+	mux.Handle("GET /api/v1/files/{id}", protected(drive.PermissionFilesRead, http.HandlerFunc(api.getFile)))
+	mux.Handle("POST /api/v1/files/{id}/download-authorizations", protected(drive.PermissionFilesRead, http.HandlerFunc(api.createDownloadAuthorization)))
+	mux.Handle("PATCH /api/v1/nodes/{id}", protected(drive.PermissionFilesWrite, http.HandlerFunc(api.updateNode)))
+	mux.Handle("DELETE /api/v1/nodes/{id}", protected(drive.PermissionFilesDelete, http.HandlerFunc(api.recycleNode)))
+	mux.Handle("POST /api/v1/uploads", protected(drive.PermissionFilesWrite, http.HandlerFunc(api.createUpload)))
+	mux.Handle("GET /api/v1/uploads/{id}", protected(drive.PermissionFilesRead, http.HandlerFunc(api.getUpload)))
+	mux.Handle("POST /api/v1/uploads/{id}/parts/sign", protected(drive.PermissionFilesWrite, http.HandlerFunc(api.signUploadPart)))
+	mux.Handle("POST /api/v1/uploads/{id}/complete", protected(drive.PermissionFilesWrite, http.HandlerFunc(api.completeUpload)))
+	mux.Handle("DELETE /api/v1/uploads/{id}", protected(drive.PermissionFilesWrite, http.HandlerFunc(api.abortUpload)))
+	mux.Handle("GET /api/v1/recycle-bin", protected(drive.PermissionFilesRead, http.HandlerFunc(api.listRecycle)))
+	mux.Handle("POST /api/v1/recycle-bin/{id}/restore", protected(drive.PermissionFilesWrite, http.HandlerFunc(api.restoreNode)))
+	mux.Handle("DELETE /api/v1/recycle-bin/{id}", protected(drive.PermissionFilesDelete, http.HandlerFunc(api.purgeNode)))
+	mux.Handle("/api/", protected("", http.HandlerFunc(api.notFound)))
 
 	handler := api.requestID(api.logRequest(api.recover(mux)))
 	server := &Server{handler: handler}
@@ -164,6 +164,23 @@ func (a *api) captureIdentity(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func (a *api) authorize(permission drive.Permission) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			principal, ok := auth.FromContext(r.Context())
+			if !ok {
+				a.writeError(w, r, drive.E(drive.CodeUnauthenticated, "a valid bearer token is required"))
+				return
+			}
+			if permission != "" && !principal.HasPermission(permission) {
+				a.writeError(w, r, drive.E(drive.CodeForbidden, "the authenticated principal lacks this permission"))
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
 func validRequestID(value string) bool {

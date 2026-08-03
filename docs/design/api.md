@@ -8,9 +8,9 @@
 
 ## 1. 范围
 
-本 API 是网盘控制面，只处理 trusted-dev 身份、租户 Namespace、上传协调、下载授权和回收站。文件正文通过短期 S3 URL 在客户端与对象存储之间传输，绝不经过这些路由。
+本 API 是网盘控制面，处理 OIDC/OAuth2 或 trusted-dev 身份、租户 Namespace、上传协调、下载授权和回收站。文件正文通过短期 S3 URL 在客户端与对象存储之间传输，绝不经过这些路由。
 
-OIDC、成员/ACL 管理、分享、配额、历史版本 API、同步和预览属于 M2。本轮不保留占位路由，也不让它们成为启动依赖。
+成员管理、正式 ACL、分享、配额、历史版本 API、同步和预览属于后续 M2 阶段。本轮已落地 M2-1 的 Resource Server 验证、成员解析和基础 RBAC；不保留未实现的占位路由。
 
 所有业务路由以 `/api/v1` 开头。`/healthz`、`/readyz` 是无版本探针。
 
@@ -40,12 +40,12 @@ OIDC、成员/ACL 管理、分享、配额、历史版本 API、同步和预览�
 除探针外都要求：
 
 ```http
-Authorization: Bearer <opaque-trusted-dev-token>
+Authorization: Bearer <oidc-access-token-or-trusted-dev-token>
 ```
 
-Token 由服务端配置固定映射到 `tenant_id` 和 `principal_id`。请求中的 `X-Tenant-ID`、Query 或 JSON `tenant_id` 不改变上下文；业务请求不接受 `tenant_id` 字段。缺失/无效 Token 返回 `401 unauthenticated`。跨租户 ID 与不存在 ID统一返回 `404 not_found`。
+`trusted-dev` Token 由服务端配置固定映射到 `tenant_id` 和 `principal_id`，并忽略 `X-Tenant-ID`。OIDC 请求必须携带 UUID 格式的 `X-Tenant-ID`；服务端验证 JWT 的 issuer、签名、audience、`exp`/`nbf` 和 subject，再用 `(issuer, subject)` 查询 PostgreSQL `principal` 与 `tenant_member`。租户和角色不信任 JWT 自声明。缺失/无效 Token 返回 `401 unauthenticated`；OIDC 缺失或非法租户选择器返回 `400 invalid_request`；未加入租户、suspended 成员或权限不足返回 `403 forbidden`。跨租户资源 ID 与不存在 ID 仍统一返回 `404 not_found`。
 
-显式 production/public 模式与 trusted-dev 同时配置时，进程必须在监听端口前失败。该协议不是生产认证承诺。
+`trusted-dev` 只允许 `ASTERIA_ENV=development`。production 必须配置 `ASTERIA_AUTH_MODE=oidc`、PostgreSQL 和 S3，并在监听端口前完成校验。
 
 ## 4. 错误契约
 
@@ -66,6 +66,7 @@ Token 由服务端配置固定映射到 `tenant_id` 和 `principal_id`。请求�
 | 400 | `invalid_request` | JSON、字段、名称、Part 或状态输入非法 |
 | 400 | `invalid_cursor` | Cursor 篡改、版本或作用域错误 |
 | 401 | `unauthenticated` | 缺失或无效 Bearer Token |
+| 403 | `forbidden` | 未加入租户、成员已 suspended 或角色缺少路由权限 |
 | 404 | `not_found` | 资源不存在、跨租户或当前状态不可见 |
 | 409 | `name_conflict` | 活动同目录规格化名称冲突 |
 | 409 | `invalid_state` | 上传/回收状态不允许此操作 |

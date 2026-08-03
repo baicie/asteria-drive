@@ -205,3 +205,31 @@ docker run --rm --mount type=bind,source=<workspace>,target=/src -w /src \
   `p50=127.9025ms p95=155.9785ms p99=156.4998ms max=156.4998ms`。
 - `TestMalformedPathIdentifierReturnsBadRequest`、上传未知完成、Namespace 接纳失败、对象删除重试、
   committed 回放和取消状态竞态回归全部通过。
+
+## 2026-08-03 - M2-1 生产身份与权限基础
+
+分支：`codex/m2-identity-access`。设计与边界见 [ADR-0014](../adr/0014-oidc-resource-server-and-tenant-rbac.md)
+和 [M2-1 身份与权限设计](../m2/identity-access.md)。
+
+实现与证据：
+
+- API 作为 OIDC Resource Server，完成 discovery/JWKS、RS256/384/512 与 ES256/384/512 签名校验，
+  issuer、audience、`azp`、`exp`、`nbf`、`kid`、算法和 JWT JSON 完整性检查；provider 故障映射为
+  `dependency_unavailable`，不记录 token 或 JWT 内容。
+- PostgreSQL 迁移 `0002_identity_access.sql` 增加 `principal` 与 `tenant_member`，以 `(issuer, subject)`
+  映射内部 UUID；内存和 PostgreSQL adapter 覆盖幂等 bootstrap、多租户成员、suspended 状态和冲突约束。
+- HTTP 路由按 `tenant:read`、`files:read`、`files:write`、`files:delete` 执行 owner/admin/editor/viewer
+  RBAC；OIDC 要求 `X-Tenant-ID`，认证失败为 `401`，选择器错误为 `400`，成员/权限不足为 `403`。
+- `trusted-dev` 仅允许 development；production 强制 OIDC、PostgreSQL 和 S3。README、OpenAPI、API 设计、
+  运维测试设计和文档索引已同步配置变量与错误契约。
+
+M2-1 验证命令：
+
+```text
+gofmt -w internal/auth/oidc.go internal/auth/oidc_test.go internal/config/config.go internal/config/config_test.go internal/drive/ports.go internal/drive/types.go internal/memory/repository.go internal/memory/identity_test.go internal/postgres/identity.go internal/postgres/repository_integration_test.go internal/server/server.go internal/server/server_test.go cmd/asteria-server/main.go
+go test ./internal/auth ./internal/config ./internal/drive ./internal/memory ./internal/postgres ./internal/server -count=1
+go test ./... -count=1
+go vet ./...
+go build ./...
+git diff --check
+```

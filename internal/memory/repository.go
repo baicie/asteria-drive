@@ -10,19 +10,22 @@ import (
 )
 
 type Repository struct {
-	mu       sync.RWMutex
-	tenants  map[string]drive.Tenant
-	nodes    map[string]drive.Node
-	blobs    map[string]drive.Blob
-	versions map[string]drive.FileVersion
-	uploads  map[string]drive.UploadSession
-	parts    map[string][]drive.CompletedPart
-	readyErr error
+	mu         sync.RWMutex
+	tenants    map[string]drive.Tenant
+	principals map[string]drive.PrincipalRecord
+	members    map[string]drive.PrincipalRecord
+	nodes      map[string]drive.Node
+	blobs      map[string]drive.Blob
+	versions   map[string]drive.FileVersion
+	uploads    map[string]drive.UploadSession
+	parts      map[string][]drive.CompletedPart
+	readyErr   error
 }
 
 func NewRepository() *Repository {
 	return &Repository{
-		tenants: make(map[string]drive.Tenant), nodes: make(map[string]drive.Node),
+		tenants: make(map[string]drive.Tenant), principals: make(map[string]drive.PrincipalRecord),
+		members: make(map[string]drive.PrincipalRecord), nodes: make(map[string]drive.Node),
 		blobs: make(map[string]drive.Blob), versions: make(map[string]drive.FileVersion),
 		uploads: make(map[string]drive.UploadSession), parts: make(map[string][]drive.CompletedPart),
 	}
@@ -67,6 +70,73 @@ func (r *Repository) Tenant(_ context.Context, tenantID string) (drive.Tenant, e
 		return drive.Tenant{}, drive.E(drive.CodeNotFound, "tenant was not found")
 	}
 	return tenant, nil
+}
+
+func (r *Repository) EnsureOIDCMember(_ context.Context, seed drive.OIDCMemberSeed) (drive.PrincipalRecord, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if seed.TenantID == "" || seed.PrincipalID == "" || seed.Issuer == "" || seed.Subject == "" || !drive.ValidAccessRole(seed.Role) {
+		return drive.PrincipalRecord{}, drive.E(drive.CodeInvalidRequest, "OIDC member seed is invalid")
+	}
+	tenant, ok := r.tenants[seed.TenantID]
+	if !ok {
+		return drive.PrincipalRecord{}, drive.E(drive.CodeNotFound, "tenant was not found")
+	}
+	externalKey := principalKey(seed.Issuer, seed.Subject)
+	principal, exists := r.principals[externalKey]
+	if exists && principal.Identity.PrincipalID != seed.PrincipalID {
+		return drive.PrincipalRecord{}, drive.E(drive.CodeNameConflict, "OIDC identity is mapped to another principal")
+	}
+	if !exists {
+		for _, candidate := range r.principals {
+			if candidate.Identity.PrincipalID == seed.PrincipalID && (candidate.Issuer != seed.Issuer || candidate.Subject != seed.Subject) {
+				return drive.PrincipalRecord{}, drive.E(drive.CodeNameConflict, "principal id is mapped to another OIDC identity")
+			}
+		}
+		principal = drive.PrincipalRecord{
+			Identity: drive.Identity{TenantID: seed.TenantID, PrincipalID: seed.PrincipalID},
+			Issuer:   seed.Issuer, Subject: seed.Subject, DisplayName: seed.DisplayName,
+		}
+		r.principals[externalKey] = principal
+	}
+	memberKey := memberKey(seed.TenantID, seed.PrincipalID)
+	member := drive.PrincipalRecord{
+		Identity: drive.Identity{TenantID: seed.TenantID, PrincipalID: seed.PrincipalID},
+		Issuer:   seed.Issuer, Subject: seed.Subject, DisplayName: seed.DisplayName,
+		TenantDisplayName: tenant.DisplayName, Role: seed.Role, Status: drive.MemberStatusActive,
+	}
+	r.members[memberKey] = member
+	return member, nil
+}
+
+func (r *Repository) ResolveOIDCPrincipal(_ context.Context, issuer, subject, tenantID string) (drive.PrincipalRecord, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	principal, ok := r.principals[principalKey(issuer, subject)]
+	if !ok {
+		return drive.PrincipalRecord{}, drive.E(drive.CodeForbidden, "identity is not a member of this tenant")
+	}
+	member, ok := r.members[memberKey(tenantID, principal.Identity.PrincipalID)]
+	if !ok || member.Status != drive.MemberStatusActive {
+		return drive.PrincipalRecord{}, drive.E(drive.CodeForbidden, "identity is not a member of this tenant")
+	}
+	return member, nil
+}
+
+func (r *Repository) SetOIDCMemberStatus(_ context.Context, tenantID, principalID string, status drive.MemberStatus) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if tenantID == "" || principalID == "" || !drive.ValidMemberStatus(status) {
+		return drive.E(drive.CodeInvalidRequest, "OIDC member status is invalid")
+	}
+	key := memberKey(tenantID, principalID)
+	member, ok := r.members[key]
+	if !ok {
+		return drive.E(drive.CodeNotFound, "tenant member was not found")
+	}
+	member.Status = status
+	r.members[key] = member
+	return nil
 }
 
 func (r *Repository) CreateDirectory(_ context.Context, command drive.CreateDirectoryCommand) (drive.Node, error) {
@@ -615,6 +685,10 @@ func afterPosition(node drive.Node, after drive.CursorPosition) bool {
 func nodeLess(a, b drive.Node) bool {
 	return a.NormalizedName < b.NormalizedName || (a.NormalizedName == b.NormalizedName && a.ID < b.ID)
 }
+
+func principalKey(issuer, subject string) string { return issuer + "\x00" + subject }
+
+func memberKey(tenantID, principalID string) string { return tenantID + "\x00" + principalID }
 
 func sortNodes(nodes []drive.Node) {
 	sort.Slice(nodes, func(i, j int) bool { return nodeLess(nodes[i], nodes[j]) })

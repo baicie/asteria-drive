@@ -19,6 +19,7 @@
 | [0011](0011-deterministic-upload-completion-failure.md) | 上传完成的确定性失败与未知结果分流 | Accepted |
 | [0012](0012-tenant-namespace-mutation-serialization.md) | 租户级 Namespace 变更串行化与清理引用判定 | Accepted |
 | [0013](0013-completed-upload-reconciliation.md) | 已完成对象的 Namespace 接纳失败与幂等对账 | Accepted |
+| [0014](0014-oidc-resource-server-and-tenant-rbac.md) | OIDC Resource Server 与租户 RBAC 边界 | Accepted |
 
 ## Conventions
 
