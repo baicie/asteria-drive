@@ -12,10 +12,13 @@ import (
 )
 
 const (
-	checkoutAction       = "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683"
-	setupGoAction        = "actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5"
-	setupNodeAction      = "actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020"
-	uploadArtifactAction = "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
+	checkoutAction         = "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683"
+	setupGoAction          = "actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5"
+	setupNodeAction        = "actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020"
+	uploadArtifactAction   = "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
+	dependencyReviewAction = "actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294"
+	codeQLInitAction       = "github/codeql-action/init@e60ea984bd3baa95954f2856bcf24f9eaba46637"
+	codeQLAnalyzeAction    = "github/codeql-action/analyze@e60ea984bd3baa95954f2856bcf24f9eaba46637"
 )
 
 var (
@@ -37,6 +40,7 @@ type workflowDocument struct {
 
 type workflowJob struct {
 	Name           string            `yaml:"name"`
+	If             string            `yaml:"if"`
 	RunsOn         string            `yaml:"runs-on"`
 	TimeoutMinutes int               `yaml:"timeout-minutes"`
 	Permissions    map[string]string `yaml:"permissions"`
@@ -107,7 +111,7 @@ func TestCIWorkflowTrustBoundaryAndStableJobs(t *testing.T) {
 
 	expectedEnvironment := map[string]string{
 		"GOTOOLCHAIN":        "local",
-		"GO_MIN_VERSION":     "1.23.12",
+		"GO_MIN_VERSION":     "1.25.12",
 		"GO_CURRENT_VERSION": "1.26.5",
 		"NODE_VERSION":       "24.16.0",
 	}

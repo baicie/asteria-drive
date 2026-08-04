@@ -26,7 +26,7 @@ M2-1 已加入 OIDC/OAuth2 Resource Server、内部主体、租户成员和基�
 
 ### 依赖
 
-- Go 1.23 或更高版本
+- Go 1.25.12 或更高版本
 - Docker Engine 与 Docker Compose v2
 - PowerShell 7 或 Windows PowerShell 5.1（以下命令使用 PowerShell）
 - Node.js 24.16.0 与 npm 11（Actions schema 与 OpenAPI 契约校验需要）
@@ -161,6 +161,10 @@ Linux race 也已在 Debian 13 容器中用 Go 1.24.4 + GCC 验证；完整结�
 SeaweedFS 运行 17 个必需测试（14 个 PostgreSQL、1 个 SeaweedFS、2 个 live HTTP），结构化验证每个
 package 和测试均为 `pass`，任意 `skip` 都会失败；`always()` 路径会脱敏证据、保留 7 天并清理 Compose
 资源。将四项检查设为 required 的 branch protection 仍是 rollout step 5，当前未表示为已配置。
+
+安全候选检查 `Security / govulncheck`、`Security / dependency-review` 和 `Security / codeql` 已加入，
+并启用每周 Dependabot 更新 Go、npm、GitHub Actions 和 Compose/Docker 依赖；这些检查仍需在首轮安全基线
+复核后，才进入 rollout step 5 的 required branch protection。
 
 不带外部测试环境变量时，快速测试使用内存 fake。真实 PostgreSQL Repository、SeaweedFS Multipart、
 签名下载和 Range 使用显式环境门禁：
