@@ -13,6 +13,7 @@
 | [mvp/README.md](mvp/README.md) | MVP 文档入口、范围、路线、验收与实施记录 | **当前交付边界** |
 | [m2/identity-access.md](m2/identity-access.md) | M2-1 OIDC、主体、成员、RBAC 边界和交付拆分 | M2-1 实现设计与证据入口 |
 | [m2/member-management.md](m2/member-management.md) | M2-2 tenant member listing and lifecycle updates | M2-2 implementation contract |
+| [process/ci-system.md](process/ci-system.md) | GitHub Actions CI topology, staged implementation, and merge gates | CI design and rollout evidence |
 | [openapi.yaml](openapi.yaml) | 已注册 HTTP 路由的 OpenAPI 3.1 契约 | HTTP 机器可读契约 |
 | [design/api.md](design/api.md) | HTTP 语义、状态机和示例说明 | HTTP 人读设计 |
 | [design/architecture.md](design/architecture.md) | 模块、运行时、数据流与扩展边界 | 详细架构设计 |

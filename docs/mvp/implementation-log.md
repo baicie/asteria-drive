@@ -256,3 +256,105 @@ pnpm --package='@redocly/cli@latest' dlx redocly lint docs/openapi.yaml
 $env:ASTERIA_TEST_DATABASE_URL='postgres://asteria:local-asteria-password@127.0.0.1:15432/asteria?sslmode=disable'
 go test ./internal/postgres -count=1
 ```
+
+## 2026-08-04 - CI rollout step 2
+
+ADR-0016 is accepted and the first secret-free GitHub Actions candidate checks are
+implemented in `.github/workflows/ci.yml`:
+
+- `CI / quality` verifies modules and formatting, runs the complete deterministic
+  test suite, vet and build, checks whitespace against the event's actual commit
+  range, and retains JSON/coverage evidence for seven days;
+- `CI / race` runs the full deterministic suite with the Linux race detector;
+- `CI / api-contract` installs Action Validator 0.6.0 and Redocly CLI 2.43.3
+  from `package-lock.json`, validates the workflow schema, lints
+  `docs/openapi.yaml`, and verifies exact equality between documented operations
+  and the route inventory used by the server;
+- all Actions use full commit SHAs, workflow permissions are `contents: read`,
+  checkout credentials are discarded, and no repository secret is referenced;
+- `internal/cicheck` parses the workflow and guards the stable job names, events,
+  permissions, credential handling, and immutable Action references.
+
+Quality and API checks use the minimum Go 1.23.12, while race uses the current
+Go 1.26.5. Node.js is fixed at 24.16.0 and every Go job uses `GOTOOLCHAIN=local`.
+Compose-backed integration and structured skip detection are explicitly rollout
+step 3. Repository rules that make all four checks required are rollout step 5;
+they are not represented as configured here.
+
+Local verification used Go 1.26.5 on Windows, Node.js 24.16.0/npm 11.13.0, and a
+read-only Linux container for race detection:
+
+```text
+go mod verify
+go test ./... -count=1
+go vet ./...
+go build ./...
+git diff --check
+npm ci --ignore-scripts
+npm run lint:actions
+npm run lint:openapi
+go test ./internal/cicheck ./internal/server -count=1
+
+docker run --rm --mount type=bind,source=<workspace>,target=/src,readonly \
+  --mount type=bind,source=<go-module-cache>,target=/go/pkg/mod,readonly \
+  -w /src -e GOTOOLCHAIN=local \
+  golang@sha256:1ecb7edf62a0408027bd5729dfd6b1b8766e578e8df93995b225dfd0944eb651 \
+  go test -race ./... -count=1
+```
+
+All commands exited 0. Redocly retained the three previously documented warnings
+(missing license metadata and no invented `4xx` responses for health probes);
+the OpenAPI document remained valid.
+
+## 2026-08-04 - CI rollout step 3
+
+The fourth secret-free candidate check, `CI / integration`, is implemented in
+`.github/workflows/ci.yml`. It runs on Ubuntu 24.04 with Go 1.26.5 and Docker
+Compose v2, using only disposable repository-owned test values rather than
+GitHub Secrets. `compose.yaml` pins PostgreSQL and SeaweedFS to these digests:
+
+```text
+postgres:17.5-alpine@sha256:6567bca8d7bc8c82c5922425a0baee57be8402df92bae5eacad5f01ae9544daa
+chrislusf/seaweedfs:3.85@sha256:49312939c00c01e5ee6afbd7d728b18027821d3764c35a797a72acd4fdf3296a
+```
+
+The committed integration manifest requires 17 tests: 14 PostgreSQL adapter
+tests, one SeaweedFS provider test, and two live HTTP tests. The workflow runs
+the three packages serially with `go test -json -p=1 -count=1 -timeout=15m`.
+Its repository-owned verifier requires every package and named test to finish
+with `pass` and rejects any `skip`, missing result, failed package, or malformed
+report.
+
+Uploaded failure evidence does not include the raw report. Under `always()`, the
+workflow sanitizes the JSON report and Compose logs, removes the raw JSON, tears
+down containers and volumes with `docker compose down -v --remove-orphans`, and
+uploads only sanitized evidence with seven-day retention. Sanitizer tests cover
+database URLs and passwords, explicit S3 credentials, bearer authorization, and
+signed URLs.
+
+The local completion run used the same disposable Compose dependencies and JSON
+report verifier as CI:
+
+```text
+docker compose up -d --wait --wait-timeout 180
+go test -json -p=1 -count=1 -timeout=15m \
+  ./internal/postgres ./internal/s3store ./internal/server \
+  > integration-test.raw.json
+go run ./tools/verify-integration-report \
+  -manifest .github/integration-tests.json \
+  -input integration-test.raw.json
+go run ./tools/sanitize-ci-log \
+  < integration-test.raw.json > integration-test.json
+docker compose down -v --remove-orphans
+```
+
+The verifier exited 0 with this exact result:
+
+```text
+verified 17 required integration tests across 3 packages
+```
+
+This is local real-dependency evidence, not a claim that a GitHub-hosted runner
+has executed the candidate check. The four stable checks remain non-required
+candidates until rollout step 5 configures branch protection. API compatibility
+comparison remains later hardening to complete before that step.
