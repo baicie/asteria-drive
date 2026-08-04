@@ -358,3 +358,73 @@ This is local real-dependency evidence, not a claim that a GitHub-hosted runner
 has executed the candidate check. The four stable checks remain non-required
 candidates until rollout step 5 configures branch protection. API compatibility
 comparison remains later hardening to complete before that step.
+
+## 2026-08-04 - CI rollout step 4
+
+Security automation and dependency update proposals are implemented without
+repository secrets:
+
+The first govulncheck baseline found reachable fixes requiring newer toolchain
+support, so ADR-0017 retains the Go 1.25.0 module directive and raises the
+supported compiler floor to patched Go 1.25.12. A follow-up scan found
+GO-2026-4341 reachable in the Go 1.25.0 standard library; the minimum lane now
+includes its Go 1.25.6-or-later fix. The historical rollout step 2 verification
+remains recorded as run with the then-current Go 1.23.12 policy. The dependency
+findings were GO-2026-5970 (`x/text`), GO-2026-5764 (AWS event-stream/S3), and
+GO-2026-5004 (`pgx`). The dependency graph now uses `x/text` v0.39.0, AWS
+event-stream v1.7.8, AWS S3 v1.97.3, and `pgx/v5` v5.9.2 or later fixed
+companion versions.
+
+- `Security / govulncheck` runs the pinned
+  `golang.org/x/vuln/cmd/govulncheck@v1.1.4` tool against both Go 1.25.12 and
+  Go 1.26.5;
+- `Security / dependency-review` uses
+  `actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294`
+  (v5.0.0) for pull requests and blocks newly introduced high-severity issues;
+- `Security / codeql` uses
+  `github/codeql-action/*@e60ea984bd3baa95954f2856bcf24f9eaba46637` (v3.37.5)
+  for Go, with `security-events: write` scoped only to that job;
+- `.github/dependabot.yml` checks Go modules, npm, GitHub Actions, and
+  Compose/Docker references weekly, with five open update PRs per ecosystem.
+
+`internal/cicheck` contract tests verify the security workflow triggers,
+permissions, conditions, Action pins, CodeQL inputs, govulncheck version, and
+Dependabot coverage. The security checks remain candidate checks while the first
+baseline is reviewed; branch protection remains rollout step 5.
+
+Validation evidence for this step:
+
+```text
+go mod verify
+go test ./... -count=1
+go vet ./...
+go build ./...
+go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
+npm run lint:actions
+npm run lint:openapi
+docker compose config --quiet
+
+# Go 1.25.12 clean container:
+go test ./... -count=1
+
+# Go 1.25.12 and Go 1.26.5 govulncheck lanes:
+go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
+
+# Go 1.26.5 Linux container:
+go test -race ./... -count=1
+
+# Digest-pinned local Compose dependencies:
+go test -json -p=1 -count=1 -timeout=15m \
+  ./internal/postgres ./internal/s3store ./internal/server
+go run ./tools/verify-integration-report \
+  -manifest .github/integration-tests.json \
+  -input integration-test.raw.json
+```
+
+All local commands exited 0. Govulncheck reported `No vulnerabilities found`,
+the integration verifier reported `verified 17 required integration tests
+across 3 packages`, and the sanitized evidence scan found no credentials.
+Redocly retained the three previously documented non-blocking warnings. This
+local record does not claim that a hosted runner has already produced a security
+baseline; remote workflow evidence is observed on the rollout step 4 pull
+request.

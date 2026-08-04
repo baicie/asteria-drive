@@ -22,6 +22,7 @@
 | [0014](0014-oidc-resource-server-and-tenant-rbac.md) | OIDC Resource Server 与租户 RBAC 边界 | Accepted |
 | [0015](0015-tenant-member-lifecycle.md) | Tenant member lifecycle management and last-owner protection | Accepted |
 | [0016](0016-github-actions-ci-system.md) | GitHub Actions CI trust boundary and merge gates | Accepted |
+| [0017](0017-security-baseline-and-go-toolchain-floor.md) | Security baseline and Go toolchain floor | Accepted |
 
 ## Conventions
 

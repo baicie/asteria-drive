@@ -1,15 +1,20 @@
 # Asteria Drive CI System Design
 
-This document turns ADR-0016 into an implementation contract. ADR-0016 is
-accepted. Rollout steps 1 through 3 are implemented: the repository has pinned
-quality, race, API-contract, and Compose-backed integration candidate checks.
-Security automation, repository rules, and release automation remain later steps.
+This document turns ADR-0016 and ADR-0017 into an implementation contract. Both
+are accepted. Rollout steps 1 through 4 are implemented: the repository has pinned
+quality, race, API-contract, Compose-backed integration, and security candidate
+checks, plus a Dependabot update path. Repository rules and release automation
+remain later steps.
 
 ## 1. Current state
 
 - The repository is public and main is the default branch.
 - `.github/workflows/ci.yml` runs four secret-free candidate PR gates.
-- `go.mod` declares Go 1.23; quality and API checks use the minimum Go 1.23.12,
+- `.github/workflows/security.yml` runs govulncheck, dependency review, and
+  CodeQL without repository secrets; `.github/dependabot.yml` covers Go, npm,
+  GitHub Actions, and Compose/Docker dependencies.
+- `go.mod` declares Go 1.25; quality and API checks use patched minimum Go
+  1.25.12,
   while race uses the current Go 1.26.5. Automatic toolchain downloads are
   disabled in every job.
 - Contract tooling is locked by `package-lock.json` to Node.js 24.16.0,
@@ -33,9 +38,9 @@ implemented:
 | Workflow | Trigger | Merge-gate status | Responsibility |
 | --- | --- | --- | --- |
 | ci.yml | pull request, push to main, manual | four candidates now; enforce after rollout step 5 | quality, race, API contract, and integration implemented |
-| security.yml | pull request, push to main, weekly schedule, manual | planned | govulncheck, dependency review, CodeQL |
+| security.yml | pull request, push to main, weekly schedule, manual | security candidates; baseline review before enforcement | govulncheck, dependency review, CodeQL |
 | release.yml | v* tag, manual | no PR gate; planned | reproducible binaries, checksums, SBOM and provenance |
-| dependabot.yml | GitHub configuration | n/a; planned | Go modules, npm, Actions, and Docker update proposals |
+| dependabot.yml | GitHub configuration | n/a; implemented | Go modules, npm, Actions, and Docker update proposals |
 
 The workflows should not duplicate business commands. Each job calls commands
 documented in this repository and, where shell logic is non-trivial, a
@@ -127,18 +132,28 @@ Steps:
 The CLI version and any Node package lockfile belong in the repository. Avoid
 floating latest downloads in workflow files.
 
-## 4. Security workflow
+## 4. Security workflow and dependency updates
 
-security.yml runs without repository secrets on pull requests:
+`security.yml` runs without repository secrets on pull requests, pushes to main,
+weekly at 03:17 UTC on Mondays, and manual dispatches:
 
-- govulncheck ./... against the resolved module graph;
-- dependency review for changed dependency manifests;
-- CodeQL for Go.
+- `Security / govulncheck` runs the explicitly pinned
+  `golang.org/x/vuln/cmd/govulncheck@v1.1.4` against the resolved module graph
+  with both patched minimum Go 1.25.12 and current Go 1.26.5;
+- `Security / dependency-review` runs only for pull requests and blocks newly
+  introduced high or critical dependency vulnerabilities;
+- `Security / codeql` analyzes Go with the pinned CodeQL action and grants only
+  `security-events: write` in that job.
 
-CodeQL can begin as an informational check while its baseline is reviewed, then
-become required. Secret scanning and push protection should be enabled in the
-repository settings. The workflow must use pull_request, never
-pull_request_target.
+Every Action is pinned to a full commit SHA, checkout credentials are discarded,
+and no job reads repository secrets. CodeQL and dependency review remain
+candidate checks while the first security baseline is reviewed. Secret scanning
+and push protection should be enabled in repository settings. The workflow must
+use `pull_request`, never `pull_request_target`.
+
+`dependabot.yml` checks the Go module graph, npm lockfile, GitHub Actions, and
+Compose/Docker references weekly, with at most five open update pull requests
+per ecosystem.
 
 All workflows should declare explicit top-level permissions. The default is:
 
@@ -151,8 +166,9 @@ receive id-token: write, attestations: write, or contents: write.
 ## 5. Toolchain, action, and cache policy
 
 - Keep the Go language directive and the supported compiler policy separate.
-  Quality and API checks use the minimum Go 1.23.12; race also covers the current
-  Go 1.26.5. Raising either pin requires an explicit policy update.
+  Quality and API checks use patched minimum Go 1.25.12; race also covers the
+  current Go 1.26.5. ADR-0017 records the current compiler-floor increase; raising
+  either pin again requires an explicit policy update.
 - Use actions/setup-go pinned to its v5.5.0 commit with go.sum-based caching.
 - Set GOTOOLCHAIN=local so CI does not silently download a different compiler.
 - Use Node.js 24.16.0 and Redocly CLI 2.43.3 from the committed npm lockfile.
@@ -221,12 +237,12 @@ required PR check. Once defined, it should:
    API-contract jobs.
 3. Completed: add Compose-backed integration, structured pass/skip detection,
    sanitized evidence retention, and unconditional resource cleanup.
-4. Enable security scanning and Dependabot; review the first baseline.
+4. Completed: enable security scanning and Dependabot; review the first baseline.
 5. Apply main branch protection using the stable check names.
 6. Add release artifacts and provenance only after the artifact format is
    separately designed.
 
-## 10. Rollout steps 2 and 3 acceptance
+## 10. Rollout steps 2 through 4 acceptance
 
 - Pull requests, pushes to main, and manual runs create stable `CI / quality`,
   `CI / race`, `CI / api-contract`, and `CI / integration` candidate checks
@@ -251,6 +267,10 @@ required PR check. Once defined, it should:
   upload all run through `always()` paths.
 - The four stable checks remain candidates until rollout step 5 applies branch
   protection; no required-check rule is claimed here.
+- Security checks run without repository secrets, use pinned Action/tool versions,
+  and keep CodeQL's write permission scoped to its job.
+- Dependabot proposes weekly updates for Go, npm, Actions, and Compose/Docker
+  dependencies; it does not itself grant merge or branch permissions.
 
 ## 11. Definition of done for the full CI system
 
