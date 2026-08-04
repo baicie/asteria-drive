@@ -5,7 +5,9 @@
 
 ## 1. 范围与原则
 
-本文覆盖 P0-P4 后端 MVP 以及 M2-1 身份边界：trusted-dev/OIDC 租户边界、PostgreSQL Namespace、S3 Multipart 直传、下载授权和回收站。成员管理、正式 ACL、分享、配额、Outbox、独立 Worker、预览和搜索属于后续 M2 阶段。
+本文覆盖 P0-P4 后端 MVP 以及 M2-1/M2-2 身份边界：trusted-dev/OIDC 租户边界、PostgreSQL Namespace、
+S3 Multipart 直传、下载授权、回收站和成员生命周期。成员邀请/删除、正式 ACL、分享、配额、Outbox、独立
+Worker、预览和搜索属于后续 M2 阶段。
 
 测试投入按风险排序：
 

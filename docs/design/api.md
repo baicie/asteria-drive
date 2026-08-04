@@ -10,7 +10,8 @@
 
 本 API 是网盘控制面，处理 OIDC/OAuth2 或 trusted-dev 身份、租户 Namespace、上传协调、下载授权和回收站。文件正文通过短期 S3 URL 在客户端与对象存储之间传输，绝不经过这些路由。
 
-成员管理、正式 ACL、分享、配额、历史版本 API、同步和预览属于后续 M2 阶段。本轮已落地 M2-1 的 Resource Server 验证、成员解析和基础 RBAC；不保留未实现的占位路由。
+成员邀请/删除、正式 ACL、分享、配额、历史版本 API、同步和预览属于后续 M2 阶段。本轮已落地 M2-1 的
+Resource Server 验证、成员解析和基础 RBAC，以及 M2-2 的成员列表、角色和 active/suspended 状态更新；不保留未实现的占位路由。
 
 所有业务路由以 `/api/v1` 开头。`/healthz`、`/readyz` 是无版本探针。
 

@@ -4,9 +4,10 @@ Asteria Drive 是一个面向个人网盘和企业文件平台的开源控制面
 上传协调、下载授权、内部文件版本和回收站，不自行实现底层分布式对象存储。文件正文通过短期签名 URL
 在客户端与 S3-compatible 数据面之间直接传输。
 
-> 当前状态：后端 MVP 工程验收基线（`main`）上实现 M2-1。M2-1 增加 OIDC/OAuth2 Resource Server、内部主体、
-> 租户成员和基础 RBAC；`trusted-dev` 仍只允许 development，production 必须使用 OIDC + PostgreSQL + S3。
-> 生产部署仍需完成成员管理、正式 ACL、审计和安全评审，不能仅凭本阶段描述为完整生产就绪。
+> 当前状态：后端 MVP 工程验收基线（`main`）上已实现 M2-1 和 M2-2。系统已包含 OIDC/OAuth2 Resource
+> Server、内部主体、租户成员、基础 RBAC，以及成员角色/状态管理；`trusted-dev` 仍只允许 development，
+> production 必须使用 OIDC + PostgreSQL + S3。生产部署仍需完成邀请、正式 ACL、审计和安全评审，
+> 不能仅凭本阶段描述为完整生产就绪。
 
 ## MVP 能力
 
@@ -17,7 +18,8 @@ Asteria Drive 是一个面向个人网盘和企业文件平台的开源控制面
 - 已提交文件查询、短期下载授权、回收、恢复和永久清理。
 - 统一 JSON 错误、请求 ID、health/readiness、版本化迁移和优雅停止。
 
-M2-1 已加入 OIDC/OAuth2 Resource Server、内部主体、租户成员和基础 RBAC；成员管理、正式 ACL、分享、配额、桌面同步、预览、搜索、Outbox 和独立 Worker 属于后续阶段。
+M2-1 已加入 OIDC/OAuth2 Resource Server、内部主体、租户成员和基础 RBAC；M2-2 已加入成员列表、角色与
+状态管理。邀请、正式 ACL、分享、配额、桌面同步、预览、搜索、Outbox 和独立 Worker 属于后续阶段。
 完整范围与完成条件见 [MVP 文档](docs/mvp/README.md)。
 
 ## 本地启动
@@ -27,6 +29,7 @@ M2-1 已加入 OIDC/OAuth2 Resource Server、内部主体、租户成员和基�
 - Go 1.23 或更高版本
 - Docker Engine 与 Docker Compose v2
 - PowerShell 7 或 Windows PowerShell 5.1（以下命令使用 PowerShell）
+- Node.js 24.16.0 与 npm 11（Actions schema 与 OpenAPI 契约校验需要）
 
 ### 1. 启动依赖
 
@@ -35,7 +38,10 @@ docker compose up -d
 docker compose ps
 ```
 
-Compose 会启动 PostgreSQL `17.5` 和 SeaweedFS `3.85`，仅绑定本机端口。命名卷会保留本地数据。
+Compose 会启动 PostgreSQL `17.5` 和 SeaweedFS `3.85`，仅绑定本机端口。镜像分别固定为
+`postgres:17.5-alpine@sha256:6567bca8d7bc8c82c5922425a0baee57be8402df92bae5eacad5f01ae9544daa`
+和 `chrislusf/seaweedfs:3.85@sha256:49312939c00c01e5ee6afbd7d728b18027821d3764c35a797a72acd4fdf3296a`；
+命名卷会保留本地数据。
 
 ### 2. 导入本地配置
 
@@ -142,10 +148,19 @@ go test -race ./...
 go vet ./...
 go build ./...
 git diff --check
+npm ci --ignore-scripts
+npm run lint:actions
+npm run lint:openapi
+go test ./internal/server -run '^TestOpenAPIOperationsMatchRegisteredRoutes$' -count=1
 ```
 
 Linux race 也已在 Debian 13 容器中用 Go 1.24.4 + GCC 验证；完整结果、真实依赖地址和 OpenAPI lint
-见 [P4 证据页](docs/mvp/evidence/p4-live-baseline.md)。
+见 [P4 证据页](docs/mvp/evidence/p4-live-baseline.md)。GitHub Actions 使用固定版本的工具和 Action 提交，
+已实现 `CI / quality`、`CI / race`、`CI / api-contract` 和 `CI / integration` 四项无 GitHub Secrets
+候选检查，详见 [CI 系统设计](docs/process/ci-system.md)。其中集成检查以固定 digest 的 PostgreSQL 与
+SeaweedFS 运行 17 个必需测试（14 个 PostgreSQL、1 个 SeaweedFS、2 个 live HTTP），结构化验证每个
+package 和测试均为 `pass`，任意 `skip` 都会失败；`always()` 路径会脱敏证据、保留 7 天并清理 Compose
+资源。将四项检查设为 required 的 branch protection 仍是 rollout step 5，当前未表示为已配置。
 
 不带外部测试环境变量时，快速测试使用内存 fake。真实 PostgreSQL Repository、SeaweedFS Multipart、
 签名下载和 Range 使用显式环境门禁：
@@ -158,7 +173,7 @@ $env:ASTERIA_TEST_S3_SECRET_KEY = $env:ASTERIA_S3_SECRET_ACCESS_KEY
 $env:ASTERIA_TEST_S3_REGION = $env:ASTERIA_S3_REGION
 $env:ASTERIA_TEST_S3_BUCKET = 'asteria-drive-contract'
 
-go test -v ./internal/postgres ./internal/s3store
+go test -v -p=1 -count=1 -timeout=15m ./internal/postgres ./internal/s3store ./internal/server
 ```
 
 PostgreSQL 测试会在该连接指向的数据库内创建并清理隔离 Schema；S3 测试会创建并清理专用对象。

@@ -1,0 +1,36 @@
+{
+  "packages": [
+    {
+      "package": "github.com/baicie/asteria-drive/internal/postgres",
+      "tests": [
+        "TestMigrateIsIdempotent",
+        "TestRepositoryOIDCMemberContract",
+        "TestRepositoryMemberLifecycleContract",
+        "TestRepositoryNamespaceAndUploadContract",
+        "TestRepositoryFailUploadCompletionContract",
+        "TestRepositoryCommitRollbackAndPurgeContract",
+        "TestRepositoryNestedRecycleRootsRemainIndependent",
+        "TestRepositoryConcurrentNormalizedNameCreateHasSingleWinner",
+        "TestRepositoryConcurrentMutualDirectoryMovesPreserveAcyclicTree",
+        "TestRepositoryConcurrentParentRecycleDoesNotCreateActiveOrphans",
+        "TestRepositoryConcurrentNestedRecycleRootsRemainIndependent",
+        "TestRepositorySequentialPurgeSharedBlobPlansLastEffectiveReference",
+        "TestRepositoryDirectorySubtreeRecycleRestoreContract",
+        "TestRepositoryRestoreChildConflictsWhileOriginalParentIsTrashed"
+      ]
+    },
+    {
+      "package": "github.com/baicie/asteria-drive/internal/s3store",
+      "tests": [
+        "TestProviderSeaweedFSContract"
+      ]
+    },
+    {
+      "package": "github.com/baicie/asteria-drive/internal/server",
+      "tests": [
+        "TestLiveHTTPPostgresSeaweedFSEndToEnd",
+        "TestLiveHTTPConcurrentUploadSessionBaseline"
+      ]
+    }
+  ]
+}

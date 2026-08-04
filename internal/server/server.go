@@ -28,6 +28,40 @@ type Server struct {
 	handler    http.Handler
 }
 
+type apiHandler func(*api, http.ResponseWriter, *http.Request)
+
+type apiRoute struct {
+	pattern    string
+	permission drive.Permission
+	handler    apiHandler
+}
+
+var publicAPIRoutes = []apiRoute{
+	{pattern: "GET /healthz", handler: (*api).health},
+	{pattern: "GET /readyz", handler: (*api).ready},
+}
+
+var protectedAPIRoutes = []apiRoute{
+	{pattern: "GET /api/v1/tenant", permission: drive.PermissionTenantRead, handler: (*api).getTenant},
+	{pattern: "GET /api/v1/tenant/members", permission: drive.PermissionMembersRead, handler: (*api).listMembers},
+	{pattern: "PATCH /api/v1/tenant/members/{principal_id}", permission: drive.PermissionMembersManage, handler: (*api).updateMember},
+	{pattern: "POST /api/v1/directories", permission: drive.PermissionFilesWrite, handler: (*api).createDirectory},
+	{pattern: "GET /api/v1/directories/{id}", permission: drive.PermissionFilesRead, handler: (*api).getDirectory},
+	{pattern: "GET /api/v1/directories/{id}/children", permission: drive.PermissionFilesRead, handler: (*api).listChildren},
+	{pattern: "GET /api/v1/files/{id}", permission: drive.PermissionFilesRead, handler: (*api).getFile},
+	{pattern: "POST /api/v1/files/{id}/download-authorizations", permission: drive.PermissionFilesRead, handler: (*api).createDownloadAuthorization},
+	{pattern: "PATCH /api/v1/nodes/{id}", permission: drive.PermissionFilesWrite, handler: (*api).updateNode},
+	{pattern: "DELETE /api/v1/nodes/{id}", permission: drive.PermissionFilesDelete, handler: (*api).recycleNode},
+	{pattern: "POST /api/v1/uploads", permission: drive.PermissionFilesWrite, handler: (*api).createUpload},
+	{pattern: "GET /api/v1/uploads/{id}", permission: drive.PermissionFilesRead, handler: (*api).getUpload},
+	{pattern: "POST /api/v1/uploads/{id}/parts/sign", permission: drive.PermissionFilesWrite, handler: (*api).signUploadPart},
+	{pattern: "POST /api/v1/uploads/{id}/complete", permission: drive.PermissionFilesWrite, handler: (*api).completeUpload},
+	{pattern: "DELETE /api/v1/uploads/{id}", permission: drive.PermissionFilesWrite, handler: (*api).abortUpload},
+	{pattern: "GET /api/v1/recycle-bin", permission: drive.PermissionFilesRead, handler: (*api).listRecycle},
+	{pattern: "POST /api/v1/recycle-bin/{id}/restore", permission: drive.PermissionFilesWrite, handler: (*api).restoreNode},
+	{pattern: "DELETE /api/v1/recycle-bin/{id}", permission: drive.PermissionFilesDelete, handler: (*api).purgeNode},
+}
+
 func New(options Options) (*Server, error) {
 	if options.Service == nil || options.Authenticator == nil {
 		return nil, drive.E(drive.CodeInvalidRequest, "service and authenticator are required")
@@ -37,30 +71,22 @@ func New(options Options) (*Server, error) {
 	}
 	api := &api{service: options.Service, logger: options.Logger}
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", api.health)
-	mux.HandleFunc("GET /readyz", api.ready)
+	for _, route := range publicAPIRoutes {
+		handler := route.handler
+		mux.HandleFunc(route.pattern, func(w http.ResponseWriter, r *http.Request) {
+			handler(api, w, r)
+		})
+	}
 
 	protected := func(permission drive.Permission, next http.Handler) http.Handler {
 		return options.Authenticator.Middleware(api.writeError)(api.captureIdentity(api.authorize(permission)(next)))
 	}
-	mux.Handle("GET /api/v1/tenant", protected(drive.PermissionTenantRead, http.HandlerFunc(api.getTenant)))
-	mux.Handle("GET /api/v1/tenant/members", protected(drive.PermissionMembersRead, http.HandlerFunc(api.listMembers)))
-	mux.Handle("PATCH /api/v1/tenant/members/{principal_id}", protected(drive.PermissionMembersManage, http.HandlerFunc(api.updateMember)))
-	mux.Handle("POST /api/v1/directories", protected(drive.PermissionFilesWrite, http.HandlerFunc(api.createDirectory)))
-	mux.Handle("GET /api/v1/directories/{id}", protected(drive.PermissionFilesRead, http.HandlerFunc(api.getDirectory)))
-	mux.Handle("GET /api/v1/directories/{id}/children", protected(drive.PermissionFilesRead, http.HandlerFunc(api.listChildren)))
-	mux.Handle("GET /api/v1/files/{id}", protected(drive.PermissionFilesRead, http.HandlerFunc(api.getFile)))
-	mux.Handle("POST /api/v1/files/{id}/download-authorizations", protected(drive.PermissionFilesRead, http.HandlerFunc(api.createDownloadAuthorization)))
-	mux.Handle("PATCH /api/v1/nodes/{id}", protected(drive.PermissionFilesWrite, http.HandlerFunc(api.updateNode)))
-	mux.Handle("DELETE /api/v1/nodes/{id}", protected(drive.PermissionFilesDelete, http.HandlerFunc(api.recycleNode)))
-	mux.Handle("POST /api/v1/uploads", protected(drive.PermissionFilesWrite, http.HandlerFunc(api.createUpload)))
-	mux.Handle("GET /api/v1/uploads/{id}", protected(drive.PermissionFilesRead, http.HandlerFunc(api.getUpload)))
-	mux.Handle("POST /api/v1/uploads/{id}/parts/sign", protected(drive.PermissionFilesWrite, http.HandlerFunc(api.signUploadPart)))
-	mux.Handle("POST /api/v1/uploads/{id}/complete", protected(drive.PermissionFilesWrite, http.HandlerFunc(api.completeUpload)))
-	mux.Handle("DELETE /api/v1/uploads/{id}", protected(drive.PermissionFilesWrite, http.HandlerFunc(api.abortUpload)))
-	mux.Handle("GET /api/v1/recycle-bin", protected(drive.PermissionFilesRead, http.HandlerFunc(api.listRecycle)))
-	mux.Handle("POST /api/v1/recycle-bin/{id}/restore", protected(drive.PermissionFilesWrite, http.HandlerFunc(api.restoreNode)))
-	mux.Handle("DELETE /api/v1/recycle-bin/{id}", protected(drive.PermissionFilesDelete, http.HandlerFunc(api.purgeNode)))
+	for _, route := range protectedAPIRoutes {
+		handler := route.handler
+		mux.Handle(route.pattern, protected(route.permission, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			handler(api, w, r)
+		})))
+	}
 	mux.Handle("/api/", protected("", http.HandlerFunc(api.notFound)))
 
 	handler := api.requestID(api.logRequest(api.recover(mux)))

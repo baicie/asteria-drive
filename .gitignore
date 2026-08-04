@@ -2,6 +2,10 @@
 /bin/
 *.test
 *.out
+/coverage.out
+/compose.log
+/integration-test.json
+/integration-test.raw.json
 
 # Local configuration and data
 .env
@@ -10,6 +14,10 @@
 *.db
 *.sqlite
 *.sqlite3
+
+# Node and CI artifacts
+/node_modules/
+/unit-test.json
 
 # IDE files
 .idea/
