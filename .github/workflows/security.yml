@@ -81,7 +81,7 @@ jobs:
           go-version: ${{ env.GO_CURRENT_VERSION }}
           cache: true
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@e60ea984bd3baa95954f2856bcf24f9eaba46637 # v3.37.5
+        uses: github/codeql-action/init@f205ea1c3313d32999d8d6a48b4f6530d4437b38 # v4.37.4
         with:
           languages: go
           build-mode: autobuild
