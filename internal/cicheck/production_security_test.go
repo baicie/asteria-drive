@@ -2,6 +2,7 @@ package cicheck
 
 import (
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -41,12 +42,15 @@ func TestProductionSecurityEvidenceContract(t *testing.T) {
 
 	review := readContractFile(t, "../../docs/security/review-record.md")
 	for _, required := range []string{
-		"CANDIDATE_COMMIT_SHA", "CANDIDATE_OCI_MANIFEST_DIGEST", "Pending independent approval",
-		"high-severity finding blocks approval", "two\nauthorized reviewers",
+		"Candidate commit", "Pending immutable release tag / pending OCI manifest digest",
+		"Pending independent approval", "high-severity finding blocks approval", "two\nauthorized reviewers",
 	} {
 		if !strings.Contains(review, required) {
 			t.Errorf("security review record is missing %q", required)
 		}
+	}
+	if !regexp.MustCompile("Candidate commit \\| \\x60?[a-f0-9]{40}\\x60?").MatchString(review) {
+		t.Error("security review record must bind a 40-character immutable candidate commit")
 	}
 }
 
