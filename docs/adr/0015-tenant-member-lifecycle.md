@@ -37,7 +37,8 @@ internal identity-mapping data and are not needed for lifecycle management.
 This creates a useful administrative control plane while preserving the existing
 trust boundary: tenant and principal identity still come from authentication and
 the repository, never from request JSON. Role/status changes are immediately visible
-to subsequent OIDC authentication attempts. An active owner count query/lock is part
+to subsequent OIDC authentication attempts and survive later bootstrap runs or service
+restarts. An active owner count query/lock is part
 of every PostgreSQL member update, so concurrent administrators cannot remove the
 last owner.
 

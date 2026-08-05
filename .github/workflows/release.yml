@@ -1,0 +1,192 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing vMAJOR.MINOR.PATCH tag to package and publish
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  GOTOOLCHAIN: local
+  GO_VERSION: 1.26.5
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build:
+    name: Release / build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      tag: ${{ steps.release-input.outputs.tag }}
+      version: ${{ steps.release-input.outputs.version }}
+      commit: ${{ steps.release-input.outputs.commit }}
+      build_time: ${{ steps.release-input.outputs.build_time }}
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: Validate release input
+        id: release-input
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]]; then
+            printf 'Release tag has an invalid format: %s\n' "$RELEASE_TAG" >&2
+            exit 1
+          fi
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          git fetch --force origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+          tag_commit="$(git rev-list -n 1 "$RELEASE_TAG")"
+          head_commit="$(git rev-parse HEAD)"
+          if [[ "$tag_commit" != "$head_commit" ]]; then
+            printf 'Checked out commit %s does not match tag %s commit %s\n' "$head_commit" "$RELEASE_TAG" "$tag_commit" >&2
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$tag_commit" refs/remotes/origin/main; then
+            printf 'Release tag %s is not reachable from protected main\n' "$RELEASE_TAG" >&2
+            exit 1
+          fi
+          source_epoch="$(git show -s --format=%ct "$tag_commit")"
+          build_time="$(date -u -d "@$source_epoch" +'%Y-%m-%dT%H:%M:%SZ')"
+          printf 'tag=%s\n' "$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          printf 'version=%s\n' "${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
+          printf 'commit=%s\n' "$tag_commit" >> "$GITHUB_OUTPUT"
+          printf 'epoch=%s\n' "$source_epoch" >> "$GITHUB_OUTPUT"
+          printf 'build_time=%s\n' "$build_time" >> "$GITHUB_OUTPUT"
+      - name: Build deterministic release artifacts
+        env:
+          RELEASE_TAG: ${{ steps.release-input.outputs.tag }}
+          RELEASE_COMMIT: ${{ steps.release-input.outputs.commit }}
+          RELEASE_EPOCH: ${{ steps.release-input.outputs.epoch }}
+        run: |
+          set -euo pipefail
+          rm -rf "$RUNNER_TEMP/asteria-release"
+          go run ./tools/package-release \
+            -version "$RELEASE_TAG" \
+            -commit "$RELEASE_COMMIT" \
+            -source-date-epoch "$RELEASE_EPOCH" \
+            -output "$RUNNER_TEMP/asteria-release"
+      - name: Generate SPDX SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          path: ${{ runner.temp }}/asteria-release
+          format: spdx-json
+          output-file: ${{ runner.temp }}/asteria-release/asteria-drive_${{ steps.release-input.outputs.version }}.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+          dependency-snapshot: false
+      - name: Write release checksums
+        run: go run ./tools/release-checksums -dir "$RUNNER_TEMP/asteria-release"
+      - name: Upload release bundle for publish gate
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-${{ steps.release-input.outputs.tag }}
+          path: ${{ runner.temp }}/asteria-release
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Release / publish
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: release
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+      packages: write
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ needs.build.outputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Download release bundle
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-${{ needs.build.outputs.tag }}
+          path: ${{ runner.temp }}/asteria-release
+      - name: Verify release checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/asteria-release"
+          sha256sum --check checksums.txt
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Build and publish immutable OCI image
+        id: publish-image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.build.outputs.tag }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${{ needs.build.outputs.commit }}
+          build-args: |
+            VERSION=${{ needs.build.outputs.tag }}
+            COMMIT=${{ needs.build.outputs.commit }}
+            BUILD_TIME=${{ needs.build.outputs.build_time }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.version=${{ needs.build.outputs.tag }}
+            org.opencontainers.image.revision=${{ needs.build.outputs.commit }}
+          provenance: false
+      - name: Attest release subjects
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-checksums: ${{ runner.temp }}/asteria-release/checksums.txt
+          show-summary: true
+      - name: Attest OCI image
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.publish-image.outputs.digest }}
+          push-to-registry: true
+          show-summary: true
+      - name: Publish immutable GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.build.outputs.tag }}
+          RELEASE_DIR: ${{ runner.temp }}/asteria-release
+        run: |
+          set -euo pipefail
+          gh release create "$RELEASE_TAG" "$RELEASE_DIR"/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --title "Asteria Drive $RELEASE_TAG" \
+            --generate-notes

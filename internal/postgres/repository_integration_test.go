@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -41,7 +42,7 @@ func TestMigrateIsIdempotent(t *testing.T) {
 	).Scan(&tables); err != nil {
 		t.Fatalf("count MVP tables: %v", err)
 	}
-	if migrations != 2 || tables != 8 {
+	if migrations != 3 || tables != 8 {
 		t.Fatalf("unexpected migration result: migrations=%d tables=%d", migrations, tables)
 	}
 }
@@ -84,14 +85,38 @@ func TestRepositoryOIDCMemberContract(t *testing.T) {
 	if err != nil || resolvedB.Role != drive.RoleEditor || resolvedB.Identity.TenantID != tenantB {
 		t.Fatalf("resolve tenant B: record=%+v err=%v", resolvedB, err)
 	}
-	if err := repository.SetOIDCMemberStatus(ctx, tenantB, principalID, drive.MemberStatusSuspended); err != nil {
-		t.Fatal(err)
+	ownerID := testID(707)
+	if _, err := repository.EnsureOIDCMember(ctx, drive.OIDCMemberSeed{
+		PrincipalID: ownerID, TenantID: tenantB, Issuer: seed.Issuer, Subject: "owner",
+		DisplayName: "Owner", Role: drive.RoleOwner, Now: now,
+	}); err != nil {
+		t.Fatalf("bootstrap owner: %v", err)
+	}
+	if _, err := repository.UpdateMember(ctx, drive.UpdateMemberCommand{
+		TenantID: tenantB, PrincipalID: principalID, ActorPrincipalID: ownerID, ActorRole: drive.RoleOwner,
+		Role: accessRolePtr(drive.RoleViewer), Status: memberStatusPtr(drive.MemberStatusSuspended), Now: now.Add(time.Minute),
+	}); err != nil {
+		t.Fatalf("manage bootstrapped member: %v", err)
+	}
+	replayedSeed := seed
+	replayedSeed.Role = drive.RoleAdmin
+	replayedSeed.Now = now.Add(2 * time.Minute)
+	replayed, err := repository.EnsureOIDCMember(ctx, replayedSeed)
+	if err != nil {
+		t.Fatalf("repeat bootstrap after managed update: %v", err)
+	}
+	if replayed.Role != drive.RoleViewer || replayed.Status != drive.MemberStatusSuspended {
+		t.Fatalf("repeat bootstrap overwrote managed member: %+v", replayed)
 	}
 	if _, err := repository.ResolveOIDCPrincipal(ctx, seed.Issuer, seed.Subject, tenantB); drive.CodeOf(err) != drive.CodeForbidden {
 		t.Fatalf("suspended member should be forbidden, got %v", err)
 	}
 	if err := repository.SetOIDCMemberStatus(ctx, tenantB, principalID, drive.MemberStatusActive); err != nil {
 		t.Fatal(err)
+	}
+	resolvedB, err = repository.ResolveOIDCPrincipal(ctx, seed.Issuer, seed.Subject, tenantB)
+	if err != nil || resolvedB.Role != drive.RoleViewer {
+		t.Fatalf("reactivated member: record=%+v err=%v", resolvedB, err)
 	}
 	conflict := seed
 	conflict.PrincipalID = testID(706)
@@ -202,6 +227,225 @@ func TestRepositoryMemberLifecycleContract(t *testing.T) {
 func accessRolePtr(value drive.AccessRole) *drive.AccessRole { return &value }
 
 func memberStatusPtr(value drive.MemberStatus) *drive.MemberStatus { return &value }
+
+func TestRepositoryGovernanceACLAndAuditContract(t *testing.T) {
+	repository := integrationRepository(t)
+	ctx := drive.ContextWithRequestID(context.Background(), "pg-governance-contract")
+	now := time.Date(2026, 8, 5, 13, 0, 0, 0, time.UTC)
+	tenantID, rootID := testID(800), testID(801)
+	ownerID, viewerID, inviteeID := testID(802), testID(803), testID(804)
+	if _, err := repository.EnsureTenant(ctx, drive.TenantSeed{TenantID: tenantID, DisplayName: "Governance", RootNodeID: rootID, Now: now}); err != nil {
+		t.Fatal(err)
+	}
+	for _, member := range []struct {
+		id      string
+		subject string
+		role    drive.AccessRole
+	}{{ownerID, "owner", drive.RoleOwner}, {viewerID, "viewer", drive.RoleViewer}} {
+		if _, err := repository.EnsureOIDCMember(ctx, drive.OIDCMemberSeed{
+			PrincipalID: member.id, TenantID: tenantID, Issuer: "https://issuer.pg-governance.test",
+			Subject: member.subject, DisplayName: member.subject, Role: member.role, Now: now,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	invitation, err := repository.CreateInvitation(ctx, drive.CreateInvitationCommand{
+		ID: testID(805), TenantID: tenantID, ActorPrincipalID: ownerID, ActorRole: drive.RoleOwner,
+		Issuer: "https://issuer.pg-governance.test", Subject: "invitee", DisplayName: "Invitee",
+		Role: drive.RoleViewer, TokenHash: strings.Repeat("a", 64), ExpiresAt: now.Add(time.Hour), Now: now,
+	})
+	if err != nil || invitation.Status != drive.InvitationPending {
+		t.Fatalf("create invitation: invitation=%+v err=%v", invitation, err)
+	}
+	if _, _, err := repository.AcceptInvitation(ctx, drive.AcceptInvitationCommand{
+		TokenHash: strings.Repeat("a", 64), CandidatePrincipalID: inviteeID,
+		Issuer: "https://issuer.pg-governance.test", Subject: "wrong-subject", Now: now.Add(time.Minute),
+	}); drive.CodeOf(err) != drive.CodeForbidden {
+		t.Fatalf("mismatched invitation identity code=%s err=%v", drive.CodeOf(err), err)
+	}
+	accepted, invitee, err := repository.AcceptInvitation(ctx, drive.AcceptInvitationCommand{
+		TokenHash: strings.Repeat("a", 64), CandidatePrincipalID: inviteeID,
+		Issuer: "https://issuer.pg-governance.test", Subject: "invitee", Now: now.Add(time.Minute),
+	})
+	if err != nil || accepted.Status != drive.InvitationAccepted || invitee.Identity.PrincipalID != inviteeID {
+		t.Fatalf("accept invitation: invitation=%+v member=%+v err=%v", accepted, invitee, err)
+	}
+	replayed, replayedMember, err := repository.AcceptInvitation(ctx, drive.AcceptInvitationCommand{
+		TokenHash: strings.Repeat("a", 64), CandidatePrincipalID: testID(806),
+		Issuer: "https://issuer.pg-governance.test", Subject: "invitee", Now: now.Add(2 * time.Minute),
+	})
+	if err != nil || replayed.ID != accepted.ID || replayedMember.Identity.PrincipalID != inviteeID {
+		t.Fatalf("replay invitation: invitation=%+v member=%+v err=%v", replayed, replayedMember, err)
+	}
+	pending, err := repository.CreateInvitation(ctx, drive.CreateInvitationCommand{
+		ID: testID(807), TenantID: tenantID, ActorPrincipalID: ownerID, ActorRole: drive.RoleOwner,
+		Issuer: "https://issuer.pg-governance.test", Subject: "revoked", DisplayName: "Revoked",
+		Role: drive.RoleEditor, TokenHash: strings.Repeat("b", 64), ExpiresAt: now.Add(time.Hour), Now: now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	revoked, err := repository.RevokeInvitation(ctx, drive.RevokeInvitationCommand{
+		TenantID: tenantID, InvitationID: pending.ID, ActorPrincipalID: ownerID,
+		ActorRole: drive.RoleOwner, Now: now.Add(3 * time.Minute),
+	})
+	if err != nil || revoked.Status != drive.InvitationRevoked {
+		t.Fatalf("revoke invitation: invitation=%+v err=%v", revoked, err)
+	}
+
+	parent := createDirectory(t, repository, drive.CreateDirectoryCommand{
+		Identity: drive.Identity{TenantID: tenantID, PrincipalID: ownerID}, ID: testID(808),
+		ParentID: rootID, DisplayName: "Parent", NormalizedName: "parent", Now: now,
+	})
+	child := createDirectory(t, repository, drive.CreateDirectoryCommand{
+		Identity: drive.Identity{TenantID: tenantID, PrincipalID: ownerID}, ID: testID(809),
+		ParentID: parent.ID, DisplayName: "Child", NormalizedName: "child", Now: now,
+	})
+	group, err := repository.CreateGroup(ctx, drive.CreateGroupCommand{
+		ID: testID(810), TenantID: tenantID, ActorPrincipalID: ownerID, ActorRole: drive.RoleOwner,
+		DisplayName: "Engineering", NormalizedName: "engineering", Now: now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	memberCommand := drive.GroupMemberCommand{
+		TenantID: tenantID, GroupID: group.ID, PrincipalID: viewerID,
+		ActorPrincipalID: ownerID, ActorRole: drive.RoleOwner, Now: now,
+	}
+	if err := repository.AddGroupMember(ctx, memberCommand); err != nil {
+		t.Fatal(err)
+	}
+	groupMembers, err := repository.ListGroupMembers(ctx, tenantID, group.ID)
+	if err != nil || len(groupMembers) != 1 || groupMembers[0].Identity.PrincipalID != viewerID {
+		t.Fatalf("group members=%+v err=%v", groupMembers, err)
+	}
+	grant, err := repository.SetNodeACL(ctx, drive.SetNodeACLCommand{
+		ID: testID(811), TenantID: tenantID, NodeID: parent.ID, SubjectType: drive.ACLSubjectGroup,
+		SubjectID: group.ID, Role: drive.ACLContributor, ActorPrincipalID: ownerID,
+		ActorRole: drive.RoleOwner, Now: now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	viewer := drive.Identity{TenantID: tenantID, PrincipalID: viewerID}
+	if err := repository.AuthorizeNode(ctx, viewer, child.ID, drive.NodeCapabilityWrite); err != nil {
+		t.Fatalf("inherited contributor write: %v", err)
+	}
+	if err := repository.AuthorizeNode(ctx, viewer, child.ID, drive.NodeCapabilityDelete); drive.CodeOf(err) != drive.CodeForbidden {
+		t.Fatalf("contributor delete code=%s err=%v", drive.CodeOf(err), err)
+	}
+	updatedGrant, err := repository.SetNodeACL(ctx, drive.SetNodeACLCommand{
+		ID: testID(812), TenantID: tenantID, NodeID: parent.ID, SubjectType: drive.ACLSubjectGroup,
+		SubjectID: group.ID, Role: drive.ACLManager, ActorPrincipalID: ownerID,
+		ActorRole: drive.RoleOwner, Now: now.Add(time.Minute),
+	})
+	if err != nil || updatedGrant.ID != grant.ID || updatedGrant.Role != drive.ACLManager {
+		t.Fatalf("update ACL grant: grant=%+v err=%v", updatedGrant, err)
+	}
+	if err := repository.AuthorizeNode(ctx, viewer, child.ID, drive.NodeCapabilityDelete); err != nil {
+		t.Fatalf("inherited manager delete: %v", err)
+	}
+	if err := repository.RemoveGroupMember(ctx, memberCommand); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.AuthorizeNode(ctx, viewer, child.ID, drive.NodeCapabilityWrite); drive.CodeOf(err) != drive.CodeForbidden {
+		t.Fatalf("removed group membership code=%s err=%v", drive.CodeOf(err), err)
+	}
+	if err := repository.AddGroupMember(ctx, memberCommand); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := repository.ListNodeACL(ctx, tenantID, parent.ID)
+	if err != nil || len(entries) != 1 || entries[0].ID != grant.ID {
+		t.Fatalf("ACL entries=%+v err=%v", entries, err)
+	}
+	updatedGroup, err := repository.UpdateGroup(ctx, drive.UpdateGroupCommand{
+		TenantID: tenantID, GroupID: group.ID, ActorPrincipalID: ownerID, ActorRole: drive.RoleOwner,
+		DisplayName: "Platform", NormalizedName: "platform", Now: now.Add(2 * time.Minute),
+	})
+	if err != nil || updatedGroup.DisplayName != "Platform" {
+		t.Fatalf("update group: group=%+v err=%v", updatedGroup, err)
+	}
+
+	otherTenantID := testID(813)
+	if _, err := repository.EnsureTenant(ctx, drive.TenantSeed{TenantID: otherTenantID, DisplayName: "Other", RootNodeID: testID(814), Now: now}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.EnsureOIDCMember(ctx, drive.OIDCMemberSeed{
+		PrincipalID: viewerID, TenantID: otherTenantID, Issuer: "https://issuer.pg-governance.test",
+		Subject: "viewer", DisplayName: "viewer", Role: drive.RoleViewer, Now: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.AuthorizeNode(ctx, drive.Identity{TenantID: otherTenantID, PrincipalID: viewerID}, child.ID, drive.NodeCapabilityRead); drive.CodeOf(err) != drive.CodeNotFound {
+		t.Fatalf("cross-tenant ACL lookup code=%s err=%v", drive.CodeOf(err), err)
+	}
+
+	events, err := repository.ListAudit(ctx, drive.AuditFilter{TenantID: tenantID, Limit: 3})
+	if err != nil || len(events) != 3 {
+		t.Fatalf("first audit page=%+v err=%v", events, err)
+	}
+	for _, event := range events {
+		if event.Metadata == nil || event.RequestID != "pg-governance-contract" {
+			t.Fatalf("audit event lacks bounded metadata/request correlation: %+v", event)
+		}
+	}
+	next, err := repository.ListAudit(ctx, drive.AuditFilter{TenantID: tenantID, AfterSequence: events[2].Sequence, Limit: 100})
+	if err != nil || len(next) == 0 || next[0].Sequence <= events[2].Sequence {
+		t.Fatalf("next audit page=%+v err=%v", next, err)
+	}
+	if err := repository.DeleteGroup(ctx, drive.DeleteGroupCommand{
+		TenantID: tenantID, GroupID: group.ID, ActorPrincipalID: ownerID,
+		ActorRole: drive.RoleOwner, Now: now.Add(4 * time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.DeleteMember(ctx, drive.DeleteMemberCommand{
+		TenantID: tenantID, PrincipalID: viewerID, ActorPrincipalID: ownerID,
+		ActorRole: drive.RoleOwner, Now: now.Add(5 * time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.ResolveOIDCPrincipal(ctx, "https://issuer.pg-governance.test", "viewer", tenantID); drive.CodeOf(err) != drive.CodeForbidden {
+		t.Fatalf("deleted membership should not resolve, got %v", err)
+	}
+}
+
+func TestRepositoryAuditRowsAreAppendOnly(t *testing.T) {
+	repository := integrationRepository(t)
+	ctx := drive.ContextWithRequestID(context.Background(), "pg-audit-trigger-contract")
+	now := time.Date(2026, 8, 5, 14, 0, 0, 0, time.UTC)
+	tenantID, ownerID := testID(820), testID(822)
+	if _, err := repository.EnsureTenant(ctx, drive.TenantSeed{TenantID: tenantID, DisplayName: "Audit", RootNodeID: testID(821), Now: now}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.EnsureOIDCMember(ctx, drive.OIDCMemberSeed{
+		PrincipalID: ownerID, TenantID: tenantID, Issuer: "https://issuer.pg-audit.test",
+		Subject: "owner", DisplayName: "owner", Role: drive.RoleOwner, Now: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	eventID := testID(823)
+	if err := repository.AppendAudit(ctx, drive.AuditEvent{
+		ID: eventID, TenantID: tenantID, ActorPrincipalID: ownerID,
+		Action: "test.audit", TargetType: "test", TargetID: testID(824), OccurredAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.pool.Exec(ctx, `UPDATE audit_event SET action='test.tampered' WHERE id=$1`, eventID); err == nil {
+		t.Fatal("audit UPDATE unexpectedly succeeded")
+	}
+	if _, err := repository.pool.Exec(ctx, `DELETE FROM audit_event WHERE id=$1`, eventID); err == nil {
+		t.Fatal("audit DELETE unexpectedly succeeded")
+	}
+	var action, requestID, metadata string
+	if err := repository.pool.QueryRow(ctx, `SELECT action,request_id,metadata::text FROM audit_event WHERE id=$1`, eventID).Scan(&action, &requestID, &metadata); err != nil {
+		t.Fatal(err)
+	}
+	if action != "test.audit" || requestID != "pg-audit-trigger-contract" || metadata != "{}" {
+		t.Fatalf("audit row changed: action=%q request_id=%q metadata=%q", action, requestID, metadata)
+	}
+}
 
 func TestRepositoryNamespaceAndUploadContract(t *testing.T) {
 	repository := integrationRepository(t)

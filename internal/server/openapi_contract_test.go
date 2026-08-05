@@ -36,8 +36,8 @@ func TestOpenAPIOperationsMatchRegisteredRoutes(t *testing.T) {
 		}
 	}
 
-	registered := make(map[string]struct{}, len(publicAPIRoutes)+len(protectedAPIRoutes))
-	for _, route := range appendRoutes(publicAPIRoutes, protectedAPIRoutes) {
+	registered := make(map[string]struct{}, len(publicAPIRoutes)+len(externalAPIRoutes)+len(protectedAPIRoutes))
+	for _, route := range appendRoutes(publicAPIRoutes, externalAPIRoutes, protectedAPIRoutes) {
 		if _, exists := registered[route.pattern]; exists {
 			t.Fatalf("route %q is registered more than once", route.pattern)
 		}

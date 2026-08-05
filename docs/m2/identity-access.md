@@ -39,7 +39,8 @@ OIDC 模式至少需要：
 
 Bootstrap 是 JSON 数组，每项包含 `issuer`、`subject`、`principal_id`、`tenant_id`、`display_name` 和
 `role`。启动时会创建或确认内部主体和成员关系；它不是动态用户注册接口。生产 Secret/配置系统负责
-保护其中的租户拓扑信息和 provider 地址。
+保护其中的租户拓扑信息和 provider 地址。重复启动只为缺失的成员关系采用 seed role 和 `active`
+状态；已存在成员的 role/status 由成员管理 API 持有，bootstrap 不会覆盖管理员的降权或暂停操作。
 
 ## 角色权限
 

@@ -1,7 +1,7 @@
 # PR #2 审查问题修复计划
 
-状态：设计、实现与验证已完成，待合并。基线分支 `mvp/p4-integration`，修复分支
-`codex/fix-p4-review-findings`。
+状态：设计、实现与验证已完成；PR #2 已于 2026-08-03 合并到 `main`（merge commit `57fc1c1`）。
+基线分支 `mvp/p4-integration`，修复分支 `codex/fix-p4-review-findings`。
 
 ## 问题与设计映射
 
@@ -27,4 +27,4 @@
 5. [x] 补充单元、Repository、HTTP 和真实依赖并发测试。
 6. [x] 执行格式、测试、静态检查、构建和 Linux race 门禁，并把结果追加到实施日志。
 
-任何未通过的 RF 项都阻断该修复分支合入 MVP 分支。
+评审时任何未通过的 RF 项都会阻断合入；上述项目已在 PR #2 合并前全部关闭。

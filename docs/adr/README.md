@@ -23,6 +23,10 @@
 | [0015](0015-tenant-member-lifecycle.md) | Tenant member lifecycle management and last-owner protection | Accepted |
 | [0016](0016-github-actions-ci-system.md) | GitHub Actions CI trust boundary and merge gates | Accepted |
 | [0017](0017-security-baseline-and-go-toolchain-floor.md) | Security baseline and Go toolchain floor | Accepted |
+| [0018](0018-release-artifact-and-provenance.md) | Release artifact format and provenance boundary | Accepted |
+| [0019](0019-production-identity-governance.md) | Invitations, membership removal, groups, resource ACLs, and audit events | Accepted |
+| [0020](0020-idempotency-maintenance-and-metrics.md) | Persistent creation idempotency, leased maintenance, metrics, and scale evidence | Accepted |
+| [0021](0021-production-runtime-and-recovery.md) | Production secrets, hardened runtime, backup/restore, and security review | Accepted |
 
 ## Conventions
 

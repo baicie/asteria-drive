@@ -1,15 +1,17 @@
 # Asteria Drive CI System Design
 
 This document turns ADR-0016 and ADR-0017 into an implementation contract. Both
-are accepted. Rollout steps 1 through 4 are implemented: the repository has pinned
-quality, race, API-contract, Compose-backed integration, and security candidate
-checks, plus a Dependabot update path. Repository rules and release automation
-remain later steps.
+are accepted. Rollout steps 1 through 6 are implemented in the repository: it has
+pinned quality, race, API-contract, Compose-backed integration, security, and
+tagged release workflows, plus a Dependabot update path and protected main-branch
+merge gates. Release publication remains gated by the configured `release`
+environment.
 
 ## 1. Current state
 
 - The repository is public and main is the default branch.
-- `.github/workflows/ci.yml` runs four secret-free candidate PR gates.
+- `.github/workflows/ci.yml` runs four secret-free PR gates, all required for
+  pull requests targeting protected `main`.
 - `.github/workflows/security.yml` runs govulncheck, dependency review, and
   CodeQL without repository secrets; `.github/dependabot.yml` covers Go, npm,
   GitHub Actions, and Compose/Docker dependencies.
@@ -37,20 +39,20 @@ implemented:
 
 | Workflow | Trigger | Merge-gate status | Responsibility |
 | --- | --- | --- | --- |
-| ci.yml | pull request, push to main, manual | four candidates now; enforce after rollout step 5 | quality, race, API contract, and integration implemented |
-| security.yml | pull request, push to main, weekly schedule, manual | security candidates; baseline review before enforcement | govulncheck, dependency review, CodeQL |
-| release.yml | v* tag, manual | no PR gate; planned | reproducible binaries, checksums, SBOM and provenance |
+| ci.yml | pull request, push to main, manual | required on protected main | quality, race, API contract, and integration implemented |
+| security.yml | pull request, push to main, weekly schedule, manual | required on protected main | govulncheck, dependency review, CodeQL |
+| release.yml | v* tag, manual | protected release environment | reproducible binaries, checksums, SBOM and provenance |
 | dependabot.yml | GitHub configuration | n/a; implemented | Go modules, npm, Actions, and Docker update proposals |
 
 The workflows should not duplicate business commands. Each job calls commands
 documented in this repository and, where shell logic is non-trivial, a
 repository-owned helper that emits structured output.
 
-## 3. Candidate PR graph
+## 3. Required CI PR graph
 
-The four implemented jobs run independently. Rollout step 5 configures repository
-rules; only after that point is a PR blocked from merge unless all four jobs
-succeed. This document does not represent those rules as already configured.
+The four implemented CI jobs run independently. Together with the three security
+jobs in section 4, branch protection blocks a pull request targeting `main` unless
+all seven required checks succeed and the required review policy is satisfied.
 
 ### CI / quality
 
@@ -101,7 +103,7 @@ disposable values scoped to the isolated Compose project.
    go test -json -p=1 -count=1 -timeout=15m ./internal/postgres ./internal/s3store ./internal/server
    ```
 
-   The committed manifest names 17 required tests: 14 PostgreSQL, one
+   The committed manifest names 19 required tests: 16 PostgreSQL, one
    SeaweedFS, and two live HTTP tests.
 4. Parse the JSON report structurally. Every required package and test must end
    in `pass`; any observed `skip`, missing test, package failure, or malformed
@@ -123,11 +125,10 @@ Steps:
 - lint docs/openapi.yaml with the locked Redocly CLI version (implemented);
 - verify that every HTTP route has a documented operation and that every
   documented operation is registered by the server (implemented);
-- compare the pull-request OpenAPI document with the base document using a
-  pinned compatibility tool (later API hardening, to be completed before
-  rollout step 5);
-- fail on a breaking /api/v1 change unless the API version and an ADR change
-  (planned as later API hardening, to be completed before rollout step 5).
+- compare the pull-request OpenAPI document with the base document using the
+  repository-owned compatibility checker (implemented);
+- fail on removed operations, responses, parameters, or response schema fields;
+  any OpenAPI file change also requires an ADR (implemented).
 
 The CLI version and any Node package lockfile belong in the repository. Avoid
 floating latest downloads in workflow files.
@@ -146,10 +147,11 @@ weekly at 03:17 UTC on Mondays, and manual dispatches:
   `security-events: write` in that job.
 
 Every Action is pinned to a full commit SHA, checkout credentials are discarded,
-and no job reads repository secrets. CodeQL and dependency review remain
-candidate checks while the first security baseline is reviewed. Secret scanning
-and push protection should be enabled in repository settings. The workflow must
-use `pull_request`, never `pull_request_target`.
+and no job reads repository secrets. All three security checks are required for
+pull requests targeting protected `main`. Secret scanning, push protection,
+dependency graph, vulnerability alerts, and Dependabot security updates are
+enabled in repository settings. The workflow must use `pull_request`, never
+`pull_request_target`.
 
 `dependabot.yml` checks the Go module graph, npm lockfile, GitHub Actions, and
 Compose/Docker references weekly, with at most five open update pull requests
@@ -180,20 +182,20 @@ receive id-token: write, attestations: write, or contents: write.
 
 ## 6. Branch protection and repository settings
 
-Before making the checks required:
+The rollout step 5 policy is applied to `main`:
 
-- require pull requests for main;
-- require at least one approving review and dismiss stale approvals;
-- require conversation resolution and the four stable CI checks;
+- require pull requests with at least one approving review;
+- dismiss stale approvals and require approval after the last push;
+- require conversation resolution and the seven stable CI/security checks;
 - require the branch to be up to date before merge;
-- disable force pushes and branch deletion;
-- allow squash merge and enable automatic deletion of merged branches;
-- restrict Actions to an approved allowlist and require SHA pinning;
-- add CODEOWNERS for .github, migrations, authentication, storage adapters,
-  ADRs, and CI design.
+- enforce the policy for administrators and require CODEOWNERS review;
+- disable force pushes and branch deletion.
 
-Do not allow an administrator bypass for security-sensitive workflow or migration
-changes without an explicitly recorded exception.
+CODEOWNERS covers the repository by default and calls out workflow, ADR/process,
+and infrastructure paths explicitly. Linear-history enforcement remains a
+separate follow-up decision. Do not allow an administrator bypass for
+security-sensitive workflow or migration changes without an explicitly recorded
+exception.
 
 ## 7. Artifacts and failure handling
 
@@ -220,15 +222,16 @@ Target operational budgets:
 
 ## 8. Release boundary
 
-The repository does not currently define a Dockerfile, binary release format, or
-deployment environment. Therefore release automation is a future lane, not a
-required PR check. Once defined, it should:
+ADR-0018 defines the release format. `release.yml` builds the server and
+migration binaries for Linux `amd64` and `arm64` from a clean tag checkout,
+produces deterministic archives, a sorted SHA-256 manifest, an SPDX JSON SBOM,
+and a release manifest. The tag must be reachable from protected `main`.
 
-1. build Linux binaries from a clean tag checkout;
-2. produce checksums and an SBOM;
-3. generate provenance with GitHub OIDC;
-4. publish only from a protected release environment;
-5. never deploy directly from a pull request.
+The publish job is separated from the build job, requires the `release`
+environment, attaches GitHub OIDC provenance to checksum subjects and the
+published OCI digest, and publishes an immutable GitHub Release plus a
+multi-architecture GHCR image. Pull requests never publish or attest release
+artifacts. Deployment automation remains outside this rollout.
 
 ## 9. Rollout sequence
 
@@ -238,39 +241,50 @@ required PR check. Once defined, it should:
 3. Completed: add Compose-backed integration, structured pass/skip detection,
    sanitized evidence retention, and unconditional resource cleanup.
 4. Completed: enable security scanning and Dependabot; review the first baseline.
-5. Apply main branch protection using the stable check names.
-6. Add release artifacts and provenance only after the artifact format is
-   separately designed.
+5. Completed: apply main branch protection using the stable check names.
+6. Completed in repository: define the artifact format and add deterministic
+   binaries, checksums, SBOM, OIDC provenance, and protected publication.
 
-## 10. Rollout steps 2 through 4 acceptance
+## 10. Rollout steps 2 through 6 acceptance
 
 - Pull requests, pushes to main, and manual runs create stable `CI / quality`,
-  `CI / race`, `CI / api-contract`, and `CI / integration` candidate checks
-  without repository secrets. They are not represented as enforced branch rules
-  before step 5.
+  `CI / race`, `CI / api-contract`, and `CI / integration` checks without
+  repository secrets; all four are required for pull requests targeting `main`.
 - Quality verifies modules and formatting, runs tests, vet and build, checks the
   diff, and retains test/coverage evidence for seven days.
 - Race runs the deterministic suite with the Linux race detector.
 - API contract installs only locked npm dependencies, validates the workflow
-  schema, lints OpenAPI, and checks exact equality between documented and
-  registered HTTP operations.
+  schema, lints OpenAPI, compares the pull-request document with its base, and
+  checks exact equality between documented and registered HTTP operations.
 - Workflow permissions are read-only, checkout credentials are not persisted,
   pull-request concurrency is cancellable, and third-party Actions use full SHAs.
 - Integration uses disposable repository-owned values rather than GitHub Secrets
   and starts the digest-pinned PostgreSQL and SeaweedFS services with health
   checks.
-- Its manifest requires 17 tests: 14 PostgreSQL, one SeaweedFS, and two live
+- Its manifest requires 19 tests: 16 PostgreSQL, one SeaweedFS, and two live
   HTTP tests. Structured report verification requires package and test `pass`
   actions and rejects every `skip`.
 - Sanitized test and Compose evidence is retained for seven days. Sanitization,
   raw-report removal, `docker compose down -v --remove-orphans`, and artifact
   upload all run through `always()` paths.
-- The four stable checks remain candidates until rollout step 5 applies branch
-  protection; no required-check rule is claimed here.
+- The seven stable CI/security checks are required for pull requests targeting
+  protected `main`; the protection policy uses strict up-to-date checks.
 - Security checks run without repository secrets, use pinned Action/tool versions,
   and keep CodeQL's write permission scoped to its job.
 - Dependabot proposes weekly updates for Go, npm, Actions, and Compose/Docker
   dependencies; it does not itself grant merge or branch permissions.
+- Release tags are validated against protected `main`; pull requests cannot
+  publish artifacts.
+- Release archives contain both control-plane binaries and README metadata for
+  Linux `amd64` and `arm64`, with deterministic timestamps and embedded build
+  metadata.
+- The release bundle contains a manifest, sorted SHA-256 checksums covering the
+  bundle, and an SPDX JSON SBOM.
+- Only the protected `release` environment may publish, with write and OIDC
+  permissions limited to the publish job.
+- The published GHCR image is built for Linux `amd64` and `arm64`, carries the
+  source-commit tag, and receives a provenance attestation for its manifest
+  digest. Deployments pin that digest rather than a mutable tag.
 
 ## 11. Definition of done for the full CI system
 
@@ -278,6 +292,6 @@ required PR check. Once defined, it should:
 - Every required integration test passes instead of being skipped.
 - A clean runner can reproduce quality, race, migration, S3, and HTTP checks.
 - Main cannot merge while any required check is red or missing.
-- Workflow and dependency changes receive CODEOWNERS review.
+- Workflow and dependency changes receive required CODEOWNERS review.
 - Logs and artifacts contain no credentials or signed URLs.
 - A weekly security run and dependency update path are observable.

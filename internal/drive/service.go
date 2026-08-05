@@ -2,11 +2,13 @@ package drive
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -14,32 +16,127 @@ type Clock interface {
 	Now() time.Time
 }
 
+type InvitationOutput struct {
+	Invitation TenantInvitation
+	Token      string
+}
+
+func (s *Service) CreateInvitation(ctx context.Context, actor MemberActor, issuer, subject, displayName string, role AccessRole, expiresAt time.Time) (InvitationOutput, error) {
+	if err := validateMemberActor(actor); err != nil {
+		return InvitationOutput{}, err
+	}
+	if actor.Role != RoleOwner && actor.Role != RoleAdmin {
+		return InvitationOutput{}, E(CodeForbidden, "only owners and admins may invite members")
+	}
+	if !validInvitationIdentity(issuer, subject) || len(displayName) > 256 || !ValidAccessRole(role) || !expiresAt.After(s.clock.Now()) {
+		return InvitationOutput{}, E(CodeInvalidRequest, "invitation is invalid")
+	}
+	id, err := NewID()
+	if err != nil {
+		return InvitationOutput{}, E(CodeInternal, "could not generate invitation id", err)
+	}
+	b := make([]byte, 32)
+	if _, err = rand.Read(b); err != nil {
+		return InvitationOutput{}, E(CodeInternal, "could not generate invitation token", err)
+	}
+	token := hex.EncodeToString(b)
+	digest := sha256.Sum256([]byte(token))
+	v, err := s.repository.CreateInvitation(ctx, CreateInvitationCommand{ID: id, TenantID: actor.Identity.TenantID, ActorPrincipalID: actor.Identity.PrincipalID, ActorRole: actor.Role, Issuer: issuer, Subject: subject, DisplayName: displayName, Role: role, TokenHash: hex.EncodeToString(digest[:]), ExpiresAt: expiresAt, Now: s.clock.Now()})
+	if err != nil {
+		return InvitationOutput{}, err
+	}
+	return InvitationOutput{Invitation: v, Token: token}, nil
+}
+func (s *Service) ListInvitations(ctx context.Context, actor MemberActor, status InvitationStatus, limit int) ([]TenantInvitation, error) {
+	if actor.Role != RoleOwner && actor.Role != RoleAdmin {
+		return nil, E(CodeForbidden, "only owners and admins may list invitations")
+	}
+	if status != "" && !ValidInvitationStatus(status) {
+		return nil, E(CodeInvalidRequest, "invitation status is invalid")
+	}
+	return s.repository.ListInvitations(ctx, actor.Identity.TenantID, status, limit)
+}
+func (s *Service) AcceptInvitation(ctx context.Context, token, issuer, subject string) (TenantInvitation, PrincipalRecord, error) {
+	decoded, err := hex.DecodeString(token)
+	if err != nil || len(decoded) != 32 || !validInvitationIdentity(issuer, subject) {
+		return TenantInvitation{}, PrincipalRecord{}, E(CodeInvalidRequest, "invitation token and authenticated identity are required")
+	}
+	principalID, err := NewID()
+	if err != nil {
+		return TenantInvitation{}, PrincipalRecord{}, E(CodeInternal, "could not generate principal id", err)
+	}
+	d := sha256.Sum256([]byte(token))
+	return s.repository.AcceptInvitation(ctx, AcceptInvitationCommand{
+		TokenHash: hex.EncodeToString(d[:]), CandidatePrincipalID: principalID,
+		Issuer: issuer, Subject: subject, Now: s.clock.Now(),
+	})
+}
+func (s *Service) RevokeInvitation(ctx context.Context, actor MemberActor, id string) (TenantInvitation, error) {
+	if err := validateMemberActor(actor); err != nil {
+		return TenantInvitation{}, err
+	}
+	if err := validateID(id); err != nil {
+		return TenantInvitation{}, err
+	}
+	return s.repository.RevokeInvitation(ctx, RevokeInvitationCommand{TenantID: actor.Identity.TenantID, InvitationID: id, ActorPrincipalID: actor.Identity.PrincipalID, ActorRole: actor.Role, Now: s.clock.Now()})
+}
+
+func validInvitationIdentity(issuer, subject string) bool {
+	return issuer != "" && subject != "" && strings.TrimSpace(issuer) != "" && strings.TrimSpace(subject) != "" && len(issuer) <= 512 && len(subject) <= 512
+}
+func (s *Service) DeleteMember(ctx context.Context, actor MemberActor, id string) error {
+	if err := validateMemberActor(actor); err != nil {
+		return err
+	}
+	if err := validateID(id); err != nil {
+		return err
+	}
+	return s.repository.DeleteMember(ctx, DeleteMemberCommand{TenantID: actor.Identity.TenantID, PrincipalID: id, ActorPrincipalID: actor.Identity.PrincipalID, ActorRole: actor.Role, Now: s.clock.Now()})
+}
+
+func validateMemberActor(actor MemberActor) error {
+	if err := validateID(actor.Identity.TenantID); err != nil {
+		return err
+	}
+	if err := validateID(actor.Identity.PrincipalID); err != nil {
+		return err
+	}
+	if !ValidAccessRole(actor.Role) {
+		return E(CodeInvalidRequest, "actor role is invalid")
+	}
+	return nil
+}
+
 type realClock struct{}
 
 func (realClock) Now() time.Time { return time.Now().UTC() }
 
 type ServiceOptions struct {
-	Repository      Repository
-	Storage         StorageProvider
-	Cursor          *CursorCodec
-	Clock           Clock
-	MaxFileSize     int64
-	PartSize        int64
-	UploadTTL       time.Duration
-	UploadSignTTL   time.Duration
-	DownloadSignTTL time.Duration
+	Repository           Repository
+	Storage              StorageProvider
+	Cursor               *CursorCodec
+	Clock                Clock
+	MaxFileSize          int64
+	PartSize             int64
+	UploadTTL            time.Duration
+	UploadSignTTL        time.Duration
+	DownloadSignTTL      time.Duration
+	IdempotencyClaimTTL  time.Duration
+	IdempotencyRetention time.Duration
 }
 
 type Service struct {
-	repository      Repository
-	storage         StorageProvider
-	cursor          *CursorCodec
-	clock           Clock
-	maxFileSize     int64
-	partSize        int64
-	uploadTTL       time.Duration
-	uploadSignTTL   time.Duration
-	downloadSignTTL time.Duration
+	repository           Repository
+	storage              StorageProvider
+	cursor               *CursorCodec
+	clock                Clock
+	maxFileSize          int64
+	partSize             int64
+	uploadTTL            time.Duration
+	uploadSignTTL        time.Duration
+	downloadSignTTL      time.Duration
+	idempotencyClaimTTL  time.Duration
+	idempotencyRetention time.Duration
 }
 
 func NewService(options ServiceOptions) (*Service, error) {
@@ -64,10 +161,20 @@ func NewService(options ServiceOptions) (*Service, error) {
 	if options.DownloadSignTTL <= 0 {
 		options.DownloadSignTTL = 15 * time.Minute
 	}
+	if options.IdempotencyClaimTTL <= 0 {
+		options.IdempotencyClaimTTL = time.Minute
+	}
+	if options.IdempotencyRetention <= 0 {
+		options.IdempotencyRetention = 24 * time.Hour
+	}
+	if options.IdempotencyRetention <= options.IdempotencyClaimTTL {
+		return nil, E(CodeInvalidRequest, "idempotency retention must exceed the claim lease")
+	}
 	return &Service{
 		repository: options.Repository, storage: options.Storage, cursor: options.Cursor,
 		clock: options.Clock, maxFileSize: options.MaxFileSize, partSize: options.PartSize,
 		uploadTTL: options.UploadTTL, uploadSignTTL: options.UploadSignTTL, downloadSignTTL: options.DownloadSignTTL,
+		idempotencyClaimTTL: options.IdempotencyClaimTTL, idempotencyRetention: options.IdempotencyRetention,
 	}, nil
 }
 
@@ -162,20 +269,54 @@ func (s *Service) UpdateMember(ctx context.Context, actor MemberActor, principal
 }
 
 func (s *Service) CreateDirectory(ctx context.Context, identity Identity, parentID, name string) (Node, error) {
+	output, err := s.CreateDirectoryWithIdempotency(ctx, identity, parentID, name, "")
+	return output.Node, err
+}
+
+type CreateDirectoryOutput struct {
+	Node     Node
+	Replayed bool
+}
+
+func (s *Service) CreateDirectoryWithIdempotency(ctx context.Context, identity Identity, parentID, name, key string) (CreateDirectoryOutput, error) {
 	if err := validateID(parentID); err != nil {
-		return Node{}, err
+		return CreateDirectoryOutput{}, err
 	}
 	display, normalized, err := NormalizeName(name)
 	if err != nil {
-		return Node{}, err
+		return CreateDirectoryOutput{}, err
 	}
 	id, err := NewID()
 	if err != nil {
-		return Node{}, E(CodeInternal, "could not generate node id", err)
+		return CreateDirectoryOutput{}, E(CodeInternal, "could not generate node id", err)
 	}
-	return s.repository.CreateDirectory(ctx, CreateDirectoryCommand{
+	requestDigest, err := canonicalRequestDigest(struct {
+		ParentID string `json:"parent_id"`
+		Name     string `json:"name"`
+	}{ParentID: parentID, Name: display})
+	if err != nil {
+		return CreateDirectoryOutput{}, err
+	}
+	claim, record, err := s.claimCreation(ctx, identity, IdempotencyCreateDirectory, key, requestDigest)
+	if err != nil {
+		return CreateDirectoryOutput{}, err
+	}
+	if record.State == IdempotencyCompleted {
+		node, replayErr := s.repository.Node(ctx, identity, record.ResourceID, true)
+		if replayErr != nil || node.Kind != NodeDirectory {
+			return CreateDirectoryOutput{}, E(CodeInternal, "completed idempotency claim references a missing directory", replayErr)
+		}
+		return CreateDirectoryOutput{Node: node, Replayed: true}, nil
+	}
+	node, err := s.repository.CreateDirectory(ctx, CreateDirectoryCommand{
 		Identity: identity, ID: id, ParentID: parentID, DisplayName: display, NormalizedName: normalized, Now: s.clock.Now(),
+		Idempotency: claim,
 	})
+	if err != nil {
+		s.releaseKnownFailedClaim(ctx, claim, err)
+		return CreateDirectoryOutput{}, err
+	}
+	return CreateDirectoryOutput{Node: node}, nil
 }
 
 func (s *Service) Node(ctx context.Context, identity Identity, id string, kind NodeKind) (Node, error) {
@@ -253,35 +394,68 @@ type CreateUploadInput struct {
 }
 
 func (s *Service) CreateUpload(ctx context.Context, identity Identity, input CreateUploadInput) (UploadSession, error) {
+	output, err := s.CreateUploadWithIdempotency(ctx, identity, input, "")
+	return output.Upload, err
+}
+
+type CreateUploadOutput struct {
+	Upload   UploadSession
+	Replayed bool
+}
+
+func (s *Service) CreateUploadWithIdempotency(ctx context.Context, identity Identity, input CreateUploadInput, key string) (CreateUploadOutput, error) {
 	if err := validateID(input.ParentID); err != nil {
-		return UploadSession{}, err
+		return CreateUploadOutput{}, err
 	}
 	display, normalized, err := NormalizeName(input.Name)
 	if err != nil {
-		return UploadSession{}, err
+		return CreateUploadOutput{}, err
 	}
 	if input.Size <= 0 || input.Size > s.maxFileSize {
-		return UploadSession{}, E(CodeInvalidRequest, "file size is outside the allowed range")
+		return CreateUploadOutput{}, E(CodeInvalidRequest, "file size is outside the allowed range")
 	}
 	if input.MimeType == "" || len(input.MimeType) > 255 || !ValidMediaType(input.MimeType) || !ValidChecksum(input.Checksum) {
-		return UploadSession{}, E(CodeInvalidRequest, "mime type or checksum is invalid")
+		return CreateUploadOutput{}, E(CodeInvalidRequest, "mime type or checksum is invalid")
 	}
 	parent, err := s.repository.Node(ctx, identity, input.ParentID, false)
 	if err != nil || parent.Kind != NodeDirectory || parent.Status != NodeActive || parent.TrashedRootID != "" {
-		return UploadSession{}, E(CodeNotFound, "parent directory was not found")
+		return CreateUploadOutput{}, E(CodeNotFound, "parent directory was not found")
 	}
 	sessionID, err := NewID()
 	if err != nil {
-		return UploadSession{}, E(CodeInternal, "could not generate upload id", err)
+		return CreateUploadOutput{}, E(CodeInternal, "could not generate upload id", err)
 	}
 	blobID, err := NewID()
 	if err != nil {
-		return UploadSession{}, E(CodeInternal, "could not generate blob id", err)
+		return CreateUploadOutput{}, E(CodeInternal, "could not generate blob id", err)
+	}
+	requestDigest, err := canonicalRequestDigest(struct {
+		ParentID string   `json:"parent_id"`
+		Name     string   `json:"name"`
+		Size     int64    `json:"size"`
+		MimeType string   `json:"mime_type"`
+		Checksum Checksum `json:"checksum"`
+	}{ParentID: input.ParentID, Name: display, Size: input.Size, MimeType: input.MimeType, Checksum: input.Checksum})
+	if err != nil {
+		return CreateUploadOutput{}, err
+	}
+	claim, record, err := s.claimCreation(ctx, identity, IdempotencyCreateUpload, key, requestDigest)
+	if err != nil {
+		return CreateUploadOutput{}, err
+	}
+	if record.State == IdempotencyCompleted {
+		upload, replayErr := s.repository.Upload(ctx, identity, record.ResourceID)
+		if replayErr != nil {
+			return CreateUploadOutput{}, E(CodeInternal, "completed idempotency claim references a missing upload", replayErr)
+		}
+		return CreateUploadOutput{Upload: upload, Replayed: true}, nil
 	}
 	objectKey := fmt.Sprintf("blobs/%s/%s", identity.TenantID, blobID)
 	storageUploadID, err := s.storage.CreateMultipart(ctx, objectKey, input.MimeType, input.Checksum)
 	if err != nil {
-		return UploadSession{}, mapStorageError(err)
+		mapped := mapStorageError(err)
+		s.releaseKnownFailedClaim(ctx, claim, mapped)
+		return CreateUploadOutput{}, mapped
 	}
 	now := s.clock.Now()
 	session := UploadSession{
@@ -291,14 +465,17 @@ func (s *Service) CreateUpload(ctx context.Context, identity Identity, input Cre
 		StorageUploadID: storageUploadID, Status: UploadCreated, PartSize: s.partSize,
 		ExpiresAt: now.Add(s.uploadTTL), Revision: 1, CreatedAt: now, UpdatedAt: now,
 	}
-	created, err := s.repository.CreateUpload(ctx, CreateUploadCommand{Session: session})
+	created, err := s.repository.CreateUpload(ctx, CreateUploadCommand{Session: session, Idempotency: claim})
 	if err != nil {
-		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
-		defer cancel()
-		_ = s.storage.AbortMultipart(cleanupCtx, objectKey, storageUploadID)
-		return UploadSession{}, err
+		if claim == nil || knownFailedCreation(err) {
+			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+			defer cancel()
+			_ = s.storage.AbortMultipart(cleanupCtx, objectKey, storageUploadID)
+			s.releaseKnownFailedClaim(ctx, claim, err)
+		}
+		return CreateUploadOutput{}, err
 	}
-	return created, nil
+	return CreateUploadOutput{Upload: created}, nil
 }
 
 func (s *Service) Upload(ctx context.Context, identity Identity, uploadID string) (UploadSession, error) {
@@ -457,7 +634,9 @@ func (s *Service) CompleteUpload(ctx context.Context, identity Identity, uploadI
 		case CodeNameConflict, CodeNotFound:
 			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 			defer cancel()
-			_ = s.storage.DeleteObject(cleanupCtx, session.ObjectKey)
+			if cleanupErr := s.storage.DeleteObject(cleanupCtx, session.ObjectKey); cleanupErr == nil {
+				_ = s.repository.MarkUploadCleanupComplete(cleanupCtx, identity, session.ID, s.clock.Now())
+			}
 		}
 		return CompleteOutput{}, err
 	}
@@ -471,9 +650,13 @@ func (s *Service) failUploadCompletion(ctx context.Context, identity Identity, s
 		return err
 	}
 	if objectExists {
-		_ = s.storage.DeleteObject(cleanupCtx, session.ObjectKey)
+		if err := s.storage.DeleteObject(cleanupCtx, session.ObjectKey); err == nil {
+			_ = s.repository.MarkUploadCleanupComplete(cleanupCtx, identity, session.ID, s.clock.Now())
+		}
 	} else {
-		_ = s.storage.AbortMultipart(cleanupCtx, session.ObjectKey, session.StorageUploadID)
+		if err := s.storage.AbortMultipart(cleanupCtx, session.ObjectKey, session.StorageUploadID); err == nil {
+			_ = s.repository.MarkUploadCleanupComplete(cleanupCtx, identity, session.ID, s.clock.Now())
+		}
 	}
 	return nil
 }
@@ -489,9 +672,19 @@ func (s *Service) AbortUpload(ctx context.Context, identity Identity, uploadID s
 	if session.Status == UploadFailed && failedUploadHasObject(session.FailureCode) {
 		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 		defer cancel()
-		return mapStorageError(s.storage.DeleteObject(cleanupCtx, session.ObjectKey))
+		if err := s.storage.DeleteObject(cleanupCtx, session.ObjectKey); err != nil {
+			return mapStorageError(err)
+		}
+		_ = s.repository.MarkUploadCleanupComplete(cleanupCtx, identity, session.ID, s.clock.Now())
+		return nil
 	}
-	return s.abortMultipart(ctx, session)
+	if err := s.abortMultipart(ctx, session); err != nil {
+		return err
+	}
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	_ = s.repository.MarkUploadCleanupComplete(cleanupCtx, identity, session.ID, s.clock.Now())
+	return nil
 }
 
 func (s *Service) abortMultipart(ctx context.Context, session UploadSession) error {
@@ -612,6 +805,66 @@ func failedUploadHasObject(failureCode string) bool {
 	default:
 		return false
 	}
+}
+
+func (s *Service) claimCreation(ctx context.Context, identity Identity, scope IdempotencyScope, key, requestDigest string) (*IdempotencyRequest, IdempotencyRecord, error) {
+	if key == "" {
+		return nil, IdempotencyRecord{}, nil
+	}
+	if err := ValidateIdempotencyKey(key); err != nil {
+		return nil, IdempotencyRecord{}, err
+	}
+	claimToken, err := NewID()
+	if err != nil {
+		return nil, IdempotencyRecord{}, E(CodeInternal, "could not generate idempotency claim token", err)
+	}
+	now := s.clock.Now()
+	request := &IdempotencyRequest{
+		Identity: identity, Scope: scope, KeyHash: sha256Hex([]byte(key)), RequestDigest: requestDigest,
+		ClaimToken: claimToken, LockedUntil: now.Add(s.idempotencyClaimTTL),
+		ExpiresAt: now.Add(s.idempotencyRetention), Now: now,
+	}
+	record, err := s.repository.ClaimIdempotency(ctx, *request)
+	if err != nil {
+		return nil, IdempotencyRecord{}, err
+	}
+	if record.State == IdempotencyPending && record.ClaimToken != request.ClaimToken {
+		return nil, IdempotencyRecord{}, E(CodeInternal, "repository returned an idempotency claim owned by another request")
+	}
+	return request, record, nil
+}
+
+func (s *Service) releaseKnownFailedClaim(ctx context.Context, claim *IdempotencyRequest, err error) {
+	if claim == nil || !knownFailedCreation(err) {
+		return
+	}
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	_ = s.repository.ReleaseIdempotency(cleanupCtx, *claim)
+}
+
+func knownFailedCreation(err error) bool {
+	switch CodeOf(err) {
+	case CodeInvalidRequest, CodeForbidden, CodeNotFound, CodeNameConflict,
+		CodeIdempotencyConflict, CodeInvalidState, CodeRestoreConflict,
+		CodeRevisionMismatch, CodeRequestTooLarge, CodeUnsupportedMediaType:
+		return true
+	default:
+		return false
+	}
+}
+
+func canonicalRequestDigest(value any) (string, error) {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return "", E(CodeInternal, "could not encode canonical idempotency request", err)
+	}
+	return sha256Hex(encoded), nil
+}
+
+func sha256Hex(value []byte) string {
+	hash := sha256.Sum256(value)
+	return hex.EncodeToString(hash[:])
 }
 
 func partsDigest(parts []CompletedPart) string {

@@ -87,27 +87,12 @@ func validateOIDCConfig(issuer, clientID string, resolve OIDCResolver) error {
 }
 
 func (a *OIDC) Authenticate(ctx context.Context, header, tenantID string) (Principal, error) {
-	raw, err := bearerToken(header)
-	if err != nil {
-		return Principal{}, err
-	}
 	if !drive.ValidID(tenantID) {
 		return Principal{}, drive.E(drive.CodeInvalidRequest, "a valid tenant selector is required")
 	}
-	claims, err := a.verify.Verify(ctx, raw)
+	claims, err := a.authenticateClaims(ctx, header)
 	if err != nil {
 		return Principal{}, err
-	}
-	if claims.Issuer != a.issuer || claims.Subject == "" || !contains(claims.Audience, a.client) ||
-		(claims.AuthorizedParty != "" && claims.AuthorizedParty != a.client) ||
-		(len(claims.Audience) > 1 && claims.AuthorizedParty != a.client) {
-		return Principal{}, drive.E(drive.CodeUnauthenticated, "a valid OIDC token is required")
-	}
-	if claims.ExpiresAt.IsZero() || !time.Now().UTC().Before(claims.ExpiresAt) {
-		return Principal{}, drive.E(drive.CodeUnauthenticated, "OIDC token has expired")
-	}
-	if claims.NotBefore != nil && time.Now().UTC().Add(30*time.Second).Before(*claims.NotBefore) {
-		return Principal{}, drive.E(drive.CodeUnauthenticated, "OIDC token is not active")
 	}
 	principal, err := a.resolve(ctx, claims.Issuer, claims.Subject, tenantID)
 	if err != nil {
@@ -118,6 +103,45 @@ func (a *OIDC) Authenticate(ctx context.Context, header, tenantID string) (Princ
 	}
 	return principal, nil
 }
+
+func (a *OIDC) authenticateClaims(ctx context.Context, header string) (OIDCClaims, error) {
+	raw, err := bearerToken(header)
+	if err != nil {
+		return OIDCClaims{}, err
+	}
+	claims, err := a.verify.Verify(ctx, raw)
+	if err != nil {
+		return OIDCClaims{}, err
+	}
+	if claims.Issuer != a.issuer || claims.Subject == "" || !contains(claims.Audience, a.client) ||
+		(claims.AuthorizedParty != "" && claims.AuthorizedParty != a.client) ||
+		(len(claims.Audience) > 1 && claims.AuthorizedParty != a.client) {
+		return OIDCClaims{}, drive.E(drive.CodeUnauthenticated, "a valid OIDC token is required")
+	}
+	if claims.ExpiresAt.IsZero() || !time.Now().UTC().Before(claims.ExpiresAt) {
+		return OIDCClaims{}, drive.E(drive.CodeUnauthenticated, "OIDC token has expired")
+	}
+	if claims.NotBefore != nil && time.Now().UTC().Add(30*time.Second).Before(*claims.NotBefore) {
+		return OIDCClaims{}, drive.E(drive.CodeUnauthenticated, "OIDC token is not active")
+	}
+	return claims, nil
+}
+
+func (a *OIDC) ExternalMiddleware(onError func(http.ResponseWriter, *http.Request, error)) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			claims, err := a.authenticateClaims(r.Context(), r.Header.Get("Authorization"))
+			if err != nil {
+				onError(w, r, err)
+				return
+			}
+			identity := ExternalIdentity{Issuer: claims.Issuer, Subject: claims.Subject}
+			next.ServeHTTP(w, r.WithContext(WithExternalIdentity(r.Context(), identity)))
+		})
+	}
+}
+
+var _ ExternalAuthenticator = (*OIDC)(nil)
 
 func (a *OIDC) Middleware(onError func(http.ResponseWriter, *http.Request, error)) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {

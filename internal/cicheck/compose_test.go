@@ -3,6 +3,7 @@ package cicheck
 import (
 	"encoding/json"
 	"os"
+	"strings"
 	"testing"
 
 	"gopkg.in/yaml.v3"
@@ -13,7 +14,8 @@ type composeDocument struct {
 }
 
 type composeService struct {
-	Image string `yaml:"image"`
+	Image string   `yaml:"image"`
+	Ports []string `yaml:"ports"`
 }
 
 type seaweedS3Config struct {
@@ -50,6 +52,27 @@ func TestComposeRequiredServiceImagesArePinned(t *testing.T) {
 		}
 		if service.Image != expectedImage {
 			t.Errorf("Compose service %q image = %q, want %q", serviceName, service.Image, expectedImage)
+		}
+	}
+}
+
+func TestComposePublishedPortsAreLoopbackOnly(t *testing.T) {
+	t.Parallel()
+
+	contents, err := os.ReadFile("../../compose.yaml")
+	if err != nil {
+		t.Fatalf("read Compose configuration: %v", err)
+	}
+
+	var compose composeDocument
+	if err := yaml.Unmarshal(contents, &compose); err != nil {
+		t.Fatalf("parse Compose configuration: %v", err)
+	}
+	for serviceName, service := range compose.Services {
+		for _, publishedPort := range service.Ports {
+			if !strings.HasPrefix(publishedPort, "127.0.0.1:") {
+				t.Errorf("Compose service %q publishes %q without an explicit IPv4 loopback host", serviceName, publishedPort)
+			}
 		}
 	}
 }

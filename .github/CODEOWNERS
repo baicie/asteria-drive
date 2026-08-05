@@ -1,0 +1,8 @@
+# Sensitive changes require review from the repository maintainer.
+* @baicie
+
+# Keep ownership explicit for the highest-impact areas.
+/.github/ @baicie
+/docs/adr/ @baicie
+/docs/process/ @baicie
+/infra/ @baicie

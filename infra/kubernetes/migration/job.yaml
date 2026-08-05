@@ -1,0 +1,56 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: asteria-migrate
+  labels:
+    app.kubernetes.io/name: asteria-drive
+    app.kubernetes.io/component: migration
+spec:
+  backoffLimit: 2
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: asteria-drive
+        app.kubernetes.io/component: migration
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: migrate
+          image: ghcr.io/baicie/asteria-drive@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          command:
+            - /usr/local/bin/asteria-migrate
+          env:
+            - name: ASTERIA_ENV
+              value: production
+            - name: ASTERIA_DATABASE_URL_FILE
+              value: /var/run/secrets/asteria/database-url
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: "1"
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: runtime-secrets
+              mountPath: /var/run/secrets/asteria
+              readOnly: true
+      volumes:
+        - name: runtime-secrets
+          secret:
+            secretName: asteria-runtime-secrets
+            defaultMode: 0400

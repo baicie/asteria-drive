@@ -1,0 +1,18 @@
+{
+  "measured_at": "2026-08-05T08:21:31.289Z",
+  "tenant_id": "b1000000-0000-4000-8000-000000000001",
+  "root_id": "9d551ba2-76d2-4a18-8875-9f0ea3cdaea3",
+  "total_nodes": 1000001,
+  "descendant_nodes": 1000000,
+  "reachable_nodes": 1000001,
+  "max_depth": 4,
+  "root_children": 32,
+  "orphan_nodes": 0,
+  "duplicate_active_name_groups": 0,
+  "non_active_or_non_directory_nodes": 0,
+  "database_bytes": 617065619,
+  "database_pretty": "588 MB",
+  "file_node_total_bytes": 603209728,
+  "file_node_total_pretty": "575 MB",
+  "postgres_version": "17.5"
+}

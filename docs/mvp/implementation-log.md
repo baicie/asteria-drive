@@ -14,7 +14,7 @@ docs/product-vision
   → mvp/p2-upload
   → mvp/p3-download-recycle
   → mvp/integrate
-  → mvp/p4-integration  (当前工作分支)
+  → mvp/p4-integration  (历史 P4 最终里程碑分支；已合入 main)
 ```
 
 - 产品蓝图归档于 `docs/vision/`，不扩大 MVP MUST。
@@ -318,7 +318,7 @@ postgres:17.5-alpine@sha256:6567bca8d7bc8c82c5922425a0baee57be8402df92bae5eacad5
 chrislusf/seaweedfs:3.85@sha256:49312939c00c01e5ee6afbd7d728b18027821d3764c35a797a72acd4fdf3296a
 ```
 
-The committed integration manifest requires 17 tests: 14 PostgreSQL adapter
+The committed integration manifest requires 19 tests: 16 PostgreSQL adapter
 tests, one SeaweedFS provider test, and two live HTTP tests. The workflow runs
 the three packages serially with `go test -json -p=1 -count=1 -timeout=15m`.
 Its repository-owned verifier requires every package and named test to finish
@@ -351,7 +351,7 @@ docker compose down -v --remove-orphans
 The verifier exited 0 with this exact result:
 
 ```text
-verified 17 required integration tests across 3 packages
+verified 19 required integration tests across 3 packages
 ```
 
 This is local real-dependency evidence, not a claim that a GitHub-hosted runner
@@ -422,9 +422,99 @@ go run ./tools/verify-integration-report \
 ```
 
 All local commands exited 0. Govulncheck reported `No vulnerabilities found`,
-the integration verifier reported `verified 17 required integration tests
+the integration verifier reported `verified 19 required integration tests
 across 3 packages`, and the sanitized evidence scan found no credentials.
 Redocly retained the three previously documented non-blocking warnings. This
 local record does not claim that a hosted runner has already produced a security
 baseline; remote workflow evidence is observed on the rollout step 4 pull
 request.
+
+## 2026-08-05 - CI rollout step 5
+
+The step 4 pull request was merged to `main` as
+`72346294e2960e75874e01e5272db57bee084f34`. The stable CI and security checks
+were then applied as the protected `main` branch merge gate:
+
+- `CI / quality`;
+- `CI / race`;
+- `CI / api-contract`;
+- `CI / integration`;
+- `Security / govulncheck`;
+- `Security / dependency-review`;
+- `Security / codeql`.
+
+The protection policy requires strict up-to-date checks, one approving review,
+stale-review dismissal, approval after the last push, and resolved review
+conversations. Administrator enforcement and required CODEOWNERS review are
+enabled, while force pushes and branch deletion are disabled. Linear-history
+enforcement remains a separate follow-up decision.
+
+Repository settings also enable the dependency graph, vulnerability alerts,
+Dependabot security updates, secret scanning, and push protection. Earlier
+rollout notes treated base-document OpenAPI compatibility as a step 5
+prerequisite; step 5 explicitly decouples it as later API hardening. Route and
+operation inventory equality remains enforced by the required
+`CI / api-contract` check.
+
+GitHub API verification returned seven required contexts with `strict: true`,
+one required approval, code-owner review enabled,
+`require_last_push_approval: true`, conversation resolution enabled,
+administrator enforcement enabled, and both destructive branch operations
+disabled. The branch protection endpoint returned 404 before this change and
+the configured policy after it. No release workflow or release artifact policy
+was introduced in this step.
+
+## 2026-08-05 - CI rollout step 6 implementation
+
+ADR-0018 defines the release artifact and provenance boundary. The repository now
+contains a deterministic package tool and release workflow that builds
+`asteria-server` and `asteria-migrate` for Linux `amd64` and `arm64`, embeds the
+version/source commit/build date, writes `release-manifest.json`, generates an
+SPDX JSON SBOM, and writes sorted SHA-256 checksums for the complete bundle.
+
+The workflow validates that a `vMAJOR.MINOR.PATCH` tag resolves to a commit
+reachable from protected `main`. Build permissions remain read-only; a separate
+publish job is gated by the `release` environment and is the only job with
+contents, OIDC, and attestation write permissions. Pull requests cannot publish
+or attest releases. The API-contract job also compares pull-request OpenAPI
+documents with their base using the repository-owned compatibility checker and
+requires an accompanying ADR for OpenAPI changes.
+
+Local verification built both target archives, inspected their deterministic
+contents, and passed the release package, checksum, build metadata, CI workflow
+contract, and existing action-validator tests. GitHub API verification confirmed
+the `release` environment with one custom `tag` deployment policy named `v*`;
+the workflow separately requires each tag commit to be reachable from protected
+`main`.
+
+## 2026-08-05 - Phase 1 production-readiness evidence closeout
+
+The production-readiness increment is implemented on `codex/production-readiness`.
+The repository now includes invitation issue/accept/revoke lifecycle with one-time
+issuer and subject binding, tenant-local inherited allow-only ACLs, append-only
+security audit events with bounded NDJSON export, request idempotency leases and
+replay protection, automatic maintenance claims, bounded Prometheus metrics,
+fuzz/property coverage for protocol boundaries, production-negative configuration
+checks, and hardened Kubernetes/Docker deployment contracts. PostgreSQL and memory
+implementations share the governance and idempotency contracts; HTTP and PostgreSQL
+integration contracts cover cross-tenant access, inherited ACL elevation, invitation
+replay, audit pagination, and append-only enforcement.
+
+Secret-free repository evidence added on this date:
+
+- `docs/operations/evidence/million-node-integrity-20260805.json` verifies a
+  1,000,000-node fixture plus its root with zero orphans and zero duplicate active
+  names; the load and replay timings are in the adjacent JSON artifacts.
+- `docs/operations/evidence/slo-control-plane-20260805.json` records the required
+  five-minute warmup and ten-minute, 50-RPS read-only sampler. It observed 29,998
+  requests, zero drops, one transient server error, and a server-error rate of
+  `0.003334%`; every sampled endpoint stayed below the initial latency thresholds.
+- `docs/operations/evidence/recovery-drill-20260805.md` records a seeded isolated
+  PostgreSQL/SeaweedFS restore, checksum verification, storage integrity check,
+  application smoke checks, and measured elapsed times. It explicitly leaves
+  production PITR/WAL, immutable object retention, candidate binding, and
+  independent approval open.
+
+These results close the repository implementation and local evidence portions of
+Phase 1/M2. They do not claim a production deployment, public SLA, immutable OCI
+release digest, platform-owned recovery controls, or independent security approval.

@@ -1,0 +1,24 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: asteria-drive
+data:
+  ASTERIA_ENV: production
+  ASTERIA_SERVER_ADDRESS: 0.0.0.0:8080
+  ASTERIA_METRICS_ADDRESS: 0.0.0.0:9090
+  ASTERIA_AUTH_MODE: oidc
+  ASTERIA_OIDC_ISSUER: https://replace-with-issuer.invalid
+  ASTERIA_OIDC_CLIENT_ID: asteria-api
+  ASTERIA_OIDC_BOOTSTRAP_JSON: '[{"issuer":"https://replace-with-issuer.invalid","subject":"replace-with-initial-owner","principal_id":"00000000-0000-4000-8000-000000000001","tenant_id":"00000000-0000-4000-8000-000000000002","tenant_name":"Replace me","display_name":"Initial owner","role":"owner"}]'
+  ASTERIA_METADATA_DRIVER: postgres
+  ASTERIA_AUTO_MIGRATE: "false"
+  ASTERIA_STORAGE_DRIVER: s3
+  ASTERIA_S3_ENDPOINT: https://replace-with-object-storage.invalid
+  ASTERIA_S3_REGION: us-east-1
+  ASTERIA_S3_BUCKET: replace-with-private-bucket
+  ASTERIA_S3_PATH_STYLE: "false"
+  ASTERIA_S3_AUTO_CREATE_BUCKET: "false"
+  ASTERIA_READ_HEADER_TIMEOUT: 5s
+  ASTERIA_READ_TIMEOUT: 15s
+  ASTERIA_WRITE_TIMEOUT: 30s
+  ASTERIA_IDLE_TIMEOUT: 60s
