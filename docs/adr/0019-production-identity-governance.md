@@ -76,4 +76,3 @@ cross-tenant sharing remain outside this increment.
   account-provisioning credential leak.
 - Add deny entries now: rejected until precedence and inheritance behavior can be
   specified without ambiguous authorization results.
-

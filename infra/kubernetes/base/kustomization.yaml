@@ -7,4 +7,3 @@ resources:
   - service.yaml
   - pod-disruption-budget.yaml
   - network-policy.yaml
-

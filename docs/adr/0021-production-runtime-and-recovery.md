@@ -64,4 +64,3 @@ interfaces and verification steps are stable.
   establish recovery performance.
 - Publish a container without a deployment contract: rejected because provenance
   alone does not establish runtime hardening or recoverability.
-

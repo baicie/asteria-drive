@@ -79,4 +79,3 @@ cluster network or use mesh mTLS.
 
 The application Service is `ClusterIP`. Do not expose the pod or local Compose
 dependency ports directly to the Internet.
-

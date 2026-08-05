@@ -69,4 +69,3 @@ not list or delete arbitrary bucket keys.
   for the current modular monolith and avoids a new runtime dependency.
 - Label metrics with tenant or resource IDs: rejected because it creates unbounded
   cardinality and leaks identifiers into the monitoring plane.
-

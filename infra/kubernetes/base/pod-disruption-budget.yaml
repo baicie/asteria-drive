@@ -7,4 +7,3 @@ spec:
   selector:
     matchLabels:
       app.kubernetes.io/name: asteria-drive
-
