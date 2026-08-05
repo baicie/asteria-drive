@@ -428,3 +428,37 @@ Redocly retained the three previously documented non-blocking warnings. This
 local record does not claim that a hosted runner has already produced a security
 baseline; remote workflow evidence is observed on the rollout step 4 pull
 request.
+
+## 2026-08-05 - CI rollout step 5
+
+The step 4 pull request was merged to `main` as
+`72346294e2960e75874e01e5272db57bee084f34`. The stable CI and security checks
+were then applied as the protected `main` branch merge gate:
+
+- `CI / quality`;
+- `CI / race`;
+- `CI / api-contract`;
+- `CI / integration`;
+- `Security / govulncheck`;
+- `Security / dependency-review`;
+- `Security / codeql`.
+
+The protection policy requires strict up-to-date checks, one approving review,
+stale-review dismissal, approval after the last push, and resolved review
+conversations. Administrator enforcement is enabled, while force pushes and
+branch deletion are disabled. CODEOWNERS and linear-history enforcement remain
+separate follow-up decisions.
+
+Repository settings also enable the dependency graph, vulnerability alerts,
+Dependabot security updates, secret scanning, and push protection. Earlier
+rollout notes treated base-document OpenAPI compatibility as a step 5
+prerequisite; step 5 explicitly decouples it as later API hardening. Route and
+operation inventory equality remains enforced by the required
+`CI / api-contract` check.
+
+GitHub API verification returned seven required contexts with `strict: true`,
+one required approval, `require_last_push_approval: true`, conversation
+resolution enabled, administrator enforcement enabled, and both destructive
+branch operations disabled. The branch protection endpoint returned 404 before
+this change and the configured policy after it. No release workflow or release
+artifact policy was introduced; that remains rollout step 6.

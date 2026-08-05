@@ -157,14 +157,13 @@ go test ./internal/server -run '^TestOpenAPIOperationsMatchRegisteredRoutes$' -c
 Linux race 也已在 Debian 13 容器中用 Go 1.24.4 + GCC 验证；完整结果、真实依赖地址和 OpenAPI lint
 见 [P4 证据页](docs/mvp/evidence/p4-live-baseline.md)。GitHub Actions 使用固定版本的工具和 Action 提交，
 已实现 `CI / quality`、`CI / race`、`CI / api-contract` 和 `CI / integration` 四项无 GitHub Secrets
-候选检查，详见 [CI 系统设计](docs/process/ci-system.md)。其中集成检查以固定 digest 的 PostgreSQL 与
+检查，详见 [CI 系统设计](docs/process/ci-system.md)。其中集成检查以固定 digest 的 PostgreSQL 与
 SeaweedFS 运行 17 个必需测试（14 个 PostgreSQL、1 个 SeaweedFS、2 个 live HTTP），结构化验证每个
 package 和测试均为 `pass`，任意 `skip` 都会失败；`always()` 路径会脱敏证据、保留 7 天并清理 Compose
-资源。将四项检查设为 required 的 branch protection 仍是 rollout step 5，当前未表示为已配置。
+资源。Rollout step 5 已完成，四项检查均为受保护 `main` 分支的 required gates。
 
-安全候选检查 `Security / govulncheck`、`Security / dependency-review` 和 `Security / codeql` 已加入，
-并启用每周 Dependabot 更新 Go、npm、GitHub Actions 和 Compose/Docker 依赖；这些检查仍需在首轮安全基线
-复核后，才进入 rollout step 5 的 required branch protection。
+安全检查 `Security / govulncheck`、`Security / dependency-review` 和 `Security / codeql` 已加入并同样
+设为 required gates；每周 Dependabot 更新覆盖 Go、npm、GitHub Actions 和 Compose/Docker 依赖。
 
 不带外部测试环境变量时，快速测试使用内存 fake。真实 PostgreSQL Repository、SeaweedFS Multipart、
 签名下载和 Range 使用显式环境门禁：

@@ -1,15 +1,16 @@
 # Asteria Drive CI System Design
 
 This document turns ADR-0016 and ADR-0017 into an implementation contract. Both
-are accepted. Rollout steps 1 through 4 are implemented: the repository has pinned
-quality, race, API-contract, Compose-backed integration, and security candidate
-checks, plus a Dependabot update path. Repository rules and release automation
-remain later steps.
+are accepted. Rollout steps 1 through 5 are implemented: the repository has pinned
+quality, race, API-contract, Compose-backed integration, and security checks, plus
+a Dependabot update path and protected main-branch merge gates. Release
+automation remains a later step.
 
 ## 1. Current state
 
 - The repository is public and main is the default branch.
-- `.github/workflows/ci.yml` runs four secret-free candidate PR gates.
+- `.github/workflows/ci.yml` runs four secret-free PR gates, all required for
+  pull requests targeting protected `main`.
 - `.github/workflows/security.yml` runs govulncheck, dependency review, and
   CodeQL without repository secrets; `.github/dependabot.yml` covers Go, npm,
   GitHub Actions, and Compose/Docker dependencies.
@@ -37,8 +38,8 @@ implemented:
 
 | Workflow | Trigger | Merge-gate status | Responsibility |
 | --- | --- | --- | --- |
-| ci.yml | pull request, push to main, manual | four candidates now; enforce after rollout step 5 | quality, race, API contract, and integration implemented |
-| security.yml | pull request, push to main, weekly schedule, manual | security candidates; baseline review before enforcement | govulncheck, dependency review, CodeQL |
+| ci.yml | pull request, push to main, manual | required on protected main | quality, race, API contract, and integration implemented |
+| security.yml | pull request, push to main, weekly schedule, manual | required on protected main | govulncheck, dependency review, CodeQL |
 | release.yml | v* tag, manual | no PR gate; planned | reproducible binaries, checksums, SBOM and provenance |
 | dependabot.yml | GitHub configuration | n/a; implemented | Go modules, npm, Actions, and Docker update proposals |
 
@@ -46,11 +47,11 @@ The workflows should not duplicate business commands. Each job calls commands
 documented in this repository and, where shell logic is non-trivial, a
 repository-owned helper that emits structured output.
 
-## 3. Candidate PR graph
+## 3. Required CI PR graph
 
-The four implemented jobs run independently. Rollout step 5 configures repository
-rules; only after that point is a PR blocked from merge unless all four jobs
-succeed. This document does not represent those rules as already configured.
+The four implemented CI jobs run independently. Together with the three security
+jobs in section 4, branch protection blocks a pull request targeting `main` unless
+all seven required checks succeed and the required review policy is satisfied.
 
 ### CI / quality
 
@@ -124,10 +125,9 @@ Steps:
 - verify that every HTTP route has a documented operation and that every
   documented operation is registered by the server (implemented);
 - compare the pull-request OpenAPI document with the base document using a
-  pinned compatibility tool (later API hardening, to be completed before
-  rollout step 5);
+  pinned compatibility tool (later API hardening);
 - fail on a breaking /api/v1 change unless the API version and an ADR change
-  (planned as later API hardening, to be completed before rollout step 5).
+  (later API hardening).
 
 The CLI version and any Node package lockfile belong in the repository. Avoid
 floating latest downloads in workflow files.
@@ -146,10 +146,11 @@ weekly at 03:17 UTC on Mondays, and manual dispatches:
   `security-events: write` in that job.
 
 Every Action is pinned to a full commit SHA, checkout credentials are discarded,
-and no job reads repository secrets. CodeQL and dependency review remain
-candidate checks while the first security baseline is reviewed. Secret scanning
-and push protection should be enabled in repository settings. The workflow must
-use `pull_request`, never `pull_request_target`.
+and no job reads repository secrets. All three security checks are required for
+pull requests targeting protected `main`. Secret scanning, push protection,
+dependency graph, vulnerability alerts, and Dependabot security updates are
+enabled in repository settings. The workflow must use `pull_request`, never
+`pull_request_target`.
 
 `dependabot.yml` checks the Go module graph, npm lockfile, GitHub Actions, and
 Compose/Docker references weekly, with at most five open update pull requests
@@ -180,18 +181,16 @@ receive id-token: write, attestations: write, or contents: write.
 
 ## 6. Branch protection and repository settings
 
-Before making the checks required:
+The rollout step 5 policy is applied to `main`:
 
-- require pull requests for main;
-- require at least one approving review and dismiss stale approvals;
-- require conversation resolution and the four stable CI checks;
+- require pull requests with at least one approving review;
+- dismiss stale approvals and require approval after the last push;
+- require conversation resolution and the seven stable CI/security checks;
 - require the branch to be up to date before merge;
-- disable force pushes and branch deletion;
-- allow squash merge and enable automatic deletion of merged branches;
-- restrict Actions to an approved allowlist and require SHA pinning;
-- add CODEOWNERS for .github, migrations, authentication, storage adapters,
-  ADRs, and CI design.
+- enforce the policy for administrators;
+- disable force pushes and branch deletion.
 
+CODEOWNERS and linear-history enforcement remain separate follow-up decisions.
 Do not allow an administrator bypass for security-sensitive workflow or migration
 changes without an explicitly recorded exception.
 
@@ -238,16 +237,15 @@ required PR check. Once defined, it should:
 3. Completed: add Compose-backed integration, structured pass/skip detection,
    sanitized evidence retention, and unconditional resource cleanup.
 4. Completed: enable security scanning and Dependabot; review the first baseline.
-5. Apply main branch protection using the stable check names.
+5. Completed: apply main branch protection using the stable check names.
 6. Add release artifacts and provenance only after the artifact format is
    separately designed.
 
-## 10. Rollout steps 2 through 4 acceptance
+## 10. Rollout steps 2 through 5 acceptance
 
 - Pull requests, pushes to main, and manual runs create stable `CI / quality`,
-  `CI / race`, `CI / api-contract`, and `CI / integration` candidate checks
-  without repository secrets. They are not represented as enforced branch rules
-  before step 5.
+  `CI / race`, `CI / api-contract`, and `CI / integration` checks without
+  repository secrets; all four are required for pull requests targeting `main`.
 - Quality verifies modules and formatting, runs tests, vet and build, checks the
   diff, and retains test/coverage evidence for seven days.
 - Race runs the deterministic suite with the Linux race detector.
@@ -265,8 +263,8 @@ required PR check. Once defined, it should:
 - Sanitized test and Compose evidence is retained for seven days. Sanitization,
   raw-report removal, `docker compose down -v --remove-orphans`, and artifact
   upload all run through `always()` paths.
-- The four stable checks remain candidates until rollout step 5 applies branch
-  protection; no required-check rule is claimed here.
+- The seven stable CI/security checks are required for pull requests targeting
+  protected `main`; the protection policy uses strict up-to-date checks.
 - Security checks run without repository secrets, use pinned Action/tool versions,
   and keep CodeQL's write permission scoped to its job.
 - Dependabot proposes weekly updates for Go, npm, Actions, and Compose/Docker
