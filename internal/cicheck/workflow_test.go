@@ -12,13 +12,13 @@ import (
 )
 
 const (
-	checkoutAction         = "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683"
+	checkoutAction         = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
 	setupGoAction          = "actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5"
-	setupNodeAction        = "actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020"
-	uploadArtifactAction   = "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
+	setupNodeAction        = "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020"
+	uploadArtifactAction   = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
 	dependencyReviewAction = "actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294"
-	codeQLInitAction       = "github/codeql-action/init@e60ea984bd3baa95954f2856bcf24f9eaba46637"
-	codeQLAnalyzeAction    = "github/codeql-action/analyze@e60ea984bd3baa95954f2856bcf24f9eaba46637"
+	codeQLInitAction       = "github/codeql-action/init@f205ea1c3313d32999d8d6a48b4f6530d4437b38"
+	codeQLAnalyzeAction    = "github/codeql-action/analyze@f205ea1c3313d32999d8d6a48b4f6530d4437b38"
 )
 
 var (
