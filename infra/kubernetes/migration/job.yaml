@@ -53,4 +53,4 @@ spec:
         - name: runtime-secrets
           secret:
             secretName: asteria-runtime-secrets
-        defaultMode: 0400
+            defaultMode: 0400
