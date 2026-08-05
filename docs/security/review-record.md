@@ -5,7 +5,7 @@
 | Field | Value |
 | --- | --- |
 | Review ID | `phase1-production-readiness-2026-08-05` |
-| Candidate commit | `683c58d63000d949c9473832db4a37d7a74c39cb` (PR #21 head; immutable source candidate) |
+| Candidate commit | `aab5147ae047ca336a0cdf24928db00fafdaa869` (PR #21 head; immutable source candidate) |
 | Candidate release/image | Pending immutable release tag / pending OCI manifest digest |
 | Review status | Pending independent approval and platform evidence |
 | Scope | Phase 1 production readiness: identity/governance, storage, recovery, runtime, deployment, CI, and release |
