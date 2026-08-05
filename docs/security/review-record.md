@@ -5,15 +5,15 @@
 | Field | Value |
 | --- | --- |
 | Review ID | `phase1-production-readiness-2026-08-05` |
-| Candidate commit | `CANDIDATE_COMMIT_SHA` (replace with a 40-character immutable commit before approval) |
-| Candidate release/image | `CANDIDATE_RELEASE_TAG` / `CANDIDATE_OCI_MANIFEST_DIGEST` |
+| Candidate commit | `683c58d63000d949c9473832db4a37d7a74c39cb` (PR #21 head; immutable source candidate) |
+| Candidate release/image | Pending immutable release tag / pending OCI manifest digest |
 | Review status | Pending independent approval and platform evidence |
 | Scope | Phase 1 production readiness: identity/governance, storage, recovery, runtime, deployment, CI, and release |
 
 This checked-in record is a release gate, not evidence that a production
-environment is approved. The reviewer must replace every `CANDIDATE_*` field
-only after the candidate is committed, tagged, and its immutable image manifest
-digest is available. Any source, generated artifact, workflow, manifest, or
+environment is approved. The source candidate is bound to the immutable PR #21
+head above. The reviewer must bind the pending release tag and OCI manifest digest
+before approval; any source, generated artifact, workflow, manifest, or
 platform-evidence change invalidates the record and requires a new review.
 
 ## Inputs reviewed
