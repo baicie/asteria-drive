@@ -489,7 +489,8 @@ the workflow separately requires each tag commit to be reachable from protected
 
 ## 2026-08-05 - Phase 1 production-readiness evidence closeout
 
-The production-readiness increment is implemented on `codex/production-readiness`.
+The production-readiness increment was implemented on `codex/production-readiness` and
+merged into protected `main` through PR #21.
 The repository now includes invitation issue/accept/revoke lifecycle with one-time
 issuer and subject binding, tenant-local inherited allow-only ACLs, append-only
 security audit events with bounded NDJSON export, request idempotency leases and
@@ -518,3 +519,17 @@ Secret-free repository evidence added on this date:
 These results close the repository implementation and local evidence portions of
 Phase 1/M2. They do not claim a production deployment, public SLA, immutable OCI
 release digest, platform-owned recovery controls, or independent security approval.
+
+## 2026-08-05 - Release/API and dependency-pin closeout
+
+PR #22 (`20568f863e1005edb310b4a2600c5678b2c9a90a`) merged the remaining release/API
+hardening and dependency-pin consistency work into `main`. The workflow pins for
+checkout, upload-artifact, setup-node, and CodeQL now match the repository-owned
+contract test expectations. The merge PR passed all seven required checks plus the
+CodeQL workflow check, and the remote `main` branch is protected at that commit.
+
+The repository currently has no release tag or GitHub Release. The `release`
+environment accepts `v*` tags, but no tag was created during this closeout; an
+authorized release operation must still establish the immutable OCI digest and
+platform-owned production evidence before the project can claim public production
+readiness.
