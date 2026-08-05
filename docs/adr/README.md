@@ -23,6 +23,7 @@
 | [0015](0015-tenant-member-lifecycle.md) | Tenant member lifecycle management and last-owner protection | Accepted |
 | [0016](0016-github-actions-ci-system.md) | GitHub Actions CI trust boundary and merge gates | Accepted |
 | [0017](0017-security-baseline-and-go-toolchain-floor.md) | Security baseline and Go toolchain floor | Accepted |
+| [0018](0018-release-artifact-and-provenance.md) | Release artifact format and provenance boundary | Proposed |
 
 ## Conventions
 

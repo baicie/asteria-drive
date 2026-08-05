@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/baicie/asteria-drive/internal/auth"
+	"github.com/baicie/asteria-drive/internal/buildinfo"
 	"github.com/baicie/asteria-drive/internal/config"
 	"github.com/baicie/asteria-drive/internal/drive"
 	"github.com/baicie/asteria-drive/internal/memory"
@@ -20,6 +22,10 @@ import (
 )
 
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == "--version" {
+		fmt.Println(buildinfo.String("asteria-server"))
+		return
+	}
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	cfg, err := config.Load()
 	if err != nil {

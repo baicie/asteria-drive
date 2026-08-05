@@ -192,6 +192,7 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
+          fetch-depth: 0
       - name: Set up Go
         uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
         with:
@@ -208,5 +209,21 @@ jobs:
         run: npm run lint:actions
       - name: Lint OpenAPI
         run: npm run lint:openapi
+      - name: Compare OpenAPI with base
+        if: ${{ github.event_name == 'pull_request' }}
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git show "$BASE_SHA:docs/openapi.yaml" > "$RUNNER_TEMP/base-openapi.yaml"
+          go run ./tools/verify-openapi-compat \
+            -base "$RUNNER_TEMP/base-openapi.yaml" \
+            -current docs/openapi.yaml
+          changed="$(git diff --name-only "$BASE_SHA...$GITHUB_SHA")"
+          if grep -qx 'docs/openapi.yaml' <<<"$changed" && ! grep -q '^docs/adr/' <<<"$changed"; then
+            printf 'OpenAPI changes require an accompanying ADR\n' >&2
+            exit 1
+          fi
       - name: Compare documented and registered routes
         run: go test ./internal/server -run '^TestOpenAPIOperationsMatchRegisteredRoutes$' -count=1

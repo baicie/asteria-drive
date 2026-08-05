@@ -1,10 +1,11 @@
 # Asteria Drive CI System Design
 
 This document turns ADR-0016 and ADR-0017 into an implementation contract. Both
-are accepted. Rollout steps 1 through 5 are implemented: the repository has pinned
-quality, race, API-contract, Compose-backed integration, and security checks, plus
-a Dependabot update path and protected main-branch merge gates. Release
-automation remains a later step.
+are accepted. Rollout steps 1 through 6 are implemented in the repository: it has
+pinned quality, race, API-contract, Compose-backed integration, security, and
+tagged release workflows, plus a Dependabot update path and protected main-branch
+merge gates. Release publication remains gated by the configured `release`
+environment.
 
 ## 1. Current state
 
@@ -40,7 +41,7 @@ implemented:
 | --- | --- | --- | --- |
 | ci.yml | pull request, push to main, manual | required on protected main | quality, race, API contract, and integration implemented |
 | security.yml | pull request, push to main, weekly schedule, manual | required on protected main | govulncheck, dependency review, CodeQL |
-| release.yml | v* tag, manual | no PR gate; planned | reproducible binaries, checksums, SBOM and provenance |
+| release.yml | v* tag, manual | protected release environment | reproducible binaries, checksums, SBOM and provenance |
 | dependabot.yml | GitHub configuration | n/a; implemented | Go modules, npm, Actions, and Docker update proposals |
 
 The workflows should not duplicate business commands. Each job calls commands
@@ -124,10 +125,10 @@ Steps:
 - lint docs/openapi.yaml with the locked Redocly CLI version (implemented);
 - verify that every HTTP route has a documented operation and that every
   documented operation is registered by the server (implemented);
-- compare the pull-request OpenAPI document with the base document using a
-  pinned compatibility tool (later API hardening);
-- fail on a breaking /api/v1 change unless the API version and an ADR change
-  (later API hardening).
+- compare the pull-request OpenAPI document with the base document using the
+  repository-owned compatibility checker (implemented);
+- fail on removed operations, responses, parameters, or response schema fields;
+  any OpenAPI file change also requires an ADR (implemented).
 
 The CLI version and any Node package lockfile belong in the repository. Avoid
 floating latest downloads in workflow files.
@@ -187,12 +188,14 @@ The rollout step 5 policy is applied to `main`:
 - dismiss stale approvals and require approval after the last push;
 - require conversation resolution and the seven stable CI/security checks;
 - require the branch to be up to date before merge;
-- enforce the policy for administrators;
+- enforce the policy for administrators and require CODEOWNERS review;
 - disable force pushes and branch deletion.
 
-CODEOWNERS and linear-history enforcement remain separate follow-up decisions.
-Do not allow an administrator bypass for security-sensitive workflow or migration
-changes without an explicitly recorded exception.
+CODEOWNERS covers the repository by default and calls out workflow, ADR/process,
+and infrastructure paths explicitly. Linear-history enforcement remains a
+separate follow-up decision. Do not allow an administrator bypass for
+security-sensitive workflow or migration changes without an explicitly recorded
+exception.
 
 ## 7. Artifacts and failure handling
 
@@ -219,15 +222,16 @@ Target operational budgets:
 
 ## 8. Release boundary
 
-The repository does not currently define a Dockerfile, binary release format, or
-deployment environment. Therefore release automation is a future lane, not a
-required PR check. Once defined, it should:
+ADR-0018 defines the release format. `release.yml` builds the server and
+migration binaries for Linux `amd64` and `arm64` from a clean tag checkout,
+produces deterministic archives, a sorted SHA-256 manifest, an SPDX JSON SBOM,
+and a release manifest. The tag must be reachable from protected `main`.
 
-1. build Linux binaries from a clean tag checkout;
-2. produce checksums and an SBOM;
-3. generate provenance with GitHub OIDC;
-4. publish only from a protected release environment;
-5. never deploy directly from a pull request.
+The publish job is separated from the build job, requires the `release`
+environment, attaches GitHub OIDC provenance to the checksum subjects, and
+publishes only an immutable GitHub Release. Pull requests never publish or
+attest release artifacts. Docker images and deployment automation remain outside
+this rollout.
 
 ## 9. Rollout sequence
 
@@ -238,10 +242,10 @@ required PR check. Once defined, it should:
    sanitized evidence retention, and unconditional resource cleanup.
 4. Completed: enable security scanning and Dependabot; review the first baseline.
 5. Completed: apply main branch protection using the stable check names.
-6. Add release artifacts and provenance only after the artifact format is
-   separately designed.
+6. Completed in repository: define the artifact format and add deterministic
+   binaries, checksums, SBOM, OIDC provenance, and protected publication.
 
-## 10. Rollout steps 2 through 5 acceptance
+## 10. Rollout steps 2 through 6 acceptance
 
 - Pull requests, pushes to main, and manual runs create stable `CI / quality`,
   `CI / race`, `CI / api-contract`, and `CI / integration` checks without
@@ -250,8 +254,8 @@ required PR check. Once defined, it should:
   diff, and retains test/coverage evidence for seven days.
 - Race runs the deterministic suite with the Linux race detector.
 - API contract installs only locked npm dependencies, validates the workflow
-  schema, lints OpenAPI, and checks exact equality between documented and
-  registered HTTP operations.
+  schema, lints OpenAPI, compares the pull-request document with its base, and
+  checks exact equality between documented and registered HTTP operations.
 - Workflow permissions are read-only, checkout credentials are not persisted,
   pull-request concurrency is cancellable, and third-party Actions use full SHAs.
 - Integration uses disposable repository-owned values rather than GitHub Secrets
@@ -269,6 +273,15 @@ required PR check. Once defined, it should:
   and keep CodeQL's write permission scoped to its job.
 - Dependabot proposes weekly updates for Go, npm, Actions, and Compose/Docker
   dependencies; it does not itself grant merge or branch permissions.
+- Release tags are validated against protected `main`; pull requests cannot
+  publish artifacts.
+- Release archives contain both control-plane binaries and README metadata for
+  Linux `amd64` and `arm64`, with deterministic timestamps and embedded build
+  metadata.
+- The release bundle contains a manifest, sorted SHA-256 checksums covering the
+  bundle, and an SPDX JSON SBOM.
+- Only the protected `release` environment may publish, with write and OIDC
+  permissions limited to the publish job.
 
 ## 11. Definition of done for the full CI system
 
@@ -276,6 +289,6 @@ required PR check. Once defined, it should:
 - Every required integration test passes instead of being skipped.
 - A clean runner can reproduce quality, race, migration, S3, and HTTP checks.
 - Main cannot merge while any required check is red or missing.
-- Workflow and dependency changes receive CODEOWNERS review.
+- Workflow and dependency changes receive required CODEOWNERS review.
 - Logs and artifacts contain no credentials or signed URLs.
 - A weekly security run and dependency update path are observable.

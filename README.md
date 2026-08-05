@@ -160,7 +160,9 @@ Linux race 也已在 Debian 13 容器中用 Go 1.24.4 + GCC 验证；完整结�
 检查，详见 [CI 系统设计](docs/process/ci-system.md)。其中集成检查以固定 digest 的 PostgreSQL 与
 SeaweedFS 运行 17 个必需测试（14 个 PostgreSQL、1 个 SeaweedFS、2 个 live HTTP），结构化验证每个
 package 和测试均为 `pass`，任意 `skip` 都会失败；`always()` 路径会脱敏证据、保留 7 天并清理 Compose
-资源。Rollout step 5 已完成，四项检查均为受保护 `main` 分支的 required gates。
+资源。Rollout step 5 已完成，四项检查均为受保护 `main` 分支的 required gates；
+rollout step 6 已加入 tag-only release workflow，生成 Linux `amd64`/`arm64` 归档、
+checksums、SBOM 和 OIDC provenance，并由受保护 `release` environment 发布。
 
 安全检查 `Security / govulncheck`、`Security / dependency-review` 和 `Security / codeql` 已加入并同样
 设为 required gates；每周 Dependabot 更新覆盖 Go、npm、GitHub Actions 和 Compose/Docker 依赖。

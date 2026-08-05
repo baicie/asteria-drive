@@ -445,9 +445,9 @@ were then applied as the protected `main` branch merge gate:
 
 The protection policy requires strict up-to-date checks, one approving review,
 stale-review dismissal, approval after the last push, and resolved review
-conversations. Administrator enforcement is enabled, while force pushes and
-branch deletion are disabled. CODEOWNERS and linear-history enforcement remain
-separate follow-up decisions.
+conversations. Administrator enforcement and required CODEOWNERS review are
+enabled, while force pushes and branch deletion are disabled. Linear-history
+enforcement remains a separate follow-up decision.
 
 Repository settings also enable the dependency graph, vulnerability alerts,
 Dependabot security updates, secret scanning, and push protection. Earlier
@@ -457,8 +457,32 @@ operation inventory equality remains enforced by the required
 `CI / api-contract` check.
 
 GitHub API verification returned seven required contexts with `strict: true`,
-one required approval, `require_last_push_approval: true`, conversation
-resolution enabled, administrator enforcement enabled, and both destructive
-branch operations disabled. The branch protection endpoint returned 404 before
-this change and the configured policy after it. No release workflow or release
-artifact policy was introduced; that remains rollout step 6.
+one required approval, code-owner review enabled,
+`require_last_push_approval: true`, conversation resolution enabled,
+administrator enforcement enabled, and both destructive branch operations
+disabled. The branch protection endpoint returned 404 before this change and
+the configured policy after it. No release workflow or release artifact policy
+was introduced in this step.
+
+## 2026-08-05 - CI rollout step 6 implementation
+
+ADR-0018 defines the release artifact and provenance boundary. The repository now
+contains a deterministic package tool and release workflow that builds
+`asteria-server` and `asteria-migrate` for Linux `amd64` and `arm64`, embeds the
+version/source commit/build date, writes `release-manifest.json`, generates an
+SPDX JSON SBOM, and writes sorted SHA-256 checksums for the complete bundle.
+
+The workflow validates that a `vMAJOR.MINOR.PATCH` tag resolves to a commit
+reachable from protected `main`. Build permissions remain read-only; a separate
+publish job is gated by the `release` environment and is the only job with
+contents, OIDC, and attestation write permissions. Pull requests cannot publish
+or attest releases. The API-contract job also compares pull-request OpenAPI
+documents with their base using the repository-owned compatibility checker and
+requires an accompanying ADR for OpenAPI changes.
+
+Local verification built both target archives, inspected their deterministic
+contents, and passed the release package, checksum, build metadata, CI workflow
+contract, and existing action-validator tests. GitHub API verification confirmed
+the `release` environment with one custom `tag` deployment policy named `v*`;
+the workflow separately requires each tag commit to be reachable from protected
+`main`.
