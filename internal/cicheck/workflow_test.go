@@ -175,6 +175,9 @@ func TestCIWorkflowTrustBoundaryAndStableJobs(t *testing.T) {
 				"npm ci --ignore-scripts",
 				"npm run lint:actions",
 				"npm run lint:openapi",
+				"git show \"$BASE_SHA:docs/openapi.yaml\"",
+				"go run ./tools/verify-openapi-compat",
+				"OpenAPI changes require an accompanying ADR",
 				"go test ./internal/server -run '^TestOpenAPIOperationsMatchRegisteredRoutes$' -count=1",
 			},
 		},
@@ -222,8 +225,8 @@ func TestCIWorkflowTrustBoundaryAndStableJobs(t *testing.T) {
 				if step.With["persist-credentials"] != false {
 					t.Errorf("job %q checkout must set persist-credentials: false", jobID)
 				}
-				if jobID == "quality" && fmt.Sprint(step.With["fetch-depth"]) != "0" {
-					t.Errorf("quality checkout must fetch history for event-aware diff")
+				if (jobID == "quality" || jobID == "api-contract") && fmt.Sprint(step.With["fetch-depth"]) != "0" {
+					t.Errorf("%s checkout must fetch history for event-aware diff", jobID)
 				}
 			case setupGoAction:
 				if fmt.Sprint(step.With["go-version"]) != expected.goVersion || step.With["cache"] != true {
