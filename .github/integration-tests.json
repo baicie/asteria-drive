@@ -6,6 +6,8 @@
         "TestMigrateIsIdempotent",
         "TestRepositoryOIDCMemberContract",
         "TestRepositoryMemberLifecycleContract",
+        "TestRepositoryGovernanceACLAndAuditContract",
+        "TestRepositoryAuditRowsAreAppendOnly",
         "TestRepositoryNamespaceAndUploadContract",
         "TestRepositoryFailUploadCompletionContract",
         "TestRepositoryCommitRollbackAndPurgeContract",

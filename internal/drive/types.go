@@ -22,6 +22,8 @@ const (
 	PermissionTenantRead    Permission = "tenant:read"
 	PermissionMembersRead   Permission = "tenant:members:read"
 	PermissionMembersManage Permission = "tenant:members:manage"
+	PermissionGroupsManage  Permission = "tenant:groups:manage"
+	PermissionAuditRead     Permission = "tenant:audit:read"
 	PermissionFilesRead     Permission = "files:read"
 	PermissionFilesWrite    Permission = "files:write"
 	PermissionFilesDelete   Permission = "files:delete"
@@ -43,6 +45,8 @@ func PermissionsForRole(role AccessRole) map[Permission]struct{} {
 		permissions[PermissionTenantRead] = struct{}{}
 		permissions[PermissionMembersRead] = struct{}{}
 		permissions[PermissionMembersManage] = struct{}{}
+		permissions[PermissionGroupsManage] = struct{}{}
+		permissions[PermissionAuditRead] = struct{}{}
 		permissions[PermissionFilesRead] = struct{}{}
 		permissions[PermissionFilesWrite] = struct{}{}
 		permissions[PermissionFilesDelete] = struct{}{}
@@ -50,6 +54,8 @@ func PermissionsForRole(role AccessRole) map[Permission]struct{} {
 		permissions[PermissionTenantRead] = struct{}{}
 		permissions[PermissionMembersRead] = struct{}{}
 		permissions[PermissionMembersManage] = struct{}{}
+		permissions[PermissionGroupsManage] = struct{}{}
+		permissions[PermissionAuditRead] = struct{}{}
 		permissions[PermissionFilesRead] = struct{}{}
 		permissions[PermissionFilesWrite] = struct{}{}
 		permissions[PermissionFilesDelete] = struct{}{}
@@ -101,6 +107,278 @@ type UpdateMemberCommand struct {
 	Role             *AccessRole
 	Status           *MemberStatus
 	Now              time.Time
+}
+
+type InvitationStatus string
+
+const (
+	InvitationPending  InvitationStatus = "pending"
+	InvitationAccepted InvitationStatus = "accepted"
+	InvitationRevoked  InvitationStatus = "revoked"
+	InvitationExpired  InvitationStatus = "expired"
+)
+
+func ValidInvitationStatus(status InvitationStatus) bool {
+	switch status {
+	case InvitationPending, InvitationAccepted, InvitationRevoked, InvitationExpired:
+		return true
+	default:
+		return false
+	}
+}
+
+type TenantInvitation struct {
+	ID                  string
+	TenantID            string
+	Issuer              string
+	Subject             string
+	DisplayName         string
+	Role                AccessRole
+	Status              InvitationStatus
+	AcceptedPrincipalID string
+	CreatedBy           string
+	ExpiresAt           time.Time
+	AcceptedAt          *time.Time
+	RevokedAt           *time.Time
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
+}
+
+type CreateInvitationCommand struct {
+	ID               string
+	TenantID         string
+	ActorPrincipalID string
+	ActorRole        AccessRole
+	Issuer           string
+	Subject          string
+	DisplayName      string
+	Role             AccessRole
+	TokenHash        string
+	ExpiresAt        time.Time
+	Now              time.Time
+}
+
+type AcceptInvitationCommand struct {
+	TokenHash            string
+	CandidatePrincipalID string
+	Issuer               string
+	Subject              string
+	Now                  time.Time
+}
+
+type RevokeInvitationCommand struct {
+	TenantID         string
+	InvitationID     string
+	ActorPrincipalID string
+	ActorRole        AccessRole
+	Now              time.Time
+}
+
+type DeleteMemberCommand struct {
+	TenantID         string
+	PrincipalID      string
+	ActorPrincipalID string
+	ActorRole        AccessRole
+	Now              time.Time
+}
+
+type TenantGroup struct {
+	ID             string
+	TenantID       string
+	DisplayName    string
+	NormalizedName string
+	CreatedBy      string
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+}
+
+type CreateGroupCommand struct {
+	ID               string
+	TenantID         string
+	ActorPrincipalID string
+	ActorRole        AccessRole
+	DisplayName      string
+	NormalizedName   string
+	Now              time.Time
+}
+
+type UpdateGroupCommand struct {
+	TenantID         string
+	GroupID          string
+	ActorPrincipalID string
+	ActorRole        AccessRole
+	DisplayName      string
+	NormalizedName   string
+	Now              time.Time
+}
+
+type DeleteGroupCommand struct {
+	TenantID         string
+	GroupID          string
+	ActorPrincipalID string
+	ActorRole        AccessRole
+	Now              time.Time
+}
+
+type GroupMemberCommand struct {
+	TenantID         string
+	GroupID          string
+	PrincipalID      string
+	ActorPrincipalID string
+	ActorRole        AccessRole
+	Now              time.Time
+}
+
+type ACLSubjectType string
+
+const (
+	ACLSubjectPrincipal ACLSubjectType = "principal"
+	ACLSubjectGroup     ACLSubjectType = "group"
+)
+
+func ValidACLSubjectType(subjectType ACLSubjectType) bool {
+	return subjectType == ACLSubjectPrincipal || subjectType == ACLSubjectGroup
+}
+
+type ACLRole string
+
+const (
+	ACLReader      ACLRole = "reader"
+	ACLContributor ACLRole = "contributor"
+	ACLManager     ACLRole = "manager"
+)
+
+func ValidACLRole(role ACLRole) bool {
+	return role == ACLReader || role == ACLContributor || role == ACLManager
+}
+
+type NodeCapability string
+
+const (
+	NodeCapabilityRead      NodeCapability = "read"
+	NodeCapabilityWrite     NodeCapability = "write"
+	NodeCapabilityDelete    NodeCapability = "delete"
+	NodeCapabilityManageACL NodeCapability = "manage_acl"
+)
+
+func ValidNodeCapability(capability NodeCapability) bool {
+	switch capability {
+	case NodeCapabilityRead, NodeCapabilityWrite, NodeCapabilityDelete, NodeCapabilityManageACL:
+		return true
+	default:
+		return false
+	}
+}
+
+type NodeACLEntry struct {
+	ID          string
+	TenantID    string
+	NodeID      string
+	SubjectType ACLSubjectType
+	SubjectID   string
+	Role        ACLRole
+	CreatedBy   string
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
+type SetNodeACLCommand struct {
+	ID               string
+	TenantID         string
+	NodeID           string
+	SubjectType      ACLSubjectType
+	SubjectID        string
+	Role             ACLRole
+	ActorPrincipalID string
+	ActorRole        AccessRole
+	Now              time.Time
+}
+
+type DeleteNodeACLCommand struct {
+	TenantID         string
+	NodeID           string
+	EntryID          string
+	ActorPrincipalID string
+	ActorRole        AccessRole
+	Now              time.Time
+}
+
+type AuditEvent struct {
+	Sequence         int64
+	ID               string
+	TenantID         string
+	ActorPrincipalID string
+	Action           string
+	TargetType       string
+	TargetID         string
+	RequestID        string
+	Metadata         map[string]string
+	OccurredAt       time.Time
+}
+
+type AuditFilter struct {
+	TenantID      string
+	AfterSequence int64
+	From          time.Time
+	Until         time.Time
+	Limit         int
+}
+
+type IdempotencyScope string
+
+const (
+	IdempotencyCreateDirectory IdempotencyScope = "create_directory"
+	IdempotencyCreateUpload    IdempotencyScope = "create_upload"
+)
+
+func ValidIdempotencyScope(scope IdempotencyScope) bool {
+	return scope == IdempotencyCreateDirectory || scope == IdempotencyCreateUpload
+}
+
+type IdempotencyState string
+
+const (
+	IdempotencyPending   IdempotencyState = "pending"
+	IdempotencyCompleted IdempotencyState = "completed"
+)
+
+type IdempotencyRequest struct {
+	Identity      Identity
+	Scope         IdempotencyScope
+	KeyHash       string
+	RequestDigest string
+	ClaimToken    string
+	LockedUntil   time.Time
+	ExpiresAt     time.Time
+	Now           time.Time
+}
+
+type IdempotencyRecord struct {
+	Identity      Identity
+	Scope         IdempotencyScope
+	KeyHash       string
+	RequestDigest string
+	State         IdempotencyState
+	ClaimToken    string
+	ResourceID    string
+	LockedUntil   time.Time
+	ExpiresAt     time.Time
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+}
+
+type UploadMaintenanceClaim struct {
+	Upload         UploadSession
+	Owner          string
+	CleanupPending bool
+	Attempts       int
+}
+
+type RecycleMaintenanceClaim struct {
+	Identity Identity
+	RootID   string
+	Revision int64
+	Owner    string
 }
 
 type Tenant struct {

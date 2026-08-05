@@ -1,0 +1,11 @@
+.git
+.github
+.env
+.env.*
+bin
+coverage.out
+integration-test.json
+integration-test.raw.json
+node_modules
+unit-test.json
+

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -15,7 +16,9 @@ import (
 	"github.com/baicie/asteria-drive/internal/buildinfo"
 	"github.com/baicie/asteria-drive/internal/config"
 	"github.com/baicie/asteria-drive/internal/drive"
+	"github.com/baicie/asteria-drive/internal/maintenance"
 	"github.com/baicie/asteria-drive/internal/memory"
+	"github.com/baicie/asteria-drive/internal/observability"
 	"github.com/baicie/asteria-drive/internal/postgres"
 	"github.com/baicie/asteria-drive/internal/s3store"
 	"github.com/baicie/asteria-drive/internal/server"
@@ -27,6 +30,7 @@ func main() {
 		return
 	}
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	metrics := observability.NewMetrics()
 	cfg, err := config.Load()
 	if err != nil {
 		logger.Error("configuration is invalid", "error", err)
@@ -67,6 +71,7 @@ func main() {
 			os.Exit(1)
 		}
 	}
+	storage = observability.InstrumentStorage(storage, metrics)
 	cursor, err := drive.NewCursorCodec(cfg.CursorKey)
 	if err != nil {
 		logger.Error("cursor configuration is invalid", "error", err)
@@ -136,26 +141,77 @@ func main() {
 		Address: cfg.Address, Service: service, Authenticator: authenticator, Logger: logger,
 		ReadHeaderTimeout: cfg.ReadHeaderTimeout, ReadTimeout: cfg.ReadTimeout,
 		WriteTimeout: cfg.WriteTimeout, IdleTimeout: cfg.IdleTimeout,
+		Metrics: metrics,
 	})
 	if err != nil {
 		logger.Error("HTTP server initialization failed", "error", err)
 		os.Exit(1)
 	}
+	var maintenanceLoop *maintenance.Loop
+	var maintenanceCancel context.CancelFunc
+	if cfg.MaintenanceEnabled {
+		maintenanceLoop, err = maintenance.New(maintenance.Options{
+			Repository: repository, Storage: storage, Metrics: metrics,
+			Interval: cfg.MaintenanceInterval, LeaseDuration: cfg.MaintenanceLease,
+			StaleAfter: cfg.MaintenanceStaleAfter, RecycleRetention: cfg.RecycleRetention,
+			BatchSize: cfg.MaintenanceBatchSize,
+		})
+		if err != nil {
+			logger.Error("maintenance initialization failed", "error", err)
+			os.Exit(1)
+		}
+		maintenanceCtx, cancel := context.WithCancel(context.Background())
+		maintenanceCancel = cancel
+		maintenanceLoop.Start(maintenanceCtx)
+	}
 
+	metricsServer := observability.NewServer(cfg.MetricsAddress, metrics.Handler())
+	type serverResult struct {
+		name string
+		err  error
+	}
+	results := make(chan serverResult, 2)
+	var servers sync.WaitGroup
+	servers.Add(2)
+	go func() {
+		defer servers.Done()
+		results <- serverResult{name: "api", err: httpServer.ListenAndServe()}
+	}()
+	go func() {
+		defer servers.Done()
+		results <- serverResult{name: "metrics", err: metricsServer.ListenAndServe()}
+	}()
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
-	go func() {
-		<-stop
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-		if err := httpServer.Shutdown(ctx); err != nil {
-			logger.Error("graceful shutdown failed", "error", err)
-		}
-	}()
+	defer signal.Stop(stop)
 
-	logger.Info("Asteria Drive server listening", "address", cfg.Address, "metadata_driver", cfg.MetadataDriver, "storage_driver", cfg.StorageDriver)
-	if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		logger.Error("HTTP server stopped unexpectedly", "error", err)
+	logger.Info("Asteria Drive server listening", "address", cfg.Address, "metrics_address", cfg.MetricsAddress,
+		"metadata_driver", cfg.MetadataDriver, "storage_driver", cfg.StorageDriver)
+	failed := false
+	select {
+	case <-stop:
+	case result := <-results:
+		if result.err != nil && !errors.Is(result.err, http.ErrServerClosed) {
+			logger.Error("server stopped unexpectedly", "server", result.name, "error", result.err)
+			failed = true
+		}
+	}
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer shutdownCancel()
+	if maintenanceCancel != nil {
+		maintenanceCancel()
+		maintenanceLoop.Wait()
+	}
+	if err := httpServer.Shutdown(shutdownCtx); err != nil {
+		logger.Error("API graceful shutdown failed", "error", err)
+		failed = true
+	}
+	if err := metricsServer.Shutdown(shutdownCtx); err != nil {
+		logger.Error("metrics graceful shutdown failed", "error", err)
+		failed = true
+	}
+	servers.Wait()
+	if failed {
 		os.Exit(1)
 	}
 }

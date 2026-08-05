@@ -56,9 +56,15 @@ func (r *Repository) EnsureOIDCMember(ctx context.Context, seed drive.OIDCMember
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO tenant_member(tenant_id,principal_id,role,status,created_at,updated_at)
 		VALUES($1,$2,$3,'active',$4,$4)
-		ON CONFLICT(tenant_id,principal_id) DO UPDATE SET role=EXCLUDED.role,status='active',updated_at=EXCLUDED.updated_at`,
+		ON CONFLICT(tenant_id,principal_id) DO NOTHING`,
 		seed.TenantID, seed.PrincipalID, seed.Role, seed.Now); err != nil {
 		return drive.PrincipalRecord{}, mapError(err, drive.CodeInternal, "could not bootstrap tenant member")
+	}
+	var role, status string
+	if err := tx.QueryRow(ctx, `
+		SELECT role,status FROM tenant_member WHERE tenant_id=$1 AND principal_id=$2`,
+		seed.TenantID, seed.PrincipalID).Scan(&role, &status); err != nil {
+		return drive.PrincipalRecord{}, mapError(err, drive.CodeInternal, "could not read bootstrapped tenant member")
 	}
 	if err := commit(tx, ctx); err != nil {
 		return drive.PrincipalRecord{}, err
@@ -66,7 +72,7 @@ func (r *Repository) EnsureOIDCMember(ctx context.Context, seed drive.OIDCMember
 	return drive.PrincipalRecord{
 		Identity: drive.Identity{TenantID: seed.TenantID, PrincipalID: seed.PrincipalID},
 		Issuer:   seed.Issuer, Subject: seed.Subject, DisplayName: seed.DisplayName,
-		TenantDisplayName: tenantName, Role: seed.Role, Status: drive.MemberStatusActive,
+		TenantDisplayName: tenantName, Role: drive.AccessRole(role), Status: drive.MemberStatus(status),
 	}, nil
 }
 
@@ -229,6 +235,9 @@ func (r *Repository) UpdateMember(ctx context.Context, command drive.UpdateMembe
 		WHERE tm.tenant_id=$1 AND tm.principal_id=$2`, command.TenantID, command.PrincipalID).
 		Scan(&record.Identity.PrincipalID, &record.Issuer, &record.Subject, &record.DisplayName, &record.TenantDisplayName, &role, &status); err != nil {
 		return drive.PrincipalRecord{}, mapError(err, drive.CodeInternal, "could not read updated tenant member")
+	}
+	if err := appendAuditTx(ctx, tx, command.TenantID, command.ActorPrincipalID, "tenant.member.updated", "principal", command.PrincipalID, now, map[string]string{"role": string(newRole), "status": string(newStatus)}); err != nil {
+		return drive.PrincipalRecord{}, err
 	}
 	if err := commit(tx, ctx); err != nil {
 		return drive.PrincipalRecord{}, err

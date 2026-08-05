@@ -21,6 +21,12 @@ type Options struct {
 	ReadTimeout       time.Duration
 	WriteTimeout      time.Duration
 	IdleTimeout       time.Duration
+	Metrics           HTTPMetrics
+}
+
+type HTTPMetrics interface {
+	HTTPRequestStarted()
+	HTTPRequestFinished(method, route string, status int, duration time.Duration)
 }
 
 type Server struct {
@@ -31,9 +37,10 @@ type Server struct {
 type apiHandler func(*api, http.ResponseWriter, *http.Request)
 
 type apiRoute struct {
-	pattern    string
-	permission drive.Permission
-	handler    apiHandler
+	pattern      string
+	permission   drive.Permission
+	aclElevation bool
+	handler      apiHandler
 }
 
 var publicAPIRoutes = []apiRoute{
@@ -41,25 +48,45 @@ var publicAPIRoutes = []apiRoute{
 	{pattern: "GET /readyz", handler: (*api).ready},
 }
 
+var externalAPIRoutes = []apiRoute{
+	{pattern: "POST /api/v1/invitations/accept", handler: (*api).acceptInvitation},
+}
+
 var protectedAPIRoutes = []apiRoute{
 	{pattern: "GET /api/v1/tenant", permission: drive.PermissionTenantRead, handler: (*api).getTenant},
 	{pattern: "GET /api/v1/tenant/members", permission: drive.PermissionMembersRead, handler: (*api).listMembers},
 	{pattern: "PATCH /api/v1/tenant/members/{principal_id}", permission: drive.PermissionMembersManage, handler: (*api).updateMember},
-	{pattern: "POST /api/v1/directories", permission: drive.PermissionFilesWrite, handler: (*api).createDirectory},
+	{pattern: "DELETE /api/v1/tenant/members/{principal_id}", permission: drive.PermissionMembersManage, handler: (*api).deleteMember},
+	{pattern: "POST /api/v1/tenant/invitations", permission: drive.PermissionMembersManage, handler: (*api).createInvitation},
+	{pattern: "GET /api/v1/tenant/invitations", permission: drive.PermissionMembersManage, handler: (*api).listInvitations},
+	{pattern: "POST /api/v1/tenant/invitations/{invitation_id}/revoke", permission: drive.PermissionMembersManage, handler: (*api).revokeInvitation},
+	{pattern: "POST /api/v1/tenant/groups", permission: drive.PermissionGroupsManage, handler: (*api).createGroup},
+	{pattern: "GET /api/v1/tenant/groups", permission: drive.PermissionGroupsManage, handler: (*api).listGroups},
+	{pattern: "PATCH /api/v1/tenant/groups/{group_id}", permission: drive.PermissionGroupsManage, handler: (*api).updateGroup},
+	{pattern: "DELETE /api/v1/tenant/groups/{group_id}", permission: drive.PermissionGroupsManage, handler: (*api).deleteGroup},
+	{pattern: "GET /api/v1/tenant/groups/{group_id}/members", permission: drive.PermissionGroupsManage, handler: (*api).listGroupMembers},
+	{pattern: "PUT /api/v1/tenant/groups/{group_id}/members/{principal_id}", permission: drive.PermissionGroupsManage, handler: (*api).addGroupMember},
+	{pattern: "DELETE /api/v1/tenant/groups/{group_id}/members/{principal_id}", permission: drive.PermissionGroupsManage, handler: (*api).removeGroupMember},
+	{pattern: "GET /api/v1/tenant/audit-events", permission: drive.PermissionAuditRead, handler: (*api).listAuditEvents},
+	{pattern: "GET /api/v1/tenant/audit-events/export", permission: drive.PermissionAuditRead, handler: (*api).exportAuditEvents},
+	{pattern: "POST /api/v1/directories", permission: drive.PermissionFilesWrite, aclElevation: true, handler: (*api).createDirectory},
 	{pattern: "GET /api/v1/directories/{id}", permission: drive.PermissionFilesRead, handler: (*api).getDirectory},
 	{pattern: "GET /api/v1/directories/{id}/children", permission: drive.PermissionFilesRead, handler: (*api).listChildren},
 	{pattern: "GET /api/v1/files/{id}", permission: drive.PermissionFilesRead, handler: (*api).getFile},
 	{pattern: "POST /api/v1/files/{id}/download-authorizations", permission: drive.PermissionFilesRead, handler: (*api).createDownloadAuthorization},
-	{pattern: "PATCH /api/v1/nodes/{id}", permission: drive.PermissionFilesWrite, handler: (*api).updateNode},
-	{pattern: "DELETE /api/v1/nodes/{id}", permission: drive.PermissionFilesDelete, handler: (*api).recycleNode},
-	{pattern: "POST /api/v1/uploads", permission: drive.PermissionFilesWrite, handler: (*api).createUpload},
+	{pattern: "PATCH /api/v1/nodes/{id}", permission: drive.PermissionFilesWrite, aclElevation: true, handler: (*api).updateNode},
+	{pattern: "DELETE /api/v1/nodes/{id}", permission: drive.PermissionFilesDelete, aclElevation: true, handler: (*api).recycleNode},
+	{pattern: "GET /api/v1/nodes/{id}/acl", permission: drive.PermissionFilesRead, handler: (*api).listNodeACL},
+	{pattern: "PUT /api/v1/nodes/{id}/acl", permission: drive.PermissionFilesRead, handler: (*api).setNodeACL},
+	{pattern: "DELETE /api/v1/nodes/{id}/acl/{entry_id}", permission: drive.PermissionFilesRead, handler: (*api).deleteNodeACL},
+	{pattern: "POST /api/v1/uploads", permission: drive.PermissionFilesWrite, aclElevation: true, handler: (*api).createUpload},
 	{pattern: "GET /api/v1/uploads/{id}", permission: drive.PermissionFilesRead, handler: (*api).getUpload},
-	{pattern: "POST /api/v1/uploads/{id}/parts/sign", permission: drive.PermissionFilesWrite, handler: (*api).signUploadPart},
-	{pattern: "POST /api/v1/uploads/{id}/complete", permission: drive.PermissionFilesWrite, handler: (*api).completeUpload},
-	{pattern: "DELETE /api/v1/uploads/{id}", permission: drive.PermissionFilesWrite, handler: (*api).abortUpload},
+	{pattern: "POST /api/v1/uploads/{id}/parts/sign", permission: drive.PermissionFilesWrite, aclElevation: true, handler: (*api).signUploadPart},
+	{pattern: "POST /api/v1/uploads/{id}/complete", permission: drive.PermissionFilesWrite, aclElevation: true, handler: (*api).completeUpload},
+	{pattern: "DELETE /api/v1/uploads/{id}", permission: drive.PermissionFilesWrite, aclElevation: true, handler: (*api).abortUpload},
 	{pattern: "GET /api/v1/recycle-bin", permission: drive.PermissionFilesRead, handler: (*api).listRecycle},
-	{pattern: "POST /api/v1/recycle-bin/{id}/restore", permission: drive.PermissionFilesWrite, handler: (*api).restoreNode},
-	{pattern: "DELETE /api/v1/recycle-bin/{id}", permission: drive.PermissionFilesDelete, handler: (*api).purgeNode},
+	{pattern: "POST /api/v1/recycle-bin/{id}/restore", permission: drive.PermissionFilesWrite, aclElevation: true, handler: (*api).restoreNode},
+	{pattern: "DELETE /api/v1/recycle-bin/{id}", permission: drive.PermissionFilesDelete, aclElevation: true, handler: (*api).purgeNode},
 }
 
 func New(options Options) (*Server, error) {
@@ -69,7 +96,7 @@ func New(options Options) (*Server, error) {
 	if options.Logger == nil {
 		options.Logger = slog.Default()
 	}
-	api := &api{service: options.Service, logger: options.Logger}
+	api := &api{service: options.Service, logger: options.Logger, metrics: options.Metrics}
 	mux := http.NewServeMux()
 	for _, route := range publicAPIRoutes {
 		handler := route.handler
@@ -77,17 +104,29 @@ func New(options Options) (*Server, error) {
 			handler(api, w, r)
 		})
 	}
+	for _, route := range externalAPIRoutes {
+		handler := route.handler
+		if external, ok := options.Authenticator.(auth.ExternalAuthenticator); ok {
+			mux.Handle(route.pattern, external.ExternalMiddleware(api.writeError)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				handler(api, w, r)
+			})))
+		} else {
+			mux.HandleFunc(route.pattern, func(w http.ResponseWriter, r *http.Request) {
+				api.writeError(w, r, drive.E(drive.CodeUnauthenticated, "external identity authentication is unavailable"))
+			})
+		}
+	}
 
-	protected := func(permission drive.Permission, next http.Handler) http.Handler {
-		return options.Authenticator.Middleware(api.writeError)(api.captureIdentity(api.authorize(permission)(next)))
+	protected := func(permission drive.Permission, aclElevation bool, next http.Handler) http.Handler {
+		return options.Authenticator.Middleware(api.writeError)(api.captureIdentity(api.authorize(permission, aclElevation)(next)))
 	}
 	for _, route := range protectedAPIRoutes {
 		handler := route.handler
-		mux.Handle(route.pattern, protected(route.permission, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mux.Handle(route.pattern, protected(route.permission, route.aclElevation, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			handler(api, w, r)
 		})))
 	}
-	mux.Handle("/api/", protected("", http.HandlerFunc(api.notFound)))
+	mux.Handle("/api/", protected("", false, http.HandlerFunc(api.notFound)))
 
 	handler := api.requestID(api.logRequest(api.recover(mux)))
 	server := &Server{handler: handler}
@@ -131,7 +170,8 @@ func (a *api) requestID(next http.Handler) http.Handler {
 			}
 		}
 		w.Header().Set("X-Request-ID", id)
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), requestIDKey{}, id)))
+		ctx := context.WithValue(r.Context(), requestIDKey{}, id)
+		next.ServeHTTP(w, r.WithContext(drive.ContextWithRequestID(ctx, id)))
 	})
 }
 
@@ -160,6 +200,9 @@ func (w *responseStatusRecorder) Unwrap() http.ResponseWriter { return w.Respons
 func (a *api) logRequest(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		started := time.Now()
+		if a.metrics != nil {
+			a.metrics.HTTPRequestStarted()
+		}
 		fields := &requestLogFields{}
 		r = r.WithContext(context.WithValue(r.Context(), requestLogKey{}, fields))
 		recorder := &responseStatusRecorder{ResponseWriter: w}
@@ -178,6 +221,9 @@ func (a *api) logRequest(next http.Handler) http.Handler {
 		if fields.errorCode != "" {
 			attributes = append(attributes, "error_code", fields.errorCode)
 		}
+		if a.metrics != nil {
+			a.metrics.HTTPRequestFinished(r.Method, r.Pattern, recorder.status, time.Since(started))
+		}
 		a.logger.Info("http request completed", attributes...)
 	})
 }
@@ -194,7 +240,7 @@ func (a *api) captureIdentity(next http.Handler) http.Handler {
 	})
 }
 
-func (a *api) authorize(permission drive.Permission) func(http.Handler) http.Handler {
+func (a *api) authorize(permission drive.Permission, aclElevation bool) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			principal, ok := auth.FromContext(r.Context())
@@ -202,7 +248,7 @@ func (a *api) authorize(permission drive.Permission) func(http.Handler) http.Han
 				a.writeError(w, r, drive.E(drive.CodeUnauthenticated, "a valid bearer token is required"))
 				return
 			}
-			if permission != "" && !principal.HasPermission(permission) {
+			if permission != "" && !principal.HasPermission(permission) && !aclElevation {
 				a.writeError(w, r, drive.E(drive.CodeForbidden, "the authenticated principal lacks this permission"))
 				return
 			}

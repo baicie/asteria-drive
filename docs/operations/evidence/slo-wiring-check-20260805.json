@@ -1,0 +1,42 @@
+{
+  "started_at": "2026-08-05T08:17:23.3891478Z",
+  "finished_at": "2026-08-05T08:17:38.3895926Z",
+  "duration_seconds": 15,
+  "warmup_seconds": 0,
+  "target_rps": 10,
+  "concurrency": 2,
+  "requests": 149,
+  "dropped_requests": 0,
+  "server_errors": 0,
+  "unexpected_statuses": 0,
+  "server_error_rate": 0,
+  "endpoints": {
+    "healthz": {
+      "requests": 50,
+      "server_errors": 0,
+      "unexpected_statuses": 0,
+      "p50_ms": 1.1098,
+      "p95_ms": 1.25274,
+      "p99_ms": 2.2545199999999976,
+      "max_ms": 2.7651
+    },
+    "list_children": {
+      "requests": 49,
+      "server_errors": 0,
+      "unexpected_statuses": 0,
+      "p50_ms": 3.0266,
+      "p95_ms": 4.349119999999999,
+      "p99_ms": 9.112283999999965,
+      "max_ms": 13.4079
+    },
+    "tenant": {
+      "requests": 50,
+      "server_errors": 0,
+      "unexpected_statuses": 0,
+      "p50_ms": 2.3297,
+      "p95_ms": 3.078539999999999,
+      "p99_ms": 4.539038,
+      "max_ms": 4.6144
+    }
+  }
+}

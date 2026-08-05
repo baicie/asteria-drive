@@ -6,8 +6,9 @@ Asteria Drive 是一个面向个人网盘和企业文件平台的开源控制面
 
 > 当前状态：后端 MVP 工程验收基线（`main`）上已实现 M2-1 和 M2-2。系统已包含 OIDC/OAuth2 Resource
 > Server、内部主体、租户成员、基础 RBAC，以及成员角色/状态管理；`trusted-dev` 仍只允许 development，
-> production 必须使用 OIDC + PostgreSQL + S3。生产部署仍需完成邀请、正式 ACL、审计和安全评审，
-> 不能仅凭本阶段描述为完整生产就绪。
+> production 必须使用 OIDC + PostgreSQL + S3。邀请、正式 ACL、审计、可靠性与可观测性、生产 Secret、
+> 备份恢复、部署加固和安全评审仍在收尾，不能据此描述为完整生产就绪。权威进度见
+> [当前交付状态](docs/status.md)。
 
 ## MVP 能力
 
@@ -19,7 +20,8 @@ Asteria Drive 是一个面向个人网盘和企业文件平台的开源控制面
 - 统一 JSON 错误、请求 ID、health/readiness、版本化迁移和优雅停止。
 
 M2-1 已加入 OIDC/OAuth2 Resource Server、内部主体、租户成员和基础 RBAC；M2-2 已加入成员列表、角色与
-状态管理。邀请、正式 ACL、分享、配额、桌面同步、预览、搜索、Outbox 和独立 Worker 属于后续阶段。
+状态管理。邀请、成员删除、正式 ACL 和审计属于当前 Phase 1 生产化收尾；分享、配额、桌面同步、预览、
+搜索、Outbox 和独立 Worker 属于后续产品目标。
 完整范围与完成条件见 [MVP 文档](docs/mvp/README.md)。
 
 ## 本地启动

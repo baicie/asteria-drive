@@ -47,6 +47,9 @@ func (r *Repository) CreateUpload(ctx context.Context, command drive.CreateUploa
 	if err != nil {
 		return drive.UploadSession{}, mapError(err, drive.CodeInternal, "could not create upload")
 	}
+	if err := completeIdempotency(ctx, tx, command.Idempotency, created.ID, session.CreatedAt); err != nil {
+		return drive.UploadSession{}, err
+	}
 	if err := commit(tx, ctx); err != nil {
 		return drive.UploadSession{}, err
 	}
@@ -178,7 +181,7 @@ func (r *Repository) FailUploadCompletion(ctx context.Context, identity drive.Id
 		return drive.UploadSession{}, drive.E(drive.CodeInvalidState, "upload completion cannot transition to failed")
 	}
 	session, err = scanUpload(tx.QueryRow(ctx, `
-		UPDATE upload_session SET status='failed',failure_code=$4,revision=revision+1,updated_at=$5
+		UPDATE upload_session SET status='failed',failure_code=$4,cleanup_status='pending',revision=revision+1,updated_at=$5
 		WHERE tenant_id=$1 AND id=$2 AND completion_digest=$3
 		RETURNING `+uploadColumns, identity.TenantID, id, digest, failureCode, now))
 	if err != nil {
@@ -314,6 +317,9 @@ func (r *Repository) CommitUpload(ctx context.Context, command drive.CommitUploa
 	if err != nil {
 		return drive.CompleteResult{}, false, mapError(err, drive.CodeInternal, "could not commit upload session")
 	}
+	if err := appendAuditTx(ctx, tx, command.Identity.TenantID, command.Identity.PrincipalID, "upload.committed", "node", command.Node.ID, command.Now, map[string]string{"upload_id": session.ID, "kind": string(command.Node.Kind)}); err != nil {
+		return drive.CompleteResult{}, false, err
+	}
 	if err := commit(tx, ctx); err != nil {
 		return drive.CompleteResult{}, false, err
 	}
@@ -329,7 +335,7 @@ func rejectUploadCommit(
 	resultErr error,
 ) (drive.CompleteResult, bool, error) {
 	if _, err := tx.Exec(ctx, `
-		UPDATE upload_session SET status='failed',failure_code=$4,revision=revision+1,updated_at=$5
+		UPDATE upload_session SET status='failed',failure_code=$4,cleanup_status='pending',revision=revision+1,updated_at=$5
 		WHERE tenant_id=$1 AND id=$2 AND completion_digest=$3 AND status='object_completed'`,
 		session.TenantID, session.ID, session.CompletionDigest, failureCode, now); err != nil {
 		return drive.CompleteResult{}, false, mapError(err, drive.CodeInternal, "could not reject upload commit")
@@ -386,7 +392,7 @@ func (r *Repository) AbortUpload(ctx context.Context, identity drive.Identity, i
 		return drive.UploadSession{}, drive.E(drive.CodeInvalidState, "upload session cannot be aborted while completing")
 	}
 	session, err = scanUpload(tx.QueryRow(ctx, `
-		UPDATE upload_session SET status=$3,revision=revision+1,updated_at=$4
+		UPDATE upload_session SET status=$3,cleanup_status='pending',revision=revision+1,updated_at=$4
 		WHERE tenant_id=$1 AND id=$2 RETURNING `+uploadColumns,
 		identity.TenantID, id, target, now))
 	if err != nil {
@@ -396,6 +402,20 @@ func (r *Repository) AbortUpload(ctx context.Context, identity drive.Identity, i
 		return drive.UploadSession{}, err
 	}
 	return session, nil
+}
+
+func (r *Repository) MarkUploadCleanupComplete(ctx context.Context, identity drive.Identity, id string, now time.Time) error {
+	tag, err := r.pool.Exec(ctx, `
+		UPDATE upload_session SET cleanup_status='complete',maintenance_not_before=NULL,
+			maintenance_error_code='',updated_at=$3
+		WHERE tenant_id=$1 AND id=$2 AND status IN ('aborted','expired','failed')`, identity.TenantID, id, now)
+	if err != nil {
+		return mapError(err, drive.CodeInternal, "could not complete upload cleanup")
+	}
+	if tag.RowsAffected() != 1 {
+		return drive.E(drive.CodeInvalidState, "upload cleanup cannot be completed")
+	}
+	return nil
 }
 
 func (r *Repository) ExpiredUploads(ctx context.Context, now time.Time, limit int) ([]drive.UploadSession, error) {

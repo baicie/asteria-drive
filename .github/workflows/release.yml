@@ -21,6 +21,8 @@ concurrency:
 env:
   GOTOOLCHAIN: local
   GO_VERSION: 1.26.5
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
 
 jobs:
   build:
@@ -31,6 +33,7 @@ jobs:
       tag: ${{ steps.release-input.outputs.tag }}
       version: ${{ steps.release-input.outputs.version }}
       commit: ${{ steps.release-input.outputs.commit }}
+      build_time: ${{ steps.release-input.outputs.build_time }}
     steps:
       - name: Check out release tag
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -67,10 +70,12 @@ jobs:
             exit 1
           fi
           source_epoch="$(git show -s --format=%ct "$tag_commit")"
+          build_time="$(date -u -d "@$source_epoch" +'%Y-%m-%dT%H:%M:%SZ')"
           printf 'tag=%s\n' "$RELEASE_TAG" >> "$GITHUB_OUTPUT"
           printf 'version=%s\n' "${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
           printf 'commit=%s\n' "$tag_commit" >> "$GITHUB_OUTPUT"
           printf 'epoch=%s\n' "$source_epoch" >> "$GITHUB_OUTPUT"
+          printf 'build_time=%s\n' "$build_time" >> "$GITHUB_OUTPUT"
       - name: Build deterministic release artifacts
         env:
           RELEASE_TAG: ${{ steps.release-input.outputs.tag }}
@@ -113,6 +118,7 @@ jobs:
       contents: write
       id-token: write
       attestations: write
+      packages: write
     steps:
       - name: Check out release tag
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -131,10 +137,46 @@ jobs:
           set -euo pipefail
           cd "$RUNNER_TEMP/asteria-release"
           sha256sum --check checksums.txt
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Build and publish immutable OCI image
+        id: publish-image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.build.outputs.tag }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${{ needs.build.outputs.commit }}
+          build-args: |
+            VERSION=${{ needs.build.outputs.tag }}
+            COMMIT=${{ needs.build.outputs.commit }}
+            BUILD_TIME=${{ needs.build.outputs.build_time }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.version=${{ needs.build.outputs.tag }}
+            org.opencontainers.image.revision=${{ needs.build.outputs.commit }}
+          provenance: false
       - name: Attest release subjects
         uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
         with:
           subject-checksums: ${{ runner.temp }}/asteria-release/checksums.txt
+          show-summary: true
+      - name: Attest OCI image
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.publish-image.outputs.digest }}
+          push-to-registry: true
           show-summary: true
       - name: Publish immutable GitHub release
         env:

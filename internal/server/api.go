@@ -15,11 +15,16 @@ import (
 	"github.com/baicie/asteria-drive/internal/drive"
 )
 
-const maxJSONBody = 1 << 20
+const (
+	maxJSONBody               = 1 << 20
+	idempotencyKeyHeader      = "Idempotency-Key"
+	idempotencyReplayedHeader = "Idempotency-Replayed"
+)
 
 type api struct {
 	service *drive.Service
 	logger  *slog.Logger
+	metrics HTTPMetrics
 }
 
 type tenantResponse struct {
@@ -34,6 +39,65 @@ type memberResponse struct {
 	DisplayName string             `json:"display_name"`
 	Role        drive.AccessRole   `json:"role"`
 	Status      drive.MemberStatus `json:"status"`
+}
+
+type invitationResponse struct {
+	ID          string                 `json:"id"`
+	Issuer      string                 `json:"issuer"`
+	Subject     string                 `json:"subject"`
+	DisplayName string                 `json:"display_name"`
+	Role        drive.AccessRole       `json:"role"`
+	Status      drive.InvitationStatus `json:"status"`
+	ExpiresAt   time.Time              `json:"expires_at"`
+	CreatedAt   time.Time              `json:"created_at"`
+}
+
+type groupResponse struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+type aclResponse struct {
+	ID          string               `json:"id"`
+	NodeID      string               `json:"node_id"`
+	SubjectType drive.ACLSubjectType `json:"subject_type"`
+	SubjectID   string               `json:"subject_id"`
+	Role        drive.ACLRole        `json:"role"`
+	CreatedAt   time.Time            `json:"created_at"`
+	UpdatedAt   time.Time            `json:"updated_at"`
+}
+
+type auditResponse struct {
+	Sequence         int64             `json:"sequence"`
+	ID               string            `json:"id"`
+	ActorPrincipalID string            `json:"actor_principal_id,omitempty"`
+	Action           string            `json:"action"`
+	TargetType       string            `json:"target_type"`
+	TargetID         string            `json:"target_id,omitempty"`
+	RequestID        string            `json:"request_id,omitempty"`
+	Metadata         map[string]string `json:"metadata"`
+	OccurredAt       time.Time         `json:"occurred_at"`
+}
+
+func toInvitationResponse(v drive.TenantInvitation) invitationResponse {
+	return invitationResponse{ID: v.ID, Issuer: v.Issuer, Subject: v.Subject, DisplayName: v.DisplayName, Role: v.Role, Status: v.Status, ExpiresAt: v.ExpiresAt, CreatedAt: v.CreatedAt}
+}
+
+func toGroupResponse(group drive.TenantGroup) groupResponse {
+	return groupResponse{ID: group.ID, Name: group.DisplayName, CreatedAt: group.CreatedAt, UpdatedAt: group.UpdatedAt}
+}
+
+func toACLResponse(entry drive.NodeACLEntry) aclResponse {
+	return aclResponse{ID: entry.ID, NodeID: entry.NodeID, SubjectType: entry.SubjectType,
+		SubjectID: entry.SubjectID, Role: entry.Role, CreatedAt: entry.CreatedAt, UpdatedAt: entry.UpdatedAt}
+}
+
+func toAuditResponse(event drive.AuditEvent) auditResponse {
+	return auditResponse{Sequence: event.Sequence, ID: event.ID, ActorPrincipalID: event.ActorPrincipalID,
+		Action: event.Action, TargetType: event.TargetType, TargetID: event.TargetID,
+		RequestID: event.RequestID, Metadata: event.Metadata, OccurredAt: event.OccurredAt}
 }
 
 func toMemberResponse(member drive.PrincipalRecord) memberResponse {
@@ -151,6 +215,321 @@ func (a *api) updateMember(w http.ResponseWriter, r *http.Request) {
 	a.writeData(w, http.StatusOK, toMemberResponse(member))
 }
 
+func (a *api) deleteMember(w http.ResponseWriter, r *http.Request) {
+	p, ok := auth.FromContext(r.Context())
+	if !ok {
+		a.writeError(w, r, drive.E(drive.CodeUnauthenticated, "a valid bearer token is required"))
+		return
+	}
+	if err := a.service.DeleteMember(r.Context(), drive.MemberActor{Identity: p.Identity, Role: p.Role}, r.PathValue("principal_id")); err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+func (a *api) createInvitation(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		Issuer      string           `json:"issuer"`
+		Subject     string           `json:"subject"`
+		DisplayName string           `json:"display_name"`
+		Role        drive.AccessRole `json:"role"`
+		ExpiresAt   time.Time        `json:"expires_at"`
+	}
+	if err := decodeJSON(w, r, &input, maxJSONBody, false); err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	p, ok := auth.FromContext(r.Context())
+	if !ok {
+		a.writeError(w, r, drive.E(drive.CodeUnauthenticated, "a valid bearer token is required"))
+		return
+	}
+	out, err := a.service.CreateInvitation(r.Context(), drive.MemberActor{Identity: p.Identity, Role: p.Role}, input.Issuer, input.Subject, input.DisplayName, input.Role, input.ExpiresAt)
+	if err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	a.writeData(w, http.StatusCreated, map[string]any{"invitation": toInvitationResponse(out.Invitation), "token": out.Token})
+}
+func (a *api) listInvitations(w http.ResponseWriter, r *http.Request) {
+	p, ok := auth.FromContext(r.Context())
+	if !ok {
+		a.writeError(w, r, drive.E(drive.CodeUnauthenticated, "a valid bearer token is required"))
+		return
+	}
+	items, err := a.service.ListInvitations(r.Context(), drive.MemberActor{Identity: p.Identity, Role: p.Role}, drive.InvitationStatus(r.URL.Query().Get("status")), 100)
+	if err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	out := make([]invitationResponse, len(items))
+	for i := range items {
+		out[i] = toInvitationResponse(items[i])
+	}
+	a.writeJSON(w, http.StatusOK, map[string]any{"data": out})
+}
+func (a *api) revokeInvitation(w http.ResponseWriter, r *http.Request) {
+	p, ok := auth.FromContext(r.Context())
+	if !ok {
+		a.writeError(w, r, drive.E(drive.CodeUnauthenticated, "a valid bearer token is required"))
+		return
+	}
+	v, err := a.service.RevokeInvitation(r.Context(), drive.MemberActor{Identity: p.Identity, Role: p.Role}, r.PathValue("invitation_id"))
+	if err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	a.writeData(w, http.StatusOK, toInvitationResponse(v))
+}
+
+func (a *api) acceptInvitation(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		Token string `json:"token"`
+	}
+	if err := decodeJSON(w, r, &input, maxJSONBody, false); err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	external, ok := auth.ExternalFromContext(r.Context())
+	if !ok {
+		a.writeError(w, r, drive.E(drive.CodeUnauthenticated, "a verified external identity is required"))
+		return
+	}
+	invitation, member, err := a.service.AcceptInvitation(r.Context(), input.Token, external.Issuer, external.Subject)
+	if err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	a.writeData(w, http.StatusOK, map[string]any{
+		"tenant_id": invitation.TenantID,
+		"member":    toMemberResponse(member),
+	})
+}
+
+func (a *api) createGroup(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		Name string `json:"name"`
+	}
+	if err := decodeJSON(w, r, &input, maxJSONBody, false); err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	group, err := a.service.CreateGroup(r.Context(), memberActor(r), input.Name)
+	if err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	w.Header().Set("Location", "/api/v1/tenant/groups/"+group.ID)
+	a.writeData(w, http.StatusCreated, toGroupResponse(group))
+}
+
+func (a *api) listGroups(w http.ResponseWriter, r *http.Request) {
+	groups, err := a.service.ListGroups(r.Context(), memberActor(r))
+	if err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	items := make([]groupResponse, len(groups))
+	for index := range groups {
+		items[index] = toGroupResponse(groups[index])
+	}
+	a.writeJSON(w, http.StatusOK, map[string]any{"data": items})
+}
+
+func (a *api) updateGroup(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		Name string `json:"name"`
+	}
+	if err := decodeJSON(w, r, &input, maxJSONBody, false); err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	group, err := a.service.UpdateGroup(r.Context(), memberActor(r), r.PathValue("group_id"), input.Name)
+	if err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	a.writeData(w, http.StatusOK, toGroupResponse(group))
+}
+
+func (a *api) deleteGroup(w http.ResponseWriter, r *http.Request) {
+	if err := a.service.DeleteGroup(r.Context(), memberActor(r), r.PathValue("group_id")); err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (a *api) listGroupMembers(w http.ResponseWriter, r *http.Request) {
+	members, err := a.service.ListGroupMembers(r.Context(), memberActor(r), r.PathValue("group_id"))
+	if err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	items := make([]memberResponse, len(members))
+	for index := range members {
+		items[index] = toMemberResponse(members[index])
+	}
+	a.writeJSON(w, http.StatusOK, map[string]any{"data": items})
+}
+
+func (a *api) addGroupMember(w http.ResponseWriter, r *http.Request) {
+	if err := a.service.AddGroupMember(r.Context(), memberActor(r), r.PathValue("group_id"), r.PathValue("principal_id")); err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (a *api) removeGroupMember(w http.ResponseWriter, r *http.Request) {
+	if err := a.service.RemoveGroupMember(r.Context(), memberActor(r), r.PathValue("group_id"), r.PathValue("principal_id")); err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (a *api) listNodeACL(w http.ResponseWriter, r *http.Request) {
+	entries, err := a.service.ListNodeACL(r.Context(), memberActor(r), r.PathValue("id"))
+	if err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	items := make([]aclResponse, len(entries))
+	for index := range entries {
+		items[index] = toACLResponse(entries[index])
+	}
+	a.writeJSON(w, http.StatusOK, map[string]any{"data": items})
+}
+
+func (a *api) setNodeACL(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		SubjectType drive.ACLSubjectType `json:"subject_type"`
+		SubjectID   string               `json:"subject_id"`
+		Role        drive.ACLRole        `json:"role"`
+	}
+	if err := decodeJSON(w, r, &input, maxJSONBody, false); err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	entry, err := a.service.SetNodeACL(r.Context(), memberActor(r), r.PathValue("id"), input.SubjectType, input.SubjectID, input.Role)
+	if err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	a.writeData(w, http.StatusOK, toACLResponse(entry))
+}
+
+func (a *api) deleteNodeACL(w http.ResponseWriter, r *http.Request) {
+	if err := a.service.DeleteNodeACL(r.Context(), memberActor(r), r.PathValue("id"), r.PathValue("entry_id")); err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (a *api) listAuditEvents(w http.ResponseWriter, r *http.Request) {
+	after, from, until, limit, err := parseAuditFilter(r)
+	if err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	page, err := a.service.ListAudit(r.Context(), memberActor(r), after, from, until, limit)
+	if err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	items := make([]auditResponse, len(page.Items))
+	for index := range page.Items {
+		items[index] = toAuditResponse(page.Items[index])
+	}
+	a.writeJSON(w, http.StatusOK, map[string]any{"data": items, "page": map[string]any{"next_sequence": nullableInt64(page.NextSequence)}})
+}
+
+func (a *api) exportAuditEvents(w http.ResponseWriter, r *http.Request) {
+	_, from, until, _, err := parseAuditFilter(r)
+	if err != nil || from.IsZero() || until.IsZero() {
+		if err == nil {
+			err = drive.E(drive.CodeInvalidRequest, "audit export requires from and until")
+		}
+		a.writeError(w, r, err)
+		return
+	}
+	const maxExport = 10000
+	events := make([]drive.AuditEvent, 0, 1000)
+	after := int64(0)
+	for len(events) <= maxExport {
+		page, listErr := a.service.ListAudit(r.Context(), memberActor(r), after, from, until, 1000)
+		if listErr != nil {
+			a.writeError(w, r, listErr)
+			return
+		}
+		events = append(events, page.Items...)
+		if page.NextSequence == 0 {
+			break
+		}
+		after = page.NextSequence
+	}
+	if len(events) > maxExport {
+		a.writeError(w, r, drive.E(drive.CodeInvalidRequest, "audit export exceeds 10000 events; narrow the time range"))
+		return
+	}
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	w.Header().Set("Content-Disposition", `attachment; filename="asteria-audit.ndjson"`)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(http.StatusOK)
+	encoder := json.NewEncoder(w)
+	for _, event := range events {
+		if err := encoder.Encode(toAuditResponse(event)); err != nil {
+			return
+		}
+	}
+}
+
+func parseAuditFilter(r *http.Request) (int64, time.Time, time.Time, int, error) {
+	var after int64
+	var err error
+	if raw := r.URL.Query().Get("after_sequence"); raw != "" {
+		after, err = strconv.ParseInt(raw, 10, 64)
+		if err != nil || after < 0 {
+			return 0, time.Time{}, time.Time{}, 0, drive.E(drive.CodeInvalidRequest, "after_sequence is invalid")
+		}
+	}
+	limit, err := parseLimit(r.URL.Query().Get("limit"))
+	if err != nil {
+		return 0, time.Time{}, time.Time{}, 0, err
+	}
+	from, err := parseOptionalTime(r.URL.Query().Get("from"))
+	if err != nil {
+		return 0, time.Time{}, time.Time{}, 0, err
+	}
+	until, err := parseOptionalTime(r.URL.Query().Get("until"))
+	return after, from, until, limit, err
+}
+
+func parseOptionalTime(raw string) (time.Time, error) {
+	if raw == "" {
+		return time.Time{}, nil
+	}
+	value, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return time.Time{}, drive.E(drive.CodeInvalidRequest, "time filter must use RFC3339")
+	}
+	return value.UTC(), nil
+}
+
+func nullableInt64(value int64) any {
+	if value == 0 {
+		return nil
+	}
+	return value
+}
+
+func memberActor(r *http.Request) drive.MemberActor {
+	principal, _ := auth.FromContext(r.Context())
+	return drive.MemberActor{Identity: principal.Identity, Role: principal.Role}
+}
+
 func (a *api) createDirectory(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		ParentID string `json:"parent_id"`
@@ -160,10 +539,23 @@ func (a *api) createDirectory(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, r, err)
 		return
 	}
-	node, err := a.service.CreateDirectory(r.Context(), identity(r), input.ParentID, input.Name)
+	if err := a.authorizeACLElevation(r, input.ParentID, drive.PermissionFilesWrite, drive.NodeCapabilityWrite); err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	key, err := parseIdempotencyKey(r)
 	if err != nil {
 		a.writeError(w, r, err)
 		return
+	}
+	output, err := a.service.CreateDirectoryWithIdempotency(r.Context(), identity(r), input.ParentID, input.Name, key)
+	if err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	node := output.Node
+	if key != "" {
+		w.Header().Set(idempotencyReplayedHeader, strconv.FormatBool(output.Replayed))
 	}
 	w.Header().Set("Location", "/api/v1/directories/"+node.ID)
 	setETag(w, node.Revision)
@@ -222,6 +614,16 @@ func (a *api) updateNode(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, r, err)
 		return
 	}
+	if err := a.authorizeACLElevation(r, r.PathValue("id"), drive.PermissionFilesWrite, drive.NodeCapabilityWrite); err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	if input.ParentID != nil {
+		if err := a.authorizeACLElevation(r, *input.ParentID, drive.PermissionFilesWrite, drive.NodeCapabilityWrite); err != nil {
+			a.writeError(w, r, err)
+			return
+		}
+	}
 	node, err := a.service.UpdateNode(r.Context(), identity(r), r.PathValue("id"), input.Name, input.ParentID, revision)
 	if err != nil {
 		a.writeError(w, r, err)
@@ -243,12 +645,25 @@ func (a *api) createUpload(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, r, err)
 		return
 	}
-	upload, err := a.service.CreateUpload(r.Context(), identity(r), drive.CreateUploadInput{
-		ParentID: input.ParentID, Name: input.Name, Size: input.Size, MimeType: input.MimeType, Checksum: input.Checksum,
-	})
+	if err := a.authorizeACLElevation(r, input.ParentID, drive.PermissionFilesWrite, drive.NodeCapabilityWrite); err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	key, err := parseIdempotencyKey(r)
 	if err != nil {
 		a.writeError(w, r, err)
 		return
+	}
+	output, err := a.service.CreateUploadWithIdempotency(r.Context(), identity(r), drive.CreateUploadInput{
+		ParentID: input.ParentID, Name: input.Name, Size: input.Size, MimeType: input.MimeType, Checksum: input.Checksum,
+	}, key)
+	if err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	upload := output.Upload
+	if key != "" {
+		w.Header().Set(idempotencyReplayedHeader, strconv.FormatBool(output.Replayed))
 	}
 	w.Header().Set("Location", "/api/v1/uploads/"+upload.ID)
 	a.writeData(w, http.StatusCreated, toUploadResponse(upload))
@@ -272,6 +687,10 @@ func (a *api) signUploadPart(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, r, err)
 		return
 	}
+	if err := a.authorizeUploadElevation(r, r.PathValue("id"), drive.PermissionFilesWrite, drive.NodeCapabilityWrite); err != nil {
+		a.writeError(w, r, err)
+		return
+	}
 	signed, err := a.service.SignUploadPart(r.Context(), identity(r), r.PathValue("id"), input.PartNumber, input.Checksum)
 	if err != nil {
 		a.writeError(w, r, err)
@@ -291,6 +710,10 @@ func (a *api) completeUpload(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, r, err)
 		return
 	}
+	if err := a.authorizeUploadElevation(r, r.PathValue("id"), drive.PermissionFilesWrite, drive.NodeCapabilityWrite); err != nil {
+		a.writeError(w, r, err)
+		return
+	}
 	result, err := a.service.CompleteUpload(r.Context(), identity(r), r.PathValue("id"), input.Parts)
 	if err != nil {
 		a.writeError(w, r, err)
@@ -304,6 +727,10 @@ func (a *api) completeUpload(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *api) abortUpload(w http.ResponseWriter, r *http.Request) {
+	if err := a.authorizeUploadElevation(r, r.PathValue("id"), drive.PermissionFilesWrite, drive.NodeCapabilityWrite); err != nil {
+		a.writeError(w, r, err)
+		return
+	}
 	if err := a.service.AbortUpload(r.Context(), identity(r), r.PathValue("id")); err != nil {
 		a.writeError(w, r, err)
 		return
@@ -329,6 +756,9 @@ func (a *api) createDownloadAuthorization(w http.ResponseWriter, r *http.Request
 
 func (a *api) recycleNode(w http.ResponseWriter, r *http.Request) {
 	revision, err := parseETag(r.Header.Get("If-Match"))
+	if err == nil {
+		err = a.authorizeACLElevation(r, r.PathValue("id"), drive.PermissionFilesDelete, drive.NodeCapabilityDelete)
+	}
 	if err == nil {
 		err = a.service.Recycle(r.Context(), identity(r), r.PathValue("id"), revision)
 	}
@@ -370,6 +800,10 @@ func (a *api) restoreNode(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if err := a.authorizeACLElevation(r, r.PathValue("id"), drive.PermissionFilesWrite, drive.NodeCapabilityWrite); err != nil {
+		a.writeError(w, r, err)
+		return
+	}
 	node, err := a.service.Restore(r.Context(), identity(r), r.PathValue("id"), revision)
 	if err != nil {
 		a.writeError(w, r, err)
@@ -385,11 +819,41 @@ func (a *api) purgeNode(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, r, err)
 		return
 	}
+	if err := a.authorizeACLElevation(r, r.PathValue("id"), drive.PermissionFilesDelete, drive.NodeCapabilityDelete); err != nil {
+		a.writeError(w, r, err)
+		return
+	}
 	if err := a.service.Purge(r.Context(), identity(r), r.PathValue("id"), revision); err != nil {
 		a.writeError(w, r, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (a *api) authorizeACLElevation(r *http.Request, nodeID string, permission drive.Permission, capability drive.NodeCapability) error {
+	principal, ok := auth.FromContext(r.Context())
+	if !ok {
+		return drive.E(drive.CodeUnauthenticated, "a valid bearer token is required")
+	}
+	if principal.HasPermission(permission) {
+		return nil
+	}
+	return a.service.AuthorizeNode(r.Context(), principal.Identity, nodeID, capability)
+}
+
+func (a *api) authorizeUploadElevation(r *http.Request, uploadID string, permission drive.Permission, capability drive.NodeCapability) error {
+	principal, ok := auth.FromContext(r.Context())
+	if !ok {
+		return drive.E(drive.CodeUnauthenticated, "a valid bearer token is required")
+	}
+	if principal.HasPermission(permission) {
+		return nil
+	}
+	upload, err := a.service.Upload(r.Context(), principal.Identity, uploadID)
+	if err != nil {
+		return err
+	}
+	return a.service.AuthorizeNode(r.Context(), principal.Identity, upload.ParentID, capability)
 }
 
 func identity(r *http.Request) drive.Identity {
@@ -455,6 +919,20 @@ func nullableString(value string) any {
 		return nil
 	}
 	return value
+}
+
+func parseIdempotencyKey(r *http.Request) (string, error) {
+	values := r.Header.Values(idempotencyKeyHeader)
+	if len(values) == 0 {
+		return "", nil
+	}
+	if len(values) != 1 {
+		return "", drive.E(drive.CodeInvalidRequest, "Idempotency-Key must be provided at most once")
+	}
+	if err := drive.ValidateIdempotencyKey(values[0]); err != nil {
+		return "", err
+	}
+	return values[0], nil
 }
 
 func (a *api) writeData(w http.ResponseWriter, status int, data any) {

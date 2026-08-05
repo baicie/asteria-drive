@@ -85,6 +85,12 @@ func (r *Repository) CreateDirectory(ctx context.Context, command drive.CreateDi
 	if err != nil {
 		return drive.Node{}, mapError(err, drive.CodeInternal, "could not create directory")
 	}
+	if err := completeIdempotency(ctx, tx, command.Idempotency, node.ID, command.Now); err != nil {
+		return drive.Node{}, err
+	}
+	if err := appendAuditTx(ctx, tx, command.Identity.TenantID, command.Identity.PrincipalID, "node.created", "node", node.ID, command.Now, map[string]string{"kind": string(node.Kind), "parent_id": node.ParentID}); err != nil {
+		return drive.Node{}, err
+	}
 	if err := commit(tx, ctx); err != nil {
 		return drive.Node{}, err
 	}
@@ -204,6 +210,9 @@ func (r *Repository) UpdateNode(ctx context.Context, command drive.UpdateNodeCom
 		command.Identity.TenantID, node.ID, parentID, displayName, normalizedName, command.Now, command.ExpectedRevision))
 	if err != nil {
 		return drive.Node{}, mapError(err, drive.CodeInternal, "could not update node")
+	}
+	if err := appendAuditTx(ctx, tx, command.Identity.TenantID, command.Identity.PrincipalID, "node.updated", "node", updated.ID, command.Now, map[string]string{"parent_id": updated.ParentID}); err != nil {
+		return drive.Node{}, err
 	}
 	if err := commit(tx, ctx); err != nil {
 		return drive.Node{}, err

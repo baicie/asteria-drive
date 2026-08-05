@@ -1,8 +1,8 @@
 # 产品实施路线（Phase 1–4）
 
 > 状态：产品阶段规划。Phase 编号**不等于** MVP 内部里程碑 P0–P4。
-> 当前后端 MVP 是 Phase 1「可用网盘」的收窄垂直切片，完成条件见
-> [mvp/acceptance.md](../mvp/acceptance.md)。
+> 后端 MVP 是 Phase 1「可用网盘」中已经完成的收窄垂直切片；当前交付状态见
+> [status.md](../status.md)，历史完成条件见 [mvp/acceptance.md](../mvp/acceptance.md)。
 
 ## 编号对照
 
@@ -10,28 +10,29 @@
 | --- | --- |
 | Phase 1–4 | 产品能力阶段（本文） |
 | MVP P0–P4 | 本轮后端实施里程碑，见 [mvp/roadmap.md](../mvp/roadmap.md) |
-| M2 | MVP 之后的下一产品入口：生产身份与加固，再扩展分享/配额等 |
+| M2 | Phase 1 生产化阶段；M2-1/M2-2 已完成，邀请、正式 ACL、审计与运行加固继续收尾 |
 
 ```text
 产品 Phase 1（可用网盘）
-  └── 当前后端 MVP = P0 → P1 → P2 → P3 → P4 → Definition of Done
-产品 Phase 2+ / M2+
-  └── 同步、协作、CDC、企业与多地域等（不在本轮 MUST）
+  ├── 后端 MVP = P0 → P1 → P2 → P3 → P4 → Definition of Done（已完成）
+  └── M2 生产化：M2-1/M2-2（已完成）→ 当前生产化收尾
+产品 Phase 2-4
+  └── 同步、协作、CDC、企业扩展与多地域（另立目标）
 ```
 
 ## Phase 1：可用网盘
 
 目标能力（完整 Phase 1 产品面）：
 
-- 用户和组织（MVP 仅 trusted-dev 固定映射；正式身份属 M2）
+- 用户和组织（历史 MVP 仅 trusted-dev；M2-1 已交付 OIDC 和基础 RBAC，邀请与正式 ACL 仍在收尾）
 - 文件夹和文件
 - S3 Multipart、断点续传、下载和 Range
 - 分享链接、回收站、配额（分享/配额属后续；回收站在 MVP MUST）
 - PostgreSQL + SeaweedFS
 - 整文件不可变对象
 
-**当前后端 MVP 子集**：trusted-dev、Namespace、Multipart 直传、下载授权、回收/恢复/清理、
-PG + SeaweedFS 验收。不含分享、配额、OIDC。
+**历史后端 MVP 子集**：trusted-dev、Namespace、Multipart 直传、下载授权、回收/恢复/清理、
+PG + SeaweedFS 验收；该历史范围不含分享、配额和 OIDC。OIDC 与基础 RBAC 后续已由 M2-1 交付。
 
 ## Phase 2：同步和协作
 
@@ -47,7 +48,7 @@ PG + SeaweedFS 验收。不含分享、配额、OIDC。
 
 ## Phase 4：企业和多地域
 
-- 企业 SSO、DLP、水印、审计导出、法律保留
+- 企业 SSO、DLP、水印、合规审计扩展与法律保留
 - 冷热分层、跨地域复制、超大租户独立集群
 
 ## 愿景能力归属（防范围膨胀）
@@ -55,7 +56,10 @@ PG + SeaweedFS 验收。不含分享、配额、OIDC。
 | 愿景能力 | 归属 |
 | --- | --- |
 | 模块化单体、控/数分离、整文件 Blob、S3 Multipart、SeaweedFS | 当前 MVP（已有 ADR） |
-| OIDC、分享、配额、ACL、审计 | M2 / Phase 1 后半或 Phase 4 |
+| OIDC、内部主体、租户成员、基础 RBAC | M2-1（已交付） |
+| 成员生命周期管理 | M2-2（已交付基础角色/状态管理） |
+| 邀请、成员删除、正式 ACL、基础审计与生产运行加固 | 当前 Phase 1 生产化收尾 |
+| 分享、配额与企业合规扩展 | 后续产品目标 / Phase 4 |
 | Redis、Outbox+Kafka、OpenSearch、预览/扫描 Worker | M2+ |
 | Tauri 同步、CDC 分块、多 Shard、多地域 | Phase 2–4 |
 

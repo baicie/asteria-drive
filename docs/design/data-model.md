@@ -1,11 +1,11 @@
 # Asteria Drive 后端 MVP 数据模型
 
-状态：实现设计基线；真实迁移与持久化证据见 `docs/mvp/implementation-log.md`  
-最后更新：2026-08-02
+状态：MVP 实现设计基线，含已交付 M2 身份模型注记；真实迁移与持久化证据见 `docs/mvp/implementation-log.md`
+最后更新：2026-08-05
 
 ## 1. 范围
 
-本文只定义 [MVP scope](../mvp/scope.md) P0-P4 所需的 PostgreSQL 模型：租户、Namespace、不可变 Blob/版本、Multipart 上传会话和回收站。OIDC 身份映射、正式成员关系、ACL、分享、配额、审计和 Outbox 属于 M2，不进入本轮迁移。
+本文主体定义 [MVP scope](../mvp/scope.md) P0-P4 所需的 PostgreSQL 模型：租户、Namespace、不可变 Blob/版本、Multipart 上传会话和回收站。M2-1 后续已通过 `0002_identity_access.sql` 增加 OIDC 主体和租户成员；邀请、正式 ACL、分享、配额、审计和 Outbox 不属于原 MVP 模型。
 
 PostgreSQL 是元数据真相源；对象存储只保存不可变字节。用户路径不能成为对象 Key，`ListObjects` 不能作为目录查询。
 
@@ -26,6 +26,8 @@ tenant
   +-- file_node (directory/file tree)
   |     +-- file_version -- blob
   +-- upload_session -- upload_part
+
+principal -- tenant_member -- tenant  (M2-1 identity extension)
 
 file_node.trashed_root_id -> file_node.id
 upload_session.committed_node_id -> file_node.id
@@ -276,6 +278,10 @@ Cursor 包含版本、查询作用域、最后的 `normalized_name/id`，使用 
 8. Blob 在最后一个版本引用消失前不得删除。
 9. PostgreSQL 和 S3 的失败窗口能通过持久状态幂等收敛。
 
-## 8. M2 扩展点
+## 8. M2 扩展点与已交付身份扩展
 
-M2 通过独立迁移增加 `principal`、`tenant_membership`、`quota_account`、`quota_ledger`、`share_link`、`audit_log`、`event_outbox` 和正式 ACL。它们必须继续携带租户复合约束。配额预留/结转与 Outbox 写入加入上传提交事务；分享只引用节点/版本，不复制 Blob。M2 设计不得改变本页的对象不可变、直传、租户隔离和幂等提交不变量。
+M2-1 已通过独立迁移增加 `principal` 和 `tenant_member`，由 `(issuer, subject)` 唯一标识外部主体，并以
+`(tenant_id, principal_id)` 主键保存角色和成员状态。后续邀请、正式 ACL、`quota_account`、
+`quota_ledger`、`share_link`、`audit_log` 和 `event_outbox` 必须继续携带租户约束。配额预留/结转与
+Outbox 写入加入上传提交事务；分享只引用节点/版本，不复制 Blob。M2 设计不得改变本页的对象不可变、
+直传、租户隔离和幂等提交不变量。

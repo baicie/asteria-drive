@@ -10,16 +10,26 @@ import (
 )
 
 type Repository struct {
-	mu         sync.RWMutex
-	tenants    map[string]drive.Tenant
-	principals map[string]drive.PrincipalRecord
-	members    map[string]drive.PrincipalRecord
-	nodes      map[string]drive.Node
-	blobs      map[string]drive.Blob
-	versions   map[string]drive.FileVersion
-	uploads    map[string]drive.UploadSession
-	parts      map[string][]drive.CompletedPart
-	readyErr   error
+	mu                 sync.RWMutex
+	tenants            map[string]drive.Tenant
+	principals         map[string]drive.PrincipalRecord
+	members            map[string]drive.PrincipalRecord
+	nodes              map[string]drive.Node
+	blobs              map[string]drive.Blob
+	versions           map[string]drive.FileVersion
+	uploads            map[string]drive.UploadSession
+	parts              map[string][]drive.CompletedPart
+	idempotency        map[string]drive.IdempotencyRecord
+	uploadMaintenance  map[string]maintenanceLease
+	recycleMaintenance map[string]maintenanceLease
+	invitations        map[string]drive.TenantInvitation
+	invitationTokens   map[string]string
+	groups             map[string]drive.TenantGroup
+	groupMembers       map[string]struct{}
+	acls               map[string]drive.NodeACLEntry
+	audit              []drive.AuditEvent
+	auditSequence      int64
+	readyErr           error
 }
 
 func NewRepository() *Repository {
@@ -28,6 +38,10 @@ func NewRepository() *Repository {
 		members: make(map[string]drive.PrincipalRecord), nodes: make(map[string]drive.Node),
 		blobs: make(map[string]drive.Blob), versions: make(map[string]drive.FileVersion),
 		uploads: make(map[string]drive.UploadSession), parts: make(map[string][]drive.CompletedPart),
+		idempotency:       make(map[string]drive.IdempotencyRecord),
+		uploadMaintenance: make(map[string]maintenanceLease), recycleMaintenance: make(map[string]maintenanceLease),
+		invitations: make(map[string]drive.TenantInvitation), invitationTokens: make(map[string]string),
+		groups: make(map[string]drive.TenantGroup), groupMembers: make(map[string]struct{}), acls: make(map[string]drive.NodeACLEntry),
 	}
 }
 
@@ -100,6 +114,9 @@ func (r *Repository) EnsureOIDCMember(_ context.Context, seed drive.OIDCMemberSe
 		r.principals[externalKey] = principal
 	}
 	memberKey := memberKey(seed.TenantID, seed.PrincipalID)
+	if member, exists := r.members[memberKey]; exists {
+		return member, nil
+	}
 	member := drive.PrincipalRecord{
 		Identity: drive.Identity{TenantID: seed.TenantID, PrincipalID: seed.PrincipalID},
 		Issuer:   seed.Issuer, Subject: seed.Subject, DisplayName: seed.DisplayName,
@@ -161,7 +178,7 @@ func (r *Repository) ListMembers(_ context.Context, tenantID string, after drive
 	return items, more, nil
 }
 
-func (r *Repository) UpdateMember(_ context.Context, command drive.UpdateMemberCommand) (drive.PrincipalRecord, error) {
+func (r *Repository) UpdateMember(ctx context.Context, command drive.UpdateMemberCommand) (drive.PrincipalRecord, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if command.TenantID == "" || command.PrincipalID == "" || command.ActorPrincipalID == "" ||
@@ -197,10 +214,13 @@ func (r *Repository) UpdateMember(_ context.Context, command drive.UpdateMemberC
 	member.Role, member.Status = newRole, newStatus
 	member.TenantDisplayName = r.tenants[command.TenantID].DisplayName
 	r.members[key] = member
+	if err := r.appendAuditLocked(ctx, drive.AuditEvent{TenantID: command.TenantID, ActorPrincipalID: command.ActorPrincipalID, Action: "tenant.member.updated", TargetType: "principal", TargetID: command.PrincipalID, OccurredAt: command.Now, Metadata: map[string]string{"role": string(member.Role), "status": string(member.Status)}}); err != nil {
+		return drive.PrincipalRecord{}, err
+	}
 	return member, nil
 }
 
-func (r *Repository) CreateDirectory(_ context.Context, command drive.CreateDirectoryCommand) (drive.Node, error) {
+func (r *Repository) CreateDirectory(ctx context.Context, command drive.CreateDirectoryCommand) (drive.Node, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	parent, ok := r.activeNode(command.Identity.TenantID, command.ParentID)
@@ -215,7 +235,14 @@ func (r *Repository) CreateDirectory(_ context.Context, command drive.CreateDire
 		Kind: drive.NodeDirectory, DisplayName: command.DisplayName, NormalizedName: command.NormalizedName,
 		Status: drive.NodeActive, Revision: 1, CreatedAt: command.Now, UpdatedAt: command.Now,
 	}
+	if err := r.completeIdempotency(command.Idempotency, node.ID, command.Now); err != nil {
+		return drive.Node{}, err
+	}
 	r.nodes[node.ID] = node
+	if err := r.appendAuditLocked(ctx, drive.AuditEvent{TenantID: command.Identity.TenantID, ActorPrincipalID: command.Identity.PrincipalID, Action: "node.created", TargetType: "node", TargetID: node.ID, OccurredAt: command.Now, Metadata: map[string]string{"kind": string(node.Kind), "parent_id": node.ParentID}}); err != nil {
+		delete(r.nodes, node.ID)
+		return drive.Node{}, err
+	}
 	return node, nil
 }
 
@@ -250,7 +277,7 @@ func (r *Repository) ListChildren(_ context.Context, identity drive.Identity, pa
 	return items, more, nil
 }
 
-func (r *Repository) UpdateNode(_ context.Context, command drive.UpdateNodeCommand) (drive.Node, error) {
+func (r *Repository) UpdateNode(ctx context.Context, command drive.UpdateNodeCommand) (drive.Node, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	node, ok := r.activeNode(command.Identity.TenantID, command.NodeID)
@@ -291,6 +318,9 @@ func (r *Repository) UpdateNode(_ context.Context, command drive.UpdateNodeComma
 	node.Revision++
 	node.UpdatedAt = command.Now
 	r.nodes[node.ID] = node
+	if err := r.appendAuditLocked(ctx, drive.AuditEvent{TenantID: command.Identity.TenantID, ActorPrincipalID: command.Identity.PrincipalID, Action: "node.updated", TargetType: "node", TargetID: node.ID, OccurredAt: command.Now, Metadata: map[string]string{"parent_id": node.ParentID}}); err != nil {
+		return drive.Node{}, err
+	}
 	return node, nil
 }
 
@@ -307,6 +337,9 @@ func (r *Repository) CreateUpload(_ context.Context, command drive.CreateUploadC
 	}
 	if _, exists := r.uploads[session.ID]; exists {
 		return drive.UploadSession{}, drive.E(drive.CodeIdempotencyConflict, "upload id already exists")
+	}
+	if err := r.completeIdempotency(command.Idempotency, session.ID, session.CreatedAt); err != nil {
+		return drive.UploadSession{}, err
 	}
 	r.uploads[session.ID] = session
 	return session, nil
@@ -390,6 +423,9 @@ func (r *Repository) FailUploadCompletion(_ context.Context, identity drive.Iden
 	session.Revision++
 	session.UpdatedAt = now
 	r.uploads[id] = session
+	lease := r.uploadMaintenance[id]
+	lease.cleanupPending = true
+	r.uploadMaintenance[id] = lease
 	return session, nil
 }
 
@@ -413,7 +449,7 @@ func (r *Repository) MarkObjectCompleted(_ context.Context, identity drive.Ident
 	return session, nil
 }
 
-func (r *Repository) CommitUpload(_ context.Context, command drive.CommitUploadCommand) (drive.CompleteResult, bool, error) {
+func (r *Repository) CommitUpload(ctx context.Context, command drive.CommitUploadCommand) (drive.CompleteResult, bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	session, err := r.uploadFor(command.Identity, command.SessionID)
@@ -436,6 +472,9 @@ func (r *Repository) CommitUpload(_ context.Context, command drive.CommitUploadC
 		session.Revision++
 		session.UpdatedAt = command.Now
 		r.uploads[session.ID] = session
+		lease := r.uploadMaintenance[session.ID]
+		lease.cleanupPending = true
+		r.uploadMaintenance[session.ID] = lease
 		return drive.CompleteResult{}, false, drive.E(drive.CodeNotFound, "parent directory was not found")
 	}
 	if r.nameExists(session.TenantID, session.ParentID, session.NormalizedName, "") {
@@ -444,6 +483,9 @@ func (r *Repository) CommitUpload(_ context.Context, command drive.CommitUploadC
 		session.Revision++
 		session.UpdatedAt = command.Now
 		r.uploads[session.ID] = session
+		lease := r.uploadMaintenance[session.ID]
+		lease.cleanupPending = true
+		r.uploadMaintenance[session.ID] = lease
 		return drive.CompleteResult{}, false, drive.E(drive.CodeNameConflict, "an active item with this name already exists")
 	}
 	r.blobs[command.Blob.ID] = command.Blob
@@ -454,6 +496,9 @@ func (r *Repository) CommitUpload(_ context.Context, command drive.CommitUploadC
 	session.Revision++
 	session.UpdatedAt = command.Now
 	r.uploads[session.ID] = session
+	if err := r.appendAuditLocked(ctx, drive.AuditEvent{TenantID: command.Identity.TenantID, ActorPrincipalID: command.Identity.PrincipalID, Action: "upload.committed", TargetType: "node", TargetID: command.Node.ID, OccurredAt: command.Now, Metadata: map[string]string{"upload_id": session.ID, "kind": string(command.Node.Kind)}}); err != nil {
+		return drive.CompleteResult{}, false, err
+	}
 	return drive.CompleteResult{Upload: session, Node: command.Node, Blob: command.Blob, Version: command.Version}, true, nil
 }
 
@@ -480,7 +525,26 @@ func (r *Repository) AbortUpload(_ context.Context, identity drive.Identity, id 
 	session.Revision++
 	session.UpdatedAt = now
 	r.uploads[id] = session
+	lease := r.uploadMaintenance[id]
+	lease.cleanupPending = true
+	r.uploadMaintenance[id] = lease
 	return session, nil
+}
+
+func (r *Repository) MarkUploadCleanupComplete(_ context.Context, identity drive.Identity, id string, now time.Time) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	session, err := r.uploadFor(identity, id)
+	if err != nil {
+		return err
+	}
+	if !session.Status.Terminal() {
+		return drive.E(drive.CodeInvalidState, "upload cleanup cannot be completed")
+	}
+	lease := r.uploadMaintenance[id]
+	lease.cleanupPending, lease.errorCode, lease.notBefore = false, "", time.Time{}
+	r.uploadMaintenance[id] = lease
+	return nil
 }
 
 func (r *Repository) ExpiredUploads(_ context.Context, now time.Time, limit int) ([]drive.UploadSession, error) {
@@ -517,7 +581,7 @@ func (r *Repository) DownloadBlob(_ context.Context, identity drive.Identity, no
 	return node, blob, nil
 }
 
-func (r *Repository) Recycle(_ context.Context, identity drive.Identity, nodeID string, revision int64, now time.Time) error {
+func (r *Repository) Recycle(ctx context.Context, identity drive.Identity, nodeID string, revision int64, now time.Time) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	node, ok := r.nodes[nodeID]
@@ -550,7 +614,7 @@ func (r *Repository) Recycle(_ context.Context, identity drive.Identity, nodeID 
 		}
 		r.nodes[id] = child
 	}
-	return nil
+	return r.appendAuditLocked(ctx, drive.AuditEvent{TenantID: identity.TenantID, ActorPrincipalID: identity.PrincipalID, Action: "node.recycled", TargetType: "node", TargetID: nodeID, OccurredAt: now, Metadata: map[string]string{}})
 }
 
 func (r *Repository) ListRecycle(_ context.Context, identity drive.Identity, after drive.CursorPosition, limit int) ([]drive.RecycleEntry, bool, error) {
@@ -574,7 +638,7 @@ func (r *Repository) ListRecycle(_ context.Context, identity drive.Identity, aft
 	return items, more, nil
 }
 
-func (r *Repository) Restore(_ context.Context, identity drive.Identity, nodeID string, revision int64, now time.Time) (drive.Node, error) {
+func (r *Repository) Restore(ctx context.Context, identity drive.Identity, nodeID string, revision int64, now time.Time) (drive.Node, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	node, ok := r.nodes[nodeID]
@@ -601,6 +665,9 @@ func (r *Repository) Restore(_ context.Context, identity drive.Identity, nodeID 
 			node = child
 		}
 		r.nodes[id] = child
+	}
+	if err := r.appendAuditLocked(ctx, drive.AuditEvent{TenantID: identity.TenantID, ActorPrincipalID: identity.PrincipalID, Action: "node.restored", TargetType: "node", TargetID: nodeID, OccurredAt: now, Metadata: map[string]string{}}); err != nil {
+		return drive.Node{}, err
 	}
 	return node, nil
 }
@@ -650,7 +717,7 @@ func (r *Repository) PreparePurge(_ context.Context, identity drive.Identity, no
 	return plan, nil
 }
 
-func (r *Repository) FinishPurge(_ context.Context, identity drive.Identity, plan drive.PurgePlan, now time.Time) error {
+func (r *Repository) FinishPurge(ctx context.Context, identity drive.Identity, plan drive.PurgePlan, now time.Time) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	root, ok := r.nodes[plan.RootID]
@@ -666,7 +733,12 @@ func (r *Repository) FinishPurge(_ context.Context, identity drive.Identity, pla
 			r.blobs[blob.ID] = blob
 		}
 	}
-	return nil
+	lease := r.recycleMaintenance[plan.RootID]
+	lease.owner, lease.until = "", time.Time{}
+	lease.notBefore = time.Date(9999, time.January, 1, 0, 0, 0, 0, time.UTC)
+	lease.errorCode = ""
+	r.recycleMaintenance[plan.RootID] = lease
+	return r.appendAuditLocked(ctx, drive.AuditEvent{TenantID: identity.TenantID, ActorPrincipalID: identity.PrincipalID, Action: "node.purged", TargetType: "node", TargetID: plan.RootID, OccurredAt: now, Metadata: map[string]string{}})
 }
 
 func (r *Repository) activeNode(tenantID, id string) (drive.Node, bool) {

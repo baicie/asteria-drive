@@ -20,6 +20,15 @@ type Authenticator interface {
 	Middleware(func(http.ResponseWriter, *http.Request, error)) func(http.Handler) http.Handler
 }
 
+type ExternalIdentity struct {
+	Issuer  string
+	Subject string
+}
+
+type ExternalAuthenticator interface {
+	ExternalMiddleware(func(http.ResponseWriter, *http.Request, error)) func(http.Handler) http.Handler
+}
+
 type trustedEntry struct {
 	hash      [sha256.Size]byte
 	principal Principal
@@ -95,3 +104,30 @@ func (a *Trusted) Middleware(onError func(http.ResponseWriter, *http.Request, er
 		})
 	}
 }
+
+func (a *Trusted) ExternalMiddleware(onError func(http.ResponseWriter, *http.Request, error)) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			principal, err := a.Authenticate(r.Header.Get("Authorization"))
+			if err != nil {
+				onError(w, r, err)
+				return
+			}
+			identity := ExternalIdentity{Issuer: "trusted-dev", Subject: principal.Identity.PrincipalID}
+			next.ServeHTTP(w, r.WithContext(WithExternalIdentity(r.Context(), identity)))
+		})
+	}
+}
+
+type externalContextKey struct{}
+
+func WithExternalIdentity(ctx context.Context, identity ExternalIdentity) context.Context {
+	return context.WithValue(ctx, externalContextKey{}, identity)
+}
+
+func ExternalFromContext(ctx context.Context) (ExternalIdentity, bool) {
+	identity, ok := ctx.Value(externalContextKey{}).(ExternalIdentity)
+	return identity, ok
+}
+
+var _ ExternalAuthenticator = (*Trusted)(nil)

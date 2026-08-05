@@ -78,11 +78,16 @@ func run(version, commit string, epoch int64, output string) error {
 		}
 		serverPath := filepath.Join(staging, "asteria-server")
 		migratePath := filepath.Join(staging, "asteria-migrate")
+		verifyPath := filepath.Join(staging, "asteria-verify-storage")
 		if err := build(context.Background(), root, serverPath, "./cmd/asteria-server", target.goarch, ldflags); err != nil {
 			os.RemoveAll(staging)
 			return err
 		}
 		if err := build(context.Background(), root, migratePath, "./cmd/asteria-migrate", target.goarch, ldflags); err != nil {
+			os.RemoveAll(staging)
+			return err
+		}
+		if err := build(context.Background(), root, verifyPath, "./cmd/asteria-verify-storage", target.goarch, ldflags); err != nil {
 			os.RemoveAll(staging)
 			return err
 		}
@@ -96,6 +101,11 @@ func run(version, commit string, epoch int64, output string) error {
 			os.RemoveAll(staging)
 			return fmt.Errorf("read migrate binary: %w", err)
 		}
+		verify, err := os.ReadFile(verifyPath)
+		if err != nil {
+			os.RemoveAll(staging)
+			return fmt.Errorf("read storage verifier binary: %w", err)
+		}
 		readme, err := os.ReadFile(filepath.Join(root, "README.md"))
 		if err != nil {
 			os.RemoveAll(staging)
@@ -107,6 +117,7 @@ func run(version, commit string, epoch int64, output string) error {
 			{Name: "README.md", Mode: 0o644, Data: readme},
 			{Name: "asteria-migrate", Mode: 0o755, Data: migrate},
 			{Name: "asteria-server", Mode: 0o755, Data: server},
+			{Name: "asteria-verify-storage", Mode: 0o755, Data: verify},
 		}, time.Unix(epoch, 0)); err != nil {
 			os.RemoveAll(staging)
 			return err

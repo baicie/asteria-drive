@@ -19,6 +19,7 @@ type CreateDirectoryCommand struct {
 	DisplayName    string
 	NormalizedName string
 	Now            time.Time
+	Idempotency    *IdempotencyRequest
 }
 
 type UpdateNodeCommand struct {
@@ -32,7 +33,8 @@ type UpdateNodeCommand struct {
 }
 
 type CreateUploadCommand struct {
-	Session UploadSession
+	Session     UploadSession
+	Idempotency *IdempotencyRequest
 }
 
 type CommitUploadCommand struct {
@@ -57,6 +59,26 @@ type Repository interface {
 	SetOIDCMemberStatus(context.Context, string, string, MemberStatus) error
 	ListMembers(context.Context, string, CursorPosition, int) ([]PrincipalRecord, bool, error)
 	UpdateMember(context.Context, UpdateMemberCommand) (PrincipalRecord, error)
+	DeleteMember(context.Context, DeleteMemberCommand) error
+	CreateInvitation(context.Context, CreateInvitationCommand) (TenantInvitation, error)
+	ListInvitations(context.Context, string, InvitationStatus, int) ([]TenantInvitation, error)
+	AcceptInvitation(context.Context, AcceptInvitationCommand) (TenantInvitation, PrincipalRecord, error)
+	RevokeInvitation(context.Context, RevokeInvitationCommand) (TenantInvitation, error)
+	CreateGroup(context.Context, CreateGroupCommand) (TenantGroup, error)
+	ListGroups(context.Context, string) ([]TenantGroup, error)
+	UpdateGroup(context.Context, UpdateGroupCommand) (TenantGroup, error)
+	DeleteGroup(context.Context, DeleteGroupCommand) error
+	AddGroupMember(context.Context, GroupMemberCommand) error
+	RemoveGroupMember(context.Context, GroupMemberCommand) error
+	ListGroupMembers(context.Context, string, string) ([]PrincipalRecord, error)
+	ListNodeACL(context.Context, string, string) ([]NodeACLEntry, error)
+	SetNodeACL(context.Context, SetNodeACLCommand) (NodeACLEntry, error)
+	DeleteNodeACL(context.Context, DeleteNodeACLCommand) error
+	AuthorizeNode(context.Context, Identity, string, NodeCapability) error
+	AppendAudit(context.Context, AuditEvent) error
+	ListAudit(context.Context, AuditFilter) ([]AuditEvent, error)
+	ClaimIdempotency(context.Context, IdempotencyRequest) (IdempotencyRecord, error)
+	ReleaseIdempotency(context.Context, IdempotencyRequest) error
 	CreateDirectory(context.Context, CreateDirectoryCommand) (Node, error)
 	Node(context.Context, Identity, string, bool) (Node, error)
 	ListChildren(context.Context, Identity, string, CursorPosition, int) ([]Node, bool, error)
@@ -70,7 +92,13 @@ type Repository interface {
 	MarkObjectCompleted(context.Context, Identity, string, ObjectInfo, time.Time) (UploadSession, error)
 	CommitUpload(context.Context, CommitUploadCommand) (CompleteResult, bool, error)
 	AbortUpload(context.Context, Identity, string, UploadStatus, time.Time) (UploadSession, error)
+	MarkUploadCleanupComplete(context.Context, Identity, string, time.Time) error
 	ExpiredUploads(context.Context, time.Time, int) ([]UploadSession, error)
+	ClaimUploadsForMaintenance(context.Context, string, time.Time, time.Time, time.Time, int) ([]UploadMaintenanceClaim, error)
+	FinishUploadMaintenance(context.Context, string, string, UploadStatus, bool, time.Time, string, time.Time) error
+	ClaimRecycleForMaintenance(context.Context, string, time.Time, time.Time, time.Time, int) ([]RecycleMaintenanceClaim, error)
+	ReleaseRecycleMaintenance(context.Context, string, string, time.Time, string, time.Time) error
+	DeleteExpiredIdempotency(context.Context, time.Time, int) (int, error)
 
 	DownloadBlob(context.Context, Identity, string) (Node, Blob, error)
 	Recycle(context.Context, Identity, string, int64, time.Time) error

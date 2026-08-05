@@ -78,6 +78,9 @@ func (r *Repository) Recycle(ctx context.Context, identity drive.Identity, nodeI
 		  AND n.status='active' AND n.trashed_root_id IS NULL`, identity.TenantID, nodeID, now); err != nil {
 		return mapError(err, drive.CodeInternal, "could not recycle node")
 	}
+	if err := appendAuditTx(ctx, tx, identity.TenantID, identity.PrincipalID, "node.recycled", "node", nodeID, now, map[string]string{}); err != nil {
+		return err
+	}
 	return commit(tx, ctx)
 }
 
@@ -167,6 +170,9 @@ func (r *Repository) Restore(ctx context.Context, identity drive.Identity, nodeI
 	restored, err := scanNode(tx.QueryRow(ctx, `SELECT `+nodeColumns+` FROM file_node WHERE tenant_id=$1 AND id=$2`, identity.TenantID, nodeID))
 	if err != nil {
 		return drive.Node{}, mapError(err, drive.CodeInternal, "could not read restored node")
+	}
+	if err := appendAuditTx(ctx, tx, identity.TenantID, identity.PrincipalID, "node.restored", "node", restored.ID, now, map[string]string{}); err != nil {
+		return drive.Node{}, err
 	}
 	if err := commit(tx, ctx); err != nil {
 		return drive.Node{}, err
@@ -272,6 +278,15 @@ func (r *Repository) FinishPurge(ctx context.Context, identity drive.Identity, p
 			identity.TenantID, blob.ID, now); err != nil {
 			return mapError(err, drive.CodeInternal, "could not finish purge blob")
 		}
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE file_node SET maintenance_owner=NULL, maintenance_lease_until=NULL,
+			maintenance_not_before='infinity'::timestamptz, maintenance_error_code=''
+		WHERE tenant_id=$1 AND id=$2`, identity.TenantID, plan.RootID); err != nil {
+		return mapError(err, drive.CodeInternal, "could not complete purge maintenance")
+	}
+	if err := appendAuditTx(ctx, tx, identity.TenantID, identity.PrincipalID, "node.purged", "node", plan.RootID, now, map[string]string{}); err != nil {
+		return err
 	}
 	return commit(tx, ctx)
 }

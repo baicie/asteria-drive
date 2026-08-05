@@ -32,7 +32,8 @@ M2 需要先建立稳定的生产身份入口，同时保留控制面与数据�
 5. `tenant_member.status` 只有 `active` 和 `suspended`。suspended 成员与不存在成员对外统一为 `403`，
    不泄露租户成员关系。角色和成员状态由元数据真相源读取，不信任 JWT 自声明的租户或角色。
 6. 首个 M2-1 交付使用一次性 `ASTERIA_OIDC_BOOTSTRAP_JSON` 预置主体和成员关系，启动时以幂等事务写入
-   PostgreSQL。不会根据首次登录自动注册，也不提供无保护的自助提权 API；后续管理员 API 另行设计。
+   PostgreSQL。重复启动只创建缺失的成员关系，不覆盖已存在成员的 role/status。不会根据首次登录自动
+   注册，也不提供无保护的自助提权 API；后续管理员 API 另行设计。
 7. trusted-dev 继续只允许 `ASTERIA_ENV=development`，并为配置主体赋予 owner 权限。production 必须
    使用 `ASTERIA_AUTH_MODE=oidc`、PostgreSQL 和 S3；任何生产启动路径不得回退到 trusted-dev 或 memory。
 8. OIDC 验证失败记录结构化错误码但不记录原始 token、JWT 内容或 provider 返回的敏感响应。OIDC discovery

@@ -2,15 +2,15 @@
 
 ## Status
 
-Proposed on 2026-08-05.
+Accepted on 2026-08-05.
 
 ## Context
 
 The repository has a tested service and migration binary, but it does not yet
 define a reproducible release format. A release must be inspectable without a
 checkout, must not publish from a pull request, and must let consumers verify
-both the artifact digest and the source commit. The project does not publish a
-container image in this phase.
+both the artifact digest and the source commit. The project must also provide a
+deployable image whose digest can be tied back to the same protected source commit.
 
 ## Decision
 
@@ -23,8 +23,9 @@ for `amd64` and `arm64`:
 asteria-drive_<version>_linux_<arch>.tar.gz
 ```
 
-Each archive contains `asteria-server`, `asteria-migrate`, and `README.md` at
-the archive root. Binaries are built with `CGO_ENABLED=0`, `-trimpath`,
+Each archive contains `asteria-server`, `asteria-migrate`,
+`asteria-verify-storage`, and `README.md` at the archive root. Binaries are
+built with `CGO_ENABLED=0`, `-trimpath`,
 `-buildvcs=false`, and embedded version, source commit, and UTC build metadata.
 Archive entry order, modes, ownership, and timestamps use stable values derived
 from `SOURCE_DATE_EPOCH`.
@@ -43,13 +44,20 @@ job is gated by the `release` environment and is the only job with
 build provenance is attached to every release file before the immutable GitHub
 Release is created. Pull requests never publish or attest release artifacts.
 
+The same protected publish job builds and pushes a multi-architecture
+`linux/amd64` and `linux/arm64` OCI image to GHCR. It is tagged with the release
+tag and the immutable source-commit tag; deployments must record and pin the
+published manifest digest. The workflow attaches a separate GitHub OIDC
+provenance attestation to that digest. The image uses the pinned builder and
+non-root `scratch` runtime specified by the checked-in Dockerfile.
+
 ## Consequences
 
 Consumers can select an architecture, verify the archive and SBOM against the
 checksum manifest, and inspect the embedded source commit. Release publication
 requires an explicitly protected environment and a tag reachable from `main`.
-The first release workflow does not deploy infrastructure or create a Docker
-image; those require separate deployment and container decisions.
+The workflow publishes but does not deploy infrastructure. Rollout remains a
+separate, approval-gated platform operation described in the deployment runbook.
 
 ## Alternatives considered
 
@@ -57,5 +65,5 @@ image; those require separate deployment and container decisions.
   pull-request code a release input.
 - Use a mutable archive name such as `latest`: rejected because it prevents
   reliable digest and provenance verification.
-- Add a Docker image in this rollout: rejected because no container runtime
-  contract or deployment environment is defined yet.
+- Publish a mutable `latest` image: rejected because consumers could not
+  reliably identify the source or manifest digest.

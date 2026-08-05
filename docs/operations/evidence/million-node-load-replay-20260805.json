@@ -1,0 +1,12 @@
+{
+  "tenant_id": "b1000000-0000-4000-8000-000000000001",
+  "root_id": "9d551ba2-76d2-4a18-8875-9f0ea3cdaea3",
+  "seed": "phase1-slo-20260805",
+  "requested_nodes": 1000000,
+  "inserted_nodes": 0,
+  "existing_nodes": 1000000,
+  "fanout": 32,
+  "batch_size": 10000,
+  "duration_ns": 36948275600,
+  "rows_per_second": 0
+}

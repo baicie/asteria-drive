@@ -54,8 +54,28 @@ func TestOIDCMemberBootstrapIsIdempotentAndTenantScoped(t *testing.T) {
 	if err != nil || resolvedB.Role != drive.RoleEditor || resolvedB.Identity.TenantID != tenantB {
 		t.Fatalf("resolve tenant B: record=%+v err=%v", resolvedB, err)
 	}
-	if err := repository.SetOIDCMemberStatus(ctx, tenantB, principalID, drive.MemberStatusSuspended); err != nil {
-		t.Fatal(err)
+	ownerID := "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+	if _, err := repository.EnsureOIDCMember(ctx, drive.OIDCMemberSeed{
+		PrincipalID: ownerID, TenantID: tenantB, Issuer: seed.Issuer, Subject: "owner",
+		DisplayName: "Owner", Role: drive.RoleOwner, Now: now,
+	}); err != nil {
+		t.Fatalf("bootstrap owner: %v", err)
+	}
+	if _, err := repository.UpdateMember(ctx, drive.UpdateMemberCommand{
+		TenantID: tenantB, PrincipalID: principalID, ActorPrincipalID: ownerID, ActorRole: drive.RoleOwner,
+		Role: ptrRole(drive.RoleViewer), Status: ptrStatus(drive.MemberStatusSuspended), Now: now.Add(time.Minute),
+	}); err != nil {
+		t.Fatalf("manage bootstrapped member: %v", err)
+	}
+	replayedSeed := seed
+	replayedSeed.Role = drive.RoleAdmin
+	replayedSeed.Now = now.Add(2 * time.Minute)
+	replayed, err := repository.EnsureOIDCMember(ctx, replayedSeed)
+	if err != nil {
+		t.Fatalf("repeat bootstrap after managed update: %v", err)
+	}
+	if replayed.Role != drive.RoleViewer || replayed.Status != drive.MemberStatusSuspended {
+		t.Fatalf("repeat bootstrap overwrote managed member: %+v", replayed)
 	}
 	if _, err := repository.ResolveOIDCPrincipal(ctx, seed.Issuer, seed.Subject, tenantB); drive.CodeOf(err) != drive.CodeForbidden {
 		t.Fatalf("suspended member should be forbidden, got %v", err)
@@ -63,8 +83,9 @@ func TestOIDCMemberBootstrapIsIdempotentAndTenantScoped(t *testing.T) {
 	if err := repository.SetOIDCMemberStatus(ctx, tenantB, principalID, drive.MemberStatusActive); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := repository.ResolveOIDCPrincipal(ctx, seed.Issuer, seed.Subject, tenantB); err != nil {
-		t.Fatal(err)
+	resolvedB, err = repository.ResolveOIDCPrincipal(ctx, seed.Issuer, seed.Subject, tenantB)
+	if err != nil || resolvedB.Role != drive.RoleViewer {
+		t.Fatalf("reactivated member: record=%+v err=%v", resolvedB, err)
 	}
 	conflicting := seed
 	conflicting.TenantID = tenantA

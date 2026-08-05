@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/baicie/asteria-drive/internal/buildinfo"
+	"github.com/baicie/asteria-drive/internal/config"
 	"github.com/baicie/asteria-drive/internal/postgres"
 )
 
@@ -17,9 +18,9 @@ func main() {
 		return
 	}
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
-	connection := os.Getenv("ASTERIA_DATABASE_URL")
-	if connection == "" {
-		logger.Error("ASTERIA_DATABASE_URL is required")
+	connection, err := config.LoadDatabaseURL()
+	if err != nil {
+		logger.Error("database configuration is invalid", "error", err)
 		os.Exit(1)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)

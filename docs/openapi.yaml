@@ -24,6 +24,10 @@ tags:
     description: Unauthenticated process and dependency health checks.
   - name: Tenant
     description: Discovery of the tenant fixed by the authenticated token.
+  - name: Governance
+    description: Invitations, membership, groups, and inherited node ACLs.
+  - name: Audit
+    description: Append-only tenant security event pages and bounded NDJSON export.
   - name: Namespace
     description: Tenant-scoped file and directory metadata operations.
   - name: Uploads
@@ -81,6 +85,47 @@ paths:
                 $ref: "#/components/schemas/NotReady"
         "500":
           $ref: "#/components/responses/InternalError"
+
+  /api/v1/invitations/accept:
+    post:
+      tags: [Governance]
+      operationId: acceptTenantInvitation
+      summary: Accept an invitation as a verified external identity
+      description: The bearer token is verified without requiring an existing tenant membership. Its issuer and subject must exactly match the invitation. The invitation token is supplied only in the JSON body.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AcceptInvitationRequest"
+      responses:
+        "200":
+          description: Invitation accepted and membership created, or the original accepted result replayed.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/RequestID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AcceptInvitationEnvelope"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/RequestTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/DependencyUnavailable"
 
   /api/v1/tenant:
     parameters:
@@ -192,7 +237,390 @@ paths:
           $ref: "#/components/responses/InternalError"
         "503":
           $ref: "#/components/responses/DependencyUnavailable"
+    delete:
+      tags: [Tenant]
+      operationId: deleteTenantMember
+      summary: Delete a tenant membership
+      responses:
+        "204":
+          description: Membership deleted.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/DependencyUnavailable"
 
+  /api/v1/tenant/invitations:
+    parameters:
+      - $ref: "#/components/parameters/TenantSelector"
+    get:
+      tags: [Governance]
+      operationId: listTenantInvitations
+      summary: List tenant invitations
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema:
+            $ref: "#/components/schemas/InvitationStatus"
+      responses:
+        "200":
+          description: Tenant invitations.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/RequestID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InvitationListEnvelope"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/DependencyUnavailable"
+    post:
+      tags: [Governance]
+      operationId: createTenantInvitation
+      summary: Create a tenant invitation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateInvitationRequest"
+      responses:
+        "201":
+          description: Invitation created; token is returned only by this response.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/RequestID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateInvitationEnvelope"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/RequestTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/DependencyUnavailable"
+  /api/v1/tenant/invitations/{invitation_id}/revoke:
+    parameters:
+      - name: invitation_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - $ref: "#/components/parameters/TenantSelector"
+    post:
+      tags: [Governance]
+      operationId: revokeTenantInvitation
+      summary: Revoke a pending tenant invitation
+      responses:
+        "200":
+          description: Invitation revoked.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/RequestID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InvitationEnvelope"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/DependencyUnavailable"
+
+  /api/v1/tenant/groups:
+    parameters:
+      - $ref: "#/components/parameters/TenantSelector"
+    get:
+      tags: [Governance]
+      operationId: listTenantGroups
+      summary: List tenant groups
+      responses:
+        "200":
+          description: Groups ordered by normalized name.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GroupListEnvelope"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    post:
+      tags: [Governance]
+      operationId: createTenantGroup
+      summary: Create a tenant group
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GroupMutationRequest"
+      responses:
+        "201":
+          description: Group created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GroupEnvelope"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/RequestTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/tenant/groups/{group_id}:
+    parameters:
+      - name: group_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - $ref: "#/components/parameters/TenantSelector"
+    patch:
+      tags: [Governance]
+      operationId: updateTenantGroup
+      summary: Rename a tenant group
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GroupMutationRequest"
+      responses:
+        "200":
+          description: Updated group.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GroupEnvelope"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    delete:
+      tags: [Governance]
+      operationId: deleteTenantGroup
+      summary: Delete a tenant group and its memberships and ACL grants
+      responses:
+        "204":
+          description: Group deleted.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/tenant/groups/{group_id}/members:
+    parameters:
+      - name: group_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - $ref: "#/components/parameters/TenantSelector"
+    get:
+      tags: [Governance]
+      operationId: listTenantGroupMembers
+      summary: List group members
+      responses:
+        "200":
+          description: Group members ordered by principal ID.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MemberListEnvelope"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/tenant/groups/{group_id}/members/{principal_id}:
+    parameters:
+      - name: group_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: principal_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - $ref: "#/components/parameters/TenantSelector"
+    put:
+      tags: [Governance]
+      operationId: addTenantGroupMember
+      summary: Idempotently add a tenant member to a group
+      responses:
+        "204":
+          description: Group membership exists.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    delete:
+      tags: [Governance]
+      operationId: removeTenantGroupMember
+      summary: Idempotently remove a member from a group
+      responses:
+        "204":
+          description: Group membership is absent.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/tenant/audit-events:
+    parameters:
+      - $ref: "#/components/parameters/TenantSelector"
+    get:
+      tags: [Audit]
+      operationId: listTenantAuditEvents
+      summary: Page append-only tenant audit events
+      parameters:
+        - $ref: "#/components/parameters/AuditAfterSequence"
+        - $ref: "#/components/parameters/AuditFrom"
+        - $ref: "#/components/parameters/AuditUntil"
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+      responses:
+        "200":
+          description: Audit events ordered by sequence.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuditPageEnvelope"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/DependencyUnavailable"
+
+  /api/v1/tenant/audit-events/export:
+    parameters:
+      - $ref: "#/components/parameters/TenantSelector"
+    get:
+      tags: [Audit]
+      operationId: exportTenantAuditEvents
+      summary: Export a bounded UTC range as NDJSON
+      parameters:
+        - $ref: "#/components/parameters/AuditFromRequired"
+        - $ref: "#/components/parameters/AuditUntilRequired"
+      responses:
+        "200":
+          description: At most 10,000 audit events as one JSON object per line.
+          content:
+            application/x-ndjson:
+              schema:
+                type: string
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/DependencyUnavailable"
   /api/v1/directories:
     parameters:
       - $ref: "#/components/parameters/TenantSelector"
@@ -200,6 +628,9 @@ paths:
       tags: [Namespace]
       operationId: createDirectory
       summary: Create a directory
+      description: Matching retries with the same Idempotency-Key replay the original directory. Reusing the key with a different request returns idempotency_conflict.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
         required: true
         content:
@@ -219,6 +650,8 @@ paths:
               $ref: "#/components/headers/ETag"
             X-Request-ID:
               $ref: "#/components/headers/RequestID"
+            Idempotency-Replayed:
+              $ref: "#/components/headers/IdempotencyReplayed"
           content:
             application/json:
               schema:
@@ -415,6 +848,92 @@ paths:
         "503":
           $ref: "#/components/responses/DependencyUnavailable"
 
+  /api/v1/nodes/{id}/acl:
+    parameters:
+      - $ref: "#/components/parameters/ResourceID"
+      - $ref: "#/components/parameters/TenantSelector"
+    get:
+      tags: [Governance]
+      operationId: listNodeACL
+      summary: List direct ACL grants for a node
+      description: Requires tenant owner/admin or an inherited manager grant.
+      responses:
+        "200":
+          description: Direct grants; inherited grants are evaluated but not duplicated in this list.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ACLListEnvelope"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    put:
+      tags: [Governance]
+      operationId: setNodeACL
+      summary: Create or update a principal or group grant
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SetACLRequest"
+      responses:
+        "200":
+          description: Effective direct grant.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ACLEnvelope"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "413":
+          $ref: "#/components/responses/RequestTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/nodes/{id}/acl/{entry_id}:
+    parameters:
+      - $ref: "#/components/parameters/ResourceID"
+      - name: entry_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - $ref: "#/components/parameters/TenantSelector"
+    delete:
+      tags: [Governance]
+      operationId: deleteNodeACL
+      summary: Delete a direct ACL grant
+      responses:
+        "204":
+          description: Grant deleted.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /api/v1/uploads:
     parameters:
       - $ref: "#/components/parameters/TenantSelector"
@@ -422,7 +941,9 @@ paths:
       tags: [Uploads]
       operationId: createUpload
       summary: Create an S3 multipart upload session
-      description: The response never exposes the bucket, object key, or storage upload ID.
+      description: Matching retries with the same Idempotency-Key replay the original upload session without creating another multipart upload. Reusing the key with a different request returns idempotency_conflict. The response never exposes the bucket, object key, or storage upload ID.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
         required: true
         content:
@@ -440,6 +961,8 @@ paths:
               example: /api/v1/uploads/55f5efc1-51e8-43be-9408-e4b6bcda92e0
             X-Request-ID:
               $ref: "#/components/headers/RequestID"
+            Idempotency-Replayed:
+              $ref: "#/components/headers/IdempotencyReplayed"
           content:
             application/json:
               schema:
@@ -834,6 +1357,58 @@ components:
         type: string
         pattern: '^"[1-9][0-9]*"$'
       example: '"1"'
+    AuditAfterSequence:
+      name: after_sequence
+      in: query
+      required: false
+      description: Return events with a greater append-only sequence.
+      schema:
+        type: integer
+        format: int64
+        minimum: 0
+        default: 0
+    AuditFrom:
+      name: from
+      in: query
+      required: false
+      description: Inclusive UTC lower bound.
+      schema:
+        type: string
+        format: date-time
+    AuditUntil:
+      name: until
+      in: query
+      required: false
+      description: Exclusive UTC upper bound. A supplied range cannot exceed 31 days.
+      schema:
+        type: string
+        format: date-time
+    AuditFromRequired:
+      name: from
+      in: query
+      required: true
+      description: Inclusive UTC export lower bound.
+      schema:
+        type: string
+        format: date-time
+    AuditUntilRequired:
+      name: until
+      in: query
+      required: true
+      description: Exclusive UTC export upper bound, at most 31 days after from.
+      schema:
+        type: string
+        format: date-time
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: Opaque creation key scoped to the authenticated tenant, principal, and operation. It is retained only as a SHA-256 digest.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 255
+        pattern: '^[!-~]+$'
 
   headers:
     RequestID:
@@ -851,6 +1426,10 @@ components:
         type: string
         pattern: '^"[1-9][0-9]*"$'
       example: '"1"'
+    IdempotencyReplayed:
+      description: True when this response replays the resource created by an earlier matching request. Present whenever Idempotency-Key was supplied.
+      schema:
+        type: boolean
 
   responses:
     BadRequest:
@@ -1226,6 +1805,273 @@ components:
         status:
           type: string
           enum: [active, suspended]
+    InvitationStatus:
+      type: string
+      enum: [pending, accepted, revoked, expired]
+    Invitation:
+      type: object
+      additionalProperties: false
+      required: [id, issuer, subject, display_name, role, status, expires_at, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        issuer:
+          type: string
+          format: uri
+          maxLength: 2048
+        subject:
+          type: string
+          minLength: 1
+          maxLength: 512
+        display_name:
+          type: string
+          maxLength: 255
+        role:
+          type: string
+          enum: [owner, admin, editor, viewer]
+        status:
+          $ref: "#/components/schemas/InvitationStatus"
+        expires_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+    InvitationEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          $ref: "#/components/schemas/Invitation"
+    InvitationListEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          type: array
+          maxItems: 100
+          items:
+            $ref: "#/components/schemas/Invitation"
+    CreateInvitationRequest:
+      type: object
+      additionalProperties: false
+      required: [issuer, subject, display_name, role, expires_at]
+      properties:
+        issuer:
+          type: string
+          format: uri
+          maxLength: 2048
+        subject:
+          type: string
+          minLength: 1
+          maxLength: 512
+        display_name:
+          type: string
+          maxLength: 255
+        role:
+          type: string
+          enum: [owner, admin, editor, viewer]
+        expires_at:
+          type: string
+          format: date-time
+    CreateInvitationEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          type: object
+          additionalProperties: false
+          required: [invitation, token]
+          properties:
+            invitation:
+              $ref: "#/components/schemas/Invitation"
+            token:
+              type: string
+              pattern: '^[0-9a-f]{64}$'
+              description: Returned exactly once; treat as a bearer credential.
+    AcceptInvitationRequest:
+      type: object
+      additionalProperties: false
+      required: [token]
+      properties:
+        token:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+    AcceptInvitationEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          type: object
+          additionalProperties: false
+          required: [tenant_id, member]
+          properties:
+            tenant_id:
+              type: string
+              format: uuid
+            member:
+              $ref: "#/components/schemas/Member"
+    Group:
+      type: object
+      additionalProperties: false
+      required: [id, name, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          minLength: 1
+          maxLength: 255
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    GroupMutationRequest:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 255
+    GroupEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          $ref: "#/components/schemas/Group"
+    GroupListEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Group"
+    ACLSubjectType:
+      type: string
+      enum: [principal, group]
+    ACLRole:
+      type: string
+      enum: [reader, contributor, manager]
+    ACLEntry:
+      type: object
+      additionalProperties: false
+      required: [id, node_id, subject_type, subject_id, role, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        node_id:
+          type: string
+          format: uuid
+        subject_type:
+          $ref: "#/components/schemas/ACLSubjectType"
+        subject_id:
+          type: string
+          format: uuid
+        role:
+          $ref: "#/components/schemas/ACLRole"
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    SetACLRequest:
+      type: object
+      additionalProperties: false
+      required: [subject_type, subject_id, role]
+      properties:
+        subject_type:
+          $ref: "#/components/schemas/ACLSubjectType"
+        subject_id:
+          type: string
+          format: uuid
+        role:
+          $ref: "#/components/schemas/ACLRole"
+    ACLEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          $ref: "#/components/schemas/ACLEntry"
+    ACLListEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/ACLEntry"
+    AuditEvent:
+      type: object
+      additionalProperties: false
+      required: [sequence, id, action, target_type, metadata, occurred_at]
+      properties:
+        sequence:
+          type: integer
+          format: int64
+          minimum: 1
+        id:
+          type: string
+          format: uuid
+        actor_principal_id:
+          type: string
+          format: uuid
+        action:
+          type: string
+          pattern: '^[a-z][a-z0-9_.]{2,127}$'
+        target_type:
+          type: string
+          pattern: '^[a-z][a-z0-9_]{1,63}$'
+        target_id:
+          type: string
+          format: uuid
+        request_id:
+          type: string
+          minLength: 8
+          maxLength: 128
+        metadata:
+          type: object
+          maxProperties: 32
+          additionalProperties:
+            type: string
+            maxLength: 512
+        occurred_at:
+          type: string
+          format: date-time
+    AuditPageEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data, page]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/AuditEvent"
+        page:
+          type: object
+          additionalProperties: false
+          required: [next_sequence]
+          properties:
+            next_sequence:
+              type: [integer, "null"]
+              format: int64
+              minimum: 1
     CreateUploadRequest:
       type: object
       additionalProperties: false
@@ -1405,6 +2251,15 @@ components:
       properties:
         data:
           $ref: "#/components/schemas/Member"
+    MemberListEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Member"
     MemberPage:
       type: object
       additionalProperties: false

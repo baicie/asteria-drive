@@ -824,3 +824,117 @@ func TestTenantMemberLifecycleAPIEnforcesRBACAndOwnerInvariant(t *testing.T) {
 		t.Fatalf("suspended member should not resolve: %v", err)
 	}
 }
+
+func TestHTTPACLElevationIsInheritedAndDoesNotGrantTenantAdministration(t *testing.T) {
+	base := newTestAPI(t)
+	ctx := context.Background()
+	now := time.Date(2026, 8, 5, 15, 0, 0, 0, time.UTC)
+	const (
+		ownerToken  = "owner-acl-token-0000000000000000000000000000"
+		viewerToken = "viewer-acl-token-000000000000000000000000000"
+	)
+	for _, member := range []struct {
+		id      string
+		subject string
+		role    drive.AccessRole
+	}{{testPrincipalA, "acl-owner", drive.RoleOwner}, {testPrincipalC, "acl-viewer", drive.RoleViewer}} {
+		if _, err := base.repository.EnsureOIDCMember(ctx, drive.OIDCMemberSeed{
+			PrincipalID: member.id, TenantID: testTenantA, Issuer: "https://issuer.acl-http.test",
+			Subject: member.subject, DisplayName: member.subject, Role: member.role, Now: now,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	authenticator, err := auth.NewTrusted(map[string]auth.Principal{
+		ownerToken:  {Identity: drive.Identity{TenantID: testTenantA, PrincipalID: testPrincipalA}, Role: drive.RoleOwner},
+		viewerToken: {Identity: drive.Identity{TenantID: testTenantA, PrincipalID: testPrincipalC}, Role: drive.RoleViewer},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpServer, err := New(Options{
+		Address: ":0", Service: base.service, Authenticator: authenticator,
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), ReadHeaderTimeout: time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	base.handler = httpServer.Handler()
+
+	parentResponse := base.request(t, http.MethodPost, "/api/v1/directories", ownerToken, map[string]any{
+		"parent_id": base.tenantA.RootNodeID, "name": "ACL parent",
+	}, nil)
+	if parentResponse.Code != http.StatusCreated {
+		t.Fatalf("owner create parent: %d %s", parentResponse.Code, parentResponse.Body.String())
+	}
+	parent := decodeData[nodeResponse](t, parentResponse)
+	denied := base.request(t, http.MethodPost, "/api/v1/directories", viewerToken, map[string]any{
+		"parent_id": parent.ID, "name": "denied child",
+	}, nil)
+	if denied.Code != http.StatusForbidden {
+		t.Fatalf("viewer write without ACL should be forbidden: %d %s", denied.Code, denied.Body.String())
+	}
+	grant, err := base.repository.SetNodeACL(ctx, drive.SetNodeACLCommand{
+		ID: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", TenantID: testTenantA, NodeID: parent.ID,
+		SubjectType: drive.ACLSubjectPrincipal, SubjectID: testPrincipalC, Role: drive.ACLContributor,
+		ActorPrincipalID: testPrincipalA, ActorRole: drive.RoleOwner, Now: now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	childResponse := base.request(t, http.MethodPost, "/api/v1/directories", viewerToken, map[string]any{
+		"parent_id": parent.ID, "name": "contributor child",
+	}, nil)
+	if childResponse.Code != http.StatusCreated {
+		t.Fatalf("inherited contributor create: %d %s", childResponse.Code, childResponse.Body.String())
+	}
+	child := decodeData[nodeResponse](t, childResponse)
+	uploadRecorder := base.request(t, http.MethodPost, "/api/v1/uploads", viewerToken, map[string]any{
+		"parent_id": parent.ID, "name": "acl-upload.bin", "size": 1,
+		"mime_type": "application/octet-stream",
+	}, nil)
+	if uploadRecorder.Code != http.StatusCreated {
+		t.Fatalf("inherited contributor upload: %d %s", uploadRecorder.Code, uploadRecorder.Body.String())
+	}
+	upload := decodeData[uploadResponse](t, uploadRecorder)
+	sign := base.request(t, http.MethodPost, "/api/v1/uploads/"+upload.ID+"/parts/sign", viewerToken, map[string]any{"part_number": 1}, nil)
+	if sign.Code != http.StatusOK {
+		t.Fatalf("inherited contributor sign: %d %s", sign.Code, sign.Body.String())
+	}
+	if abort := base.request(t, http.MethodDelete, "/api/v1/uploads/"+upload.ID, viewerToken, nil, nil); abort.Code != http.StatusNoContent {
+		t.Fatalf("inherited contributor abort: %d %s", abort.Code, abort.Body.String())
+	}
+	deleteDenied := base.request(t, http.MethodDelete, "/api/v1/nodes/"+child.ID, viewerToken, nil, map[string]string{"If-Match": `"1"`})
+	if deleteDenied.Code != http.StatusForbidden {
+		t.Fatalf("contributor delete should be forbidden: %d %s", deleteDenied.Code, deleteDenied.Body.String())
+	}
+	updatedGrant, err := base.repository.SetNodeACL(ctx, drive.SetNodeACLCommand{
+		ID: "ffffffff-ffff-4fff-8fff-ffffffffffff", TenantID: testTenantA, NodeID: parent.ID,
+		SubjectType: drive.ACLSubjectPrincipal, SubjectID: testPrincipalC, Role: drive.ACLManager,
+		ActorPrincipalID: testPrincipalA, ActorRole: drive.RoleOwner, Now: now.Add(time.Minute),
+	})
+	if err != nil || updatedGrant.ID != grant.ID {
+		t.Fatalf("upgrade ACL grant: grant=%+v err=%v", updatedGrant, err)
+	}
+	manageACL := base.request(t, http.MethodPut, "/api/v1/nodes/"+child.ID+"/acl", viewerToken, map[string]any{
+		"subject_type": "principal", "subject_id": testPrincipalA, "role": "reader",
+	}, nil)
+	if manageACL.Code != http.StatusOK {
+		t.Fatalf("inherited manager ACL management: %d %s", manageACL.Code, manageACL.Body.String())
+	}
+	if deleted := base.request(t, http.MethodDelete, "/api/v1/nodes/"+child.ID, viewerToken, nil, map[string]string{"If-Match": `"1"`}); deleted.Code != http.StatusNoContent {
+		t.Fatalf("inherited manager delete: %d %s", deleted.Code, deleted.Body.String())
+	}
+	crossTenant := base.request(t, http.MethodPost, "/api/v1/directories", viewerToken, map[string]any{
+		"parent_id": base.tenantB.RootNodeID, "name": "foreign child",
+	}, nil)
+	if crossTenant.Code != http.StatusNotFound {
+		t.Fatalf("cross-tenant ACL lookup should be not found: %d %s", crossTenant.Code, crossTenant.Body.String())
+	}
+	if audit := base.request(t, http.MethodGet, "/api/v1/tenant/audit-events", viewerToken, nil, nil); audit.Code != http.StatusForbidden {
+		t.Fatalf("ACL manager must not grant tenant audit access: %d %s", audit.Code, audit.Body.String())
+	}
+	if audit := base.request(t, http.MethodGet, "/api/v1/tenant/audit-events", ownerToken, nil, nil); audit.Code != http.StatusOK {
+		t.Fatalf("owner audit access: %d %s", audit.Code, audit.Body.String())
+	}
+}

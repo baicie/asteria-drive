@@ -103,7 +103,7 @@ disposable values scoped to the isolated Compose project.
    go test -json -p=1 -count=1 -timeout=15m ./internal/postgres ./internal/s3store ./internal/server
    ```
 
-   The committed manifest names 17 required tests: 14 PostgreSQL, one
+   The committed manifest names 19 required tests: 16 PostgreSQL, one
    SeaweedFS, and two live HTTP tests.
 4. Parse the JSON report structurally. Every required package and test must end
    in `pass`; any observed `skip`, missing test, package failure, or malformed
@@ -228,10 +228,10 @@ produces deterministic archives, a sorted SHA-256 manifest, an SPDX JSON SBOM,
 and a release manifest. The tag must be reachable from protected `main`.
 
 The publish job is separated from the build job, requires the `release`
-environment, attaches GitHub OIDC provenance to the checksum subjects, and
-publishes only an immutable GitHub Release. Pull requests never publish or
-attest release artifacts. Docker images and deployment automation remain outside
-this rollout.
+environment, attaches GitHub OIDC provenance to checksum subjects and the
+published OCI digest, and publishes an immutable GitHub Release plus a
+multi-architecture GHCR image. Pull requests never publish or attest release
+artifacts. Deployment automation remains outside this rollout.
 
 ## 9. Rollout sequence
 
@@ -261,7 +261,7 @@ this rollout.
 - Integration uses disposable repository-owned values rather than GitHub Secrets
   and starts the digest-pinned PostgreSQL and SeaweedFS services with health
   checks.
-- Its manifest requires 17 tests: 14 PostgreSQL, one SeaweedFS, and two live
+- Its manifest requires 19 tests: 16 PostgreSQL, one SeaweedFS, and two live
   HTTP tests. Structured report verification requires package and test `pass`
   actions and rejects every `skip`.
 - Sanitized test and Compose evidence is retained for seven days. Sanitization,
@@ -282,6 +282,9 @@ this rollout.
   bundle, and an SPDX JSON SBOM.
 - Only the protected `release` environment may publish, with write and OIDC
   permissions limited to the publish job.
+- The published GHCR image is built for Linux `amd64` and `arm64`, carries the
+  source-commit tag, and receives a provenance attestation for its manifest
+  digest. Deployments pin that digest rather than a mutable tag.
 
 ## 11. Definition of done for the full CI system
 

@@ -13,6 +13,10 @@ const (
 	sbomAction             = "anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610"
 	downloadArtifactAction = "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093"
 	attestProvenanceAction = "actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373"
+	setupQEMUAction        = "docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130"
+	setupBuildxAction      = "docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f"
+	registryLoginAction    = "docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9"
+	buildPushAction        = "docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8"
 )
 
 type releaseWorkflowDocument struct {
@@ -89,7 +93,7 @@ func TestReleaseWorkflowTrustBoundaryAndArtifactContract(t *testing.T) {
 		t.Errorf("build job must retain read-only permissions: %#v", build.Permissions)
 	}
 	if !reflect.DeepEqual(build.Outputs, map[string]string{
-		"tag": "${{ steps.release-input.outputs.tag }}", "version": "${{ steps.release-input.outputs.version }}", "commit": "${{ steps.release-input.outputs.commit }}",
+		"tag": "${{ steps.release-input.outputs.tag }}", "version": "${{ steps.release-input.outputs.version }}", "commit": "${{ steps.release-input.outputs.commit }}", "build_time": "${{ steps.release-input.outputs.build_time }}",
 	}) {
 		t.Errorf("build outputs = %#v", build.Outputs)
 	}
@@ -117,13 +121,16 @@ func TestReleaseWorkflowTrustBoundaryAndArtifactContract(t *testing.T) {
 		t.Errorf("publish job metadata = %#v", publish)
 	}
 	if !reflect.DeepEqual(publish.Permissions, map[string]string{
-		"contents": "write", "id-token": "write", "attestations": "write",
+		"contents": "write", "id-token": "write", "attestations": "write", "packages": "write",
 	}) {
 		t.Errorf("publish permissions = %#v", publish.Permissions)
 	}
 	assertPinnedActions(t, publish.Steps)
 	publishActions := workflowActions(publish.Steps)
-	if !reflect.DeepEqual(publishActions, []string{checkoutAction, downloadArtifactAction, attestProvenanceAction}) {
+	if !reflect.DeepEqual(publishActions, []string{
+		checkoutAction, downloadArtifactAction, setupQEMUAction, setupBuildxAction,
+		registryLoginAction, buildPushAction, attestProvenanceAction, attestProvenanceAction,
+	}) {
 		t.Errorf("publish actions = %#v", publishActions)
 	}
 	publishCommands := workflowCommands(publish.Steps)
@@ -135,6 +142,23 @@ func TestReleaseWorkflowTrustBoundaryAndArtifactContract(t *testing.T) {
 	attest := findWorkflowStep(publish.Steps, attestProvenanceAction)
 	if attest == nil || fmtString(attest.With["subject-checksums"]) != "${{ runner.temp }}/asteria-release/checksums.txt" {
 		t.Errorf("publish job must attest checksums.txt: %#v", attest)
+	}
+	image := findWorkflowStep(publish.Steps, buildPushAction)
+	if image == nil || fmtString(image.With["platforms"]) != "linux/amd64,linux/arm64" || image.With["push"] != true {
+		t.Errorf("publish job must push a multi-architecture image: %#v", image)
+	}
+	if !strings.Contains(fmtString(image.With["tags"]), "sha-${{ needs.build.outputs.commit }}") {
+		t.Errorf("published image must include an immutable commit tag: %#v", image.With["tags"])
+	}
+	if image == nil || image.With["provenance"] != false || strings.Contains(fmtString(image.With["tags"]), ":latest") {
+		t.Errorf("published image must rely on the explicit digest attestation and never publish latest: %#v", image)
+	}
+	imageAttestation := findWorkflowStepNamed(publish.Steps, "Attest OCI image")
+	if imageAttestation == nil || imageAttestation.Uses != attestProvenanceAction ||
+		fmtString(imageAttestation.With["subject-name"]) != "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}" ||
+		fmtString(imageAttestation.With["subject-digest"]) != "${{ steps.publish-image.outputs.digest }}" ||
+		imageAttestation.With["push-to-registry"] != true {
+		t.Errorf("publish job must attest the pushed OCI manifest digest: %#v", imageAttestation)
 	}
 }
 
@@ -170,6 +194,15 @@ func workflowCommands(steps []workflowStep) string {
 func findWorkflowStep(steps []workflowStep, uses string) *workflowStep {
 	for index := range steps {
 		if steps[index].Uses == uses {
+			return &steps[index]
+		}
+	}
+	return nil
+}
+
+func findWorkflowStepNamed(steps []workflowStep, name string) *workflowStep {
+	for index := range steps {
+		if steps[index].Name == name {
 			return &steps[index]
 		}
 	}

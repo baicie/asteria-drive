@@ -1,8 +1,8 @@
 # Asteria Drive 后端 MVP 规划
 
-> 文档状态：MVP 工程验收候选（2026-08-02）。证据见
-> [implementation-log.md](./implementation-log.md) 与 [acceptance.md](./acceptance.md)。
-> 合入 `main` 前建议完成人工 PR 签核。百万节点长时 SLO 为 SHOULD（ADR-0010）。
+> 文档状态：历史 MVP 交付基线。P0-P4 已于 2026-08-03 完成验收并合入 `main`；证据见
+> [implementation-log.md](./implementation-log.md) 与 [acceptance.md](./acceptance.md)。当前 M2/生产化状态见
+> [当前交付状态](../status.md)。百万节点长时 SLO 在本历史基线中为延期 SHOULD（ADR-0010）。
 
 ## 目标
 
@@ -44,15 +44,16 @@
 - `P0` 至 `P4`：本次 MVP 内部实施里程碑，不等同于产品版本。
 - `P<n>-<nn>`：路线图任务，例如 `P2-03`。
 - `AC-<nnn>`：验收条目，例如 `AC-031`。
-- `M2`：MVP 之后的产品阶段。OIDC/OAuth2 生产身份接入属于 M2。
+- `M2`：MVP 之后的 Phase 1 生产化阶段；M2-1 OIDC 与 M2-2 成员管理后来已经交付。
 
 ## 完成边界
 
 MVP 完成意味着：在隔离的开发或验收环境中，可以使用已配置的受信任令牌完成上述垂直切片，
 并分别在 PostgreSQL + SeaweedFS/S3 兼容端点与内存 fake 上获得规定的验证结果。
 
-MVP 完成不意味着：系统已经适合公网生产部署。受信任开发令牌不是最终身份方案；在 M2 完成
-OIDC/OAuth2、正式主体与权限模型、安全评审和部署加固之前，服务不得被描述为生产就绪。
+MVP 完成不意味着：系统已经适合公网生产部署。受信任开发令牌不是最终身份方案。M2-1 后来完成了
+OIDC/OAuth2、内部主体与基础 RBAC，但当前状态页列出的权限、运维与安全缺口全部关闭之前，服务仍不得
+被描述为生产就绪。
 
 ## 约束词
 
