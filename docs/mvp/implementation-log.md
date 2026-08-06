@@ -533,3 +533,24 @@ environment accepts `v*` tags, but no tag was created during this closeout; an
 authorized release operation must still establish the immutable OCI digest and
 platform-owned production evidence before the project can claim public production
 readiness.
+
+## 2026-08-05 - v0.1.0 release and provenance closeout
+
+The annotated `v0.1.0` tag points to protected `main` commit
+`8878d9eaaf88973c522a4f4742ea960acd63d503`. Release workflow run
+`31015266832` completed successfully: deterministic `linux/amd64` and
+`linux/arm64` archives, SPDX SBOM, release manifest, and checksums were built;
+the publish job pushed both release tags and created the immutable GitHub Release
+at <https://github.com/baicie/asteria-drive/releases/tag/v0.1.0>.
+
+The published OCI manifest digest is
+`sha256:f5da244cba2055764a8caae7b9e9a752cc8f07356c0d7ae6397a6a7992e0cccc`.
+`gh attestation verify` validated the release manifest attestation against the
+`Release` workflow, `refs/tags/v0.1.0`, source commit `8878d9e`, and a Rekor
+transparency-log timestamp; the attestation subject set matched the four
+published release files. The same workflow recorded OCI provenance for the
+published manifest digest.
+
+This closes the repository release gate. It does not claim public production
+readiness: production PITR/WAL, immutable object retention, platform-owned
+deployment evidence, and independent security approval remain required.
