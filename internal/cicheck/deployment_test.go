@@ -43,7 +43,7 @@ func TestKubernetesDeploymentHardeningContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	deployment := string(text)
+	deployment := normalizeContractText(string(text))
 	for _, required := range []string{
 		"replicas: 2", "runAsNonRoot: true", "runAsUser: 65532", "type: RuntimeDefault",
 		"allowPrivilegeEscalation: false", "readOnlyRootFilesystem: true", "drop:\n                - ALL",
@@ -89,7 +89,7 @@ func TestKubernetesMigrationJobUsesTheHardenedRuntimeContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	job := string(contents)
+	job := normalizeContractText(string(contents))
 	for _, required := range []string{
 		"/usr/local/bin/asteria-migrate", "ASTERIA_ENV", "value: production",
 		"ASTERIA_DATABASE_URL_FILE", "runAsNonRoot: true", "runAsUser: 65532",

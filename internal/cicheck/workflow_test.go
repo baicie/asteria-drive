@@ -43,6 +43,7 @@ type workflowJob struct {
 	If             string            `yaml:"if"`
 	RunsOn         string            `yaml:"runs-on"`
 	TimeoutMinutes int               `yaml:"timeout-minutes"`
+	Environment    string            `yaml:"environment"`
 	Permissions    map[string]string `yaml:"permissions"`
 	Env            map[string]any    `yaml:"env"`
 	Uses           string            `yaml:"uses"`
