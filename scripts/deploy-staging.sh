@@ -108,7 +108,11 @@ capture_volume_filesystem() {
   [[ "$volume" =~ ^asteria-drive-staging-[a-z0-9-]+$ ]] || return 1
   driver="$(docker volume inspect --format '{{.Driver}}' "$volume")" || return 1
   options="$(docker volume inspect --format '{{json .Options}}' "$volume")" || return 1
-  [[ "$driver" == "local" && "$options" == "{}" ]] || return 1
+  [[ "$driver" == "local" ]] || return 1
+  case "$options" in
+    null|'{}') ;;
+    *) return 1 ;;
+  esac
   output="$(docker run --rm --pull never --network none --read-only \
     --cap-drop ALL --security-opt no-new-privileges:true --pids-limit 16 \
     --memory 32m --cpus 0.25 --log-driver none \

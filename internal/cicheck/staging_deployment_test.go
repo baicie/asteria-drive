@@ -216,6 +216,10 @@ func TestStagingScriptsKeepSecretsServerSideAndEmitEvidence(t *testing.T) {
 		`--volume "$volume:/capacity:ro"`,
 		`docker volume inspect --format '{{ index .Labels "com.docker.compose.project" }}'`,
 		`docker volume inspect --format '{{json .Options}}'`,
+		`[[ "$driver" == "local" ]] || return 1`,
+		`case "$options" in`,
+		`null|'{}') ;;`,
+		`*) return 1 ;;`,
 		"verify_data_volume_filesystems",
 		`local code="$?"`,
 		`rm -f -- "$tmp_path" || return 1`,
@@ -235,6 +239,9 @@ func TestStagingScriptsKeepSecretsServerSideAndEmitEvidence(t *testing.T) {
 	}
 	if strings.Contains(string(deploy), "< <(df") {
 		t.Fatal("staging capacity snapshots must propagate df failures")
+	}
+	if strings.Contains(string(deploy), `"$options" == "{}"`) {
+		t.Fatal("staging capacity probe must accept both null and empty Docker volume options")
 	}
 	if strings.Contains(string(bootstrap), "restrict %s") {
 		t.Fatal("staging deploy key must use the root-owned forced-command dispatcher")
