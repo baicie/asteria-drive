@@ -616,5 +616,49 @@ is explicitly `staging-not-production`.
 Public production readiness remains open for HTTPS OIDC and IdP lifecycle,
 PostgreSQL `verify-full` and PITR/WAL, object lock/versioning, KMS or
 secret-controller rotation, public TLS ingress, monitoring/SIEM, host-level HA,
-an externally valid presign endpoint, long-term capacity monitoring and alerts,
-and independent security/platform approval.
+an externally valid presign endpoint, platform-owned capacity planning and
+external alerts, and independent security/platform approval.
+
+## 2026-08-08 - staging continuous monitoring closeout
+
+PR [#32](https://github.com/baicie/asteria-drive/pull/32) added the hourly and
+manually dispatchable `Monitor staging` workflow. It runs only from protected
+`main`, serializes with deployments, uses the same five environment-scoped SSH
+secrets and strict host-key verification, and retains sanitized JSON for 30 days.
+The forced-command dispatcher accepts only a validated `status RUN_ID ATTEMPT
+WORKFLOW_SHA` request and executes a root-owned `0755` probe after checking its
+SHA-256 on every invocation. The pinned probe digest is
+`8c7e3526c091e0c73b5300f8ec105c027bf9fbee750554f716f15772c6d4e134`.
+
+The probe rejects non-default local-volume options and verifies the active
+Compose digest, exact API and dependency image identities, Compose project and
+service labels, container health, the exact loopback binding set, health,
+readiness, metrics, and root/Docker/data-volume 85%/5 GiB capacity thresholds.
+PR #32 passed all seven protected checks plus the extra CodeQL check and merged
+as `51fdd808fdec0708ef8408fb8d6944991bdb7c29`.
+
+After merge, the host dispatcher and monitor were bootstrapped with a newly
+generated ED25519 key. The private key remained in process memory, the host
+received only its public key, `prepare`/`cleanup`/`status` succeeded, an arbitrary
+shell command was rejected, and the GitHub `staging` Environment secret was
+updated through the sealed-box API. Successful workflow run
+[31265767434](https://github.com/baicie/asteria-drive/actions/runs/31265767434)
+attempt 1 additionally proved OpenSSH private-key parsing on the hosted runner,
+strict host trust, the forced status path, and artifact upload from protected-main
+commit `51fdd808fdec0708ef8408fb8d6944991bdb7c29`.
+
+Artifact `9024088965`, digest
+`sha256:349d2e98bbe548a00a49180403d085eea173346ce9b259b44d4a467e822deab3`,
+was downloaded directly from the GitHub API into memory and verified independently
+of the workflow. The archive digest matched, it contained exactly one
+`monitor-evidence.json`, its field set matched the allowlist, all required proofs
+were true, and no forbidden secret marker was present. The evidence reported
+load1 `0.00`, memory use `27.39%`, root and Docker/data-volume use `62%`, and
+`15332425728` bytes available, above the required reserve.
+
+This closes periodic staging capacity and health signaling only. The claim remains
+`staging-not-production`; platform-owned production monitoring and alert routing,
+SIEM retention, capacity planning, HTTPS OIDC/IdP lifecycle, PostgreSQL
+`verify-full` and PITR/WAL, object lock/versioning, KMS or secret-controller
+rotation, public TLS ingress, host-level HA, an externally valid presign endpoint,
+and independent security/platform approval remain open.
