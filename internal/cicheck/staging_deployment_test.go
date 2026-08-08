@@ -118,6 +118,7 @@ func TestStagingComposePinsImagesAndKeepsPortsOnLoopback(t *testing.T) {
 		"127.0.0.1:19090:9090",
 		"internal: true",
 		"asteria-drive-staging-loopback",
+		"-ip.bind=0.0.0.0",
 		"read_only: true",
 		"no-new-privileges:true",
 		"cap_drop:",

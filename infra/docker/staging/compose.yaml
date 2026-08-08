@@ -85,6 +85,7 @@ services:
       - -master.port=9333
       - -volume.port=8080
       - -filer.port=8888
+      - -ip.bind=0.0.0.0
       - -s3
       - -s3.port=8333
       - -s3.config=/var/run/secrets/asteria/s3.json
