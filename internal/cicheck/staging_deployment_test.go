@@ -47,6 +47,10 @@ func TestStagingDeploymentWorkflowTrustBoundary(t *testing.T) {
 		"COMPOSE_SHA256",
 		"asteria-drive-staging-deployment/v1",
 		"type(checked) is not int",
+		"type(available) is not int",
+		"data_volume_filesystems_verified",
+		"postgres_data_filesystem",
+		"seaweedfs_data_filesystem",
 		"deployment evidence did not prove",
 		"storage verifier identity does not match deployment evidence",
 		"scripts/deploy-staging.sh",
@@ -118,6 +122,11 @@ func TestStagingComposePinsImagesAndKeepsPortsOnLoopback(t *testing.T) {
 		"127.0.0.1:19090:9090",
 		"internal: true",
 		"asteria-drive-staging-loopback",
+		"-master.volumePreallocate=false",
+		"-master.volumeSizeLimitMB=256",
+		"-volume.max=8",
+		"-volume.minFreeSpace=5GiB",
+		"-ip=seaweedfs",
 		"-ip.bind=0.0.0.0",
 		"read_only: true",
 		"no-new-privileges:true",
@@ -197,6 +206,17 @@ func TestStagingScriptsKeepSecretsServerSideAndEmitEvidence(t *testing.T) {
 		"upload-download-smoke",
 		"upload_download_smoke_succeeded",
 		"metrics_scrape_succeeded",
+		"capacity_guard_verified",
+		"capacity-preflight",
+		"capacity-postflight",
+		"max_disk_used_percent=85",
+		"min_disk_available_kib=$((5 * 1024 * 1024))",
+		`output="$(df -Pk -- "$path")" || return 1`,
+		"docker run --rm --pull never --network none --read-only",
+		`--volume "$volume:/capacity:ro"`,
+		`docker volume inspect --format '{{ index .Labels "com.docker.compose.project" }}'`,
+		`docker volume inspect --format '{{json .Options}}'`,
+		"verify_data_volume_filesystems",
 		`local code="$?"`,
 		`rm -f -- "$tmp_path" || return 1`,
 		`report["checked"] < 1`,
@@ -212,6 +232,9 @@ func TestStagingScriptsKeepSecretsServerSideAndEmitEvidence(t *testing.T) {
 	}
 	if strings.Contains(string(deploy), "set -x") || strings.Contains(string(bootstrap), "set -x") {
 		t.Fatal("staging scripts must never enable shell tracing around secrets")
+	}
+	if strings.Contains(string(deploy), "< <(df") {
+		t.Fatal("staging capacity snapshots must propagate df failures")
 	}
 	if strings.Contains(string(bootstrap), "restrict %s") {
 		t.Fatal("staging deploy key must use the root-owned forced-command dispatcher")
@@ -230,6 +253,40 @@ func TestStagingScriptsKeepSecretsServerSideAndEmitEvidence(t *testing.T) {
 	}
 	if !strings.Contains(string(deploy), composeDigest) {
 		t.Errorf("staging deployment script does not pin Compose digest %s", composeDigest)
+	}
+	workflow, err := os.ReadFile("../../.github/workflows/deploy-staging.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(workflow), composeDigest) {
+		t.Errorf("staging workflow does not pin Compose digest %s", composeDigest)
+	}
+}
+
+func TestStagingCapacityThresholdBoundaries(t *testing.T) {
+	t.Parallel()
+
+	const (
+		maxUsed      = 85
+		minAvailable = int64(5 * 1024 * 1024 * 1024)
+	)
+	tests := []struct {
+		name      string
+		used      int
+		available int64
+		want      bool
+	}{
+		{name: "exact boundary", used: 85, available: minAvailable, want: true},
+		{name: "usage exceeded", used: 86, available: minAvailable, want: false},
+		{name: "reserve missed", used: 85, available: minAvailable - 1, want: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := test.used <= maxUsed && test.available >= minAvailable
+			if got != test.want {
+				t.Errorf("capacity decision = %v, want %v", got, test.want)
+			}
+		})
 	}
 }
 
