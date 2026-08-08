@@ -2,7 +2,7 @@
   "name": "asteria-drive-contract-tools",
   "private": true,
   "scripts": {
-    "lint:actions": "action-validator .github/workflows/ci.yml && action-validator .github/workflows/security.yml",
+    "lint:actions": "action-validator .github/workflows/ci.yml && action-validator .github/workflows/security.yml && action-validator .github/workflows/monitor-staging.yml",
     "lint:openapi": "redocly lint docs/openapi.yaml"
   },
   "devDependencies": {

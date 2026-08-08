@@ -31,6 +31,13 @@ publicly or used as production evidence. Its explicit boundary is
 [ADR-0022](../adr/0022-github-actions-staging-deployment.md) and
 [`infra/docker/staging`](../../infra/docker/staging/README.md).
 
+The hourly `Monitor staging` workflow serializes with deployments and invokes only a
+digest-pinned, root-owned probe through the same forced-command SSH key. It checks
+the active Compose and image identities, containers, loopback bindings, HTTP probes,
+metrics, and the 85%/5 GiB capacity thresholds, then retains sanitized JSON for 30
+days. A failed workflow is a staging signal only; production still requires
+platform-owned monitoring, alert routing, SIEM retention, and capacity planning.
+
 ## Image
 
 Build from an immutable source commit and record the resulting multi-architecture

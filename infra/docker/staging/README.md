@@ -13,8 +13,9 @@ dedicated SSH key and pinned host key.
 The deploy key is forced through a root-owned dispatcher. It can upload only the
 reviewed Compose file and deployment script whose SHA-256 values were pinned during
 bootstrap, run that deployment, fetch the two sanitized evidence files, and remove
-its own run directory. It cannot request an arbitrary shell, SFTP session, or port
-forward.
+its own run directory. It can also execute one digest-pinned, root-owned read-only
+monitor with a validated GitHub run identity. It cannot request an arbitrary shell,
+SFTP session, or port forward.
 
 The deployment uses trusted development authentication and non-TLS local PostgreSQL
 and S3 links. Therefore it cannot satisfy the production OIDC, PITR/WAL, Object Lock,
@@ -41,3 +42,10 @@ digest, runs forward-only migrations, checks health/readiness, performs an
 authenticated multipart upload and byte-for-byte download, scrapes metrics, requires
 the storage verifier to inspect at least one healthy object, and uploads secret-free
 JSON evidence.
+
+The `Monitor staging` workflow runs every hour and on manual dispatch from protected
+`main`. It shares the deployment concurrency group, uses the same strict SSH trust
+boundary, and retains sanitized capacity, image, container-health, endpoint, metrics,
+and loopback-binding evidence for 30 days. A threshold or probe failure makes the
+Actions run fail. This is a staging failure signal, not a production monitoring,
+SIEM, paging, or capacity-planning system.

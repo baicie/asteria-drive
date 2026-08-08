@@ -297,6 +297,127 @@ func TestStagingCapacityThresholdBoundaries(t *testing.T) {
 	}
 }
 
+func TestStagingMonitorWorkflowAndScriptTrustBoundary(t *testing.T) {
+	t.Parallel()
+
+	workflowContents, err := os.ReadFile("../../.github/workflows/monitor-staging.yml")
+	if err != nil {
+		t.Fatalf("read staging monitor workflow: %v", err)
+	}
+	workflowText := string(workflowContents)
+	for _, forbidden := range []string{
+		"pull_request_target", "ssh-keyscan", "ssh_password", "scp ", "actions/checkout@",
+		"ASTERIA_DATABASE_URL", "ASTERIA_CURSOR_HMAC_KEY", "ASTERIA_S3_SECRET_ACCESS_KEY",
+	} {
+		if strings.Contains(strings.ToLower(workflowText), strings.ToLower(forbidden)) {
+			t.Errorf("staging monitor workflow contains forbidden value %q", forbidden)
+		}
+	}
+	for _, required := range []string{
+		"23 * * * *",
+		"github.ref == 'refs/heads/main'",
+		"StrictHostKeyChecking=yes",
+		"UserKnownHostsFile=",
+		"status $GITHUB_RUN_ID $GITHUB_RUN_ATTEMPT $GITHUB_SHA",
+		"asteria-drive-staging-monitor/v1",
+		"staging-not-production",
+		"capacity_max_disk_used_percent",
+		"capacity_min_disk_available_bytes",
+		"monitor evidence did not prove",
+		"PROBE_EXIT",
+		"staging-monitor-evidence",
+	} {
+		if !strings.Contains(workflowText, required) {
+			t.Errorf("staging monitor workflow is missing %q", required)
+		}
+	}
+	if count := strings.Count(workflowText, "secrets.ASTERIA_STAGING_SSH_"); count != 5 {
+		t.Errorf("monitor workflow references %d staging SSH secrets, want exactly five", count)
+	}
+
+	var workflow workflowDocument
+	if err := yaml.Unmarshal(workflowContents, &workflow); err != nil {
+		t.Fatalf("parse staging monitor workflow: %v", err)
+	}
+	if workflow.Name != "Monitor staging" {
+		t.Errorf("workflow name = %q, want Monitor staging", workflow.Name)
+	}
+	for _, event := range []string{"workflow_dispatch", "schedule"} {
+		if _, ok := workflow.On[event]; !ok {
+			t.Errorf("staging monitor trigger %q is missing", event)
+		}
+	}
+	if len(workflow.On) != 2 {
+		t.Errorf("staging monitor triggers = %#v, want workflow_dispatch and schedule", workflow.On)
+	}
+	if !reflect.DeepEqual(workflow.Permissions, map[string]string{"contents": "read"}) {
+		t.Errorf("staging monitor permissions = %#v", workflow.Permissions)
+	}
+	if workflow.Concurrency.Group != "asteria-drive-staging" || workflow.Concurrency.CancelInProgress != "false" {
+		t.Errorf("unexpected staging monitor concurrency: %#v", workflow.Concurrency)
+	}
+	if len(workflow.Jobs) != 1 {
+		t.Fatalf("staging monitor has %d jobs, want one", len(workflow.Jobs))
+	}
+	job := workflow.Jobs["monitor"]
+	if job.Name != "Monitor / staging" || job.RunsOn != "ubuntu-24.04" || job.Environment != "staging" || job.TimeoutMinutes != 10 {
+		t.Errorf("unexpected staging monitor job contract: %#v", job)
+	}
+	for _, step := range job.Steps {
+		if step.Uses != "" && !pinnedAction.MatchString(step.Uses) {
+			t.Errorf("staging monitor uses mutable Action reference %q", step.Uses)
+		}
+	}
+
+	monitor, err := os.ReadFile("../../scripts/monitor-staging.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	monitorText := string(monitor)
+	for _, required := range []string{
+		"sha256:f5da244cba2055764a8caae7b9e9a752cc8f07356c0d7ae6397a6a7992e0cccc",
+		"asteria-drive-staging-monitor/v1",
+		"status=\"failed\"",
+		"trap finish EXIT",
+		"max_disk_used_percent=85",
+		"min_disk_available_kib=$((5 * 1024 * 1024))",
+		`docker volume inspect --format '{{json .Options}}'`,
+		`null|'{}') ;;`,
+		"docker run --rm --pull never --network none --read-only",
+		"verify_loopback_bindings",
+		"127.0.0.1:18080/healthz",
+		"127.0.0.1:18080/readyz",
+		"127.0.0.1:19090/metrics",
+		"awk '/^asteria_http_requests_total([ {]|$)/ { found = 1 } END { exit(found ? 0 : 1) }'",
+		"staging-not-production",
+	} {
+		if !strings.Contains(monitorText, required) {
+			t.Errorf("staging monitor script is missing %q", required)
+		}
+	}
+	if strings.Contains(monitorText, "set -x") || regexp.MustCompile(`ASTERIA_(DATABASE|CURSOR|S3|TRUSTED).*FILE`).MatchString(monitorText) {
+		t.Fatal("staging monitor must not trace or read application secret files")
+	}
+
+	bootstrap, err := os.ReadFile("../../scripts/bootstrap-staging-host.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	monitorDigest := fmt.Sprintf("%x", sha256.Sum256(monitor))
+	for _, required := range []string{
+		"ASTERIA_STAGING_MONITOR_B64",
+		"monitor_script_sha256",
+		"status)",
+		`[[ "$(stat -c '%u:%g:%a' "$monitor_path")" == "0:0:755" ]]`,
+		`[[ "$(sha256sum "$monitor_path" | awk '{print $1}')" == "$monitor_script_sha256" ]]`,
+		monitorDigest,
+	} {
+		if !strings.Contains(string(bootstrap), required) {
+			t.Errorf("staging bootstrap monitor contract is missing %q", required)
+		}
+	}
+}
+
 func TestStagingDeploymentFilesUseStableLineEndings(t *testing.T) {
 	t.Parallel()
 
@@ -307,9 +428,11 @@ func TestStagingDeploymentFilesUseStableLineEndings(t *testing.T) {
 	text := string(attributes)
 	for _, required := range []string{
 		"/.github/workflows/deploy-staging.yml text eol=lf",
+		"/.github/workflows/monitor-staging.yml text eol=lf",
 		"/infra/docker/staging/compose.yaml text eol=lf",
 		"/scripts/bootstrap-staging-host.sh text eol=lf",
 		"/scripts/deploy-staging.sh text eol=lf",
+		"/scripts/monitor-staging.sh text eol=lf",
 	} {
 		if !strings.Contains(text, required) {
 			t.Errorf(".gitattributes is missing %q", required)
