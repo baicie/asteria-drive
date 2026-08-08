@@ -554,3 +554,67 @@ published manifest digest.
 This closes the repository release gate. It does not claim public production
 readiness: production PITR/WAL, immutable object retention, platform-owned
 deployment evidence, and independent security approval remain required.
+
+## 2026-08-08 - v0.1.0 staging deployment and capacity closeout
+
+Two credential-bearing server inventory CSV files were evaluated without
+printing or committing credentials. The lower-load candidate was selected from
+live measurements: 4 vCPU, load1 `0.00`, about 24% memory use, and three existing
+containers, compared with the other candidate's load1 `0.01`, about 51% memory
+use, and thirteen containers. The selected host key was pinned before every SSH
+operation.
+
+Initial deployment run
+[31249531451](https://github.com/baicie/asteria-drive/actions/runs/31249531451)
+proved the release path but exposed root-disk growth from 81% to 100%. The growth
+was isolated to empty SeaweedFS staging volumes created with large allocation
+defaults. Only the Asteria staging PostgreSQL and SeaweedFS data volumes were
+removed; all server-managed secret volumes and unrelated workloads were
+preserved, recovering the root filesystem to 63% use.
+
+PR [#29](https://github.com/baicie/asteria-drive/pull/29) added bounded SeaweedFS
+volume settings plus root, Docker-data, and data-volume capacity evidence and
+85%/5 GiB gates. Its first rerun stopped before mutation because Docker renders a
+default local volume's nil `.Options` map as `null`. PR
+[#30](https://github.com/baicie/asteria-drive/pull/30) strictly allowed only
+`null` or `{}` after requiring the `local` driver, continued to reject every
+non-empty custom option object, updated the forced-command script digest, and
+passed all seven protected checks plus the extra CodeQL check.
+
+The staging deploy key was rotated without writing the private key to disk. The
+new key was validated by OpenSSH, the host dispatcher was bootstrapped with only
+the public key, `prepare`/`cleanup` were exercised, and the GitHub `staging`
+Environment secret was updated through the sealed-box API. Deployment workflow
+[31260549517](https://github.com/baicie/asteria-drive/actions/runs/31260549517)
+attempt 2 then succeeded from protected-main workflow commit
+`ddc9f126945a97fb152b8a805929abca18477654`.
+
+The retained evidence artifact is `9022865120`, digest
+`sha256:d1cc889fd4386594d1d26d728bdb868ed107b597f8a6db091913f15f1055bf03`.
+It binds the deployment to:
+
+- release tag `v0.1.0`, source commit
+  `8878d9eaaf88973c522a4f4742ea960acd63d503`, and OCI digest
+  `sha256:f5da244cba2055764a8caae7b9e9a752cc8f07356c0d7ae6397a6a7992e0cccc`;
+- Compose digest
+  `d7d39a2e965849f364ceb25ab4106efd575f9a6d924e8ebfd9d508a594adc5dc`;
+- schema migration `0 -> 3` and successful health, readiness, authenticated
+  smoke, multipart upload/download equality, metrics scrape, binary identity,
+  loopback binding, capacity guard, and data-volume filesystem checks;
+- root and Docker-data use holding at 62%, with about 14.3 GiB available before
+  and after deployment; PostgreSQL and SeaweedFS data volumes remained on the
+  same measured filesystem and above the reserve;
+- one checked storage object, one healthy object, `verified: true`, no findings,
+  and no truncated findings.
+
+Post-run host inspection confirmed all three staging containers running, exact
+API image identity, only loopback host bindings, live `/healthz` and `/readyz`,
+the reviewed active Compose digest, successful remote temporary-file cleanup,
+about 47 MiB of PostgreSQL data, and only 256 KiB of SeaweedFS data. This evidence
+is explicitly `staging-not-production`.
+
+Public production readiness remains open for HTTPS OIDC and IdP lifecycle,
+PostgreSQL `verify-full` and PITR/WAL, object lock/versioning, KMS or
+secret-controller rotation, public TLS ingress, monitoring/SIEM, host-level HA,
+an externally valid presign endpoint, long-term capacity monitoring and alerts,
+and independent security/platform approval.
