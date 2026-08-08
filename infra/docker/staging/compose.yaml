@@ -101,6 +101,7 @@ services:
     mem_limit: 768m
     networks:
       - backend
+      - loopback
     ports:
       - "127.0.0.1:18333:8333"
     volumes:
@@ -141,6 +142,9 @@ services:
         condition: service_healthy
       seaweedfs:
         condition: service_healthy
+    networks:
+      - backend
+      - loopback
     ports:
       - "127.0.0.1:18080:8080"
       - "127.0.0.1:19090:9090"
@@ -183,6 +187,9 @@ networks:
   backend:
     name: asteria-drive-staging-backend
     internal: true
+  loopback:
+    name: asteria-drive-staging-loopback
+    driver: bridge
 
 volumes:
   postgres-data:

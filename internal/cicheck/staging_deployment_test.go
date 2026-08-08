@@ -117,6 +117,7 @@ func TestStagingComposePinsImagesAndKeepsPortsOnLoopback(t *testing.T) {
 		"127.0.0.1:18333:8333",
 		"127.0.0.1:19090:9090",
 		"internal: true",
+		"asteria-drive-staging-loopback",
 		"read_only: true",
 		"no-new-privileges:true",
 		"cap_drop:",
@@ -139,6 +140,30 @@ func TestStagingComposePinsImagesAndKeepsPortsOnLoopback(t *testing.T) {
 		if strings.HasPrefix(line, "image:") && !strings.Contains(line, "@sha256:") && line != "image: *asteria-image" {
 			t.Errorf("staging image is not digest-pinned: %s", line)
 		}
+	}
+
+	var compose struct {
+		Services map[string]struct {
+			Networks []string `yaml:"networks"`
+		} `yaml:"services"`
+		Networks map[string]struct {
+			Internal bool `yaml:"internal"`
+		} `yaml:"networks"`
+	}
+	if err := yaml.Unmarshal(contents, &compose); err != nil {
+		t.Fatalf("parse staging Compose file: %v", err)
+	}
+	for service, want := range map[string][]string{
+		"api":       {"backend", "loopback"},
+		"seaweedfs": {"backend", "loopback"},
+		"postgres":  {"backend"},
+	} {
+		if got := compose.Services[service].Networks; !reflect.DeepEqual(got, want) {
+			t.Errorf("%s networks = %#v, want %#v", service, got, want)
+		}
+	}
+	if !compose.Networks["backend"].Internal || compose.Networks["loopback"].Internal {
+		t.Errorf("unexpected staging network isolation: %#v", compose.Networks)
 	}
 }
 
@@ -204,5 +229,25 @@ func TestStagingScriptsKeepSecretsServerSideAndEmitEvidence(t *testing.T) {
 	}
 	if !strings.Contains(string(deploy), composeDigest) {
 		t.Errorf("staging deployment script does not pin Compose digest %s", composeDigest)
+	}
+}
+
+func TestStagingDeploymentFilesUseStableLineEndings(t *testing.T) {
+	t.Parallel()
+
+	attributes, err := os.ReadFile("../../.gitattributes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(attributes)
+	for _, required := range []string{
+		"/.github/workflows/deploy-staging.yml text eol=lf",
+		"/infra/docker/staging/compose.yaml text eol=lf",
+		"/scripts/bootstrap-staging-host.sh text eol=lf",
+		"/scripts/deploy-staging.sh text eol=lf",
+	} {
+		if !strings.Contains(text, required) {
+			t.Errorf(".gitattributes is missing %q", required)
+		}
 	}
 }

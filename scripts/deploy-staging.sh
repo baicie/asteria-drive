@@ -20,7 +20,7 @@ release_tag="v0.1.0"
 source_commit="8878d9eaaf88973c522a4f4742ea960acd63d503"
 expected_image="ghcr.io/baicie/asteria-drive@sha256:f5da244cba2055764a8caae7b9e9a752cc8f07356c0d7ae6397a6a7992e0cccc"
 helper_image="chrislusf/seaweedfs:3.85@sha256:49312939c00c01e5ee6afbd7d728b18027821d3764c35a797a72acd4fdf3296a"
-expected_compose_sha256="37a5922a4058632813ba893da65e5f975e0142612732d02e75ef7a922f4dfcf6"
+expected_compose_sha256="a031974150a7724a17be68d58cb008305bd45374b8e04dfcd3dd2b0c233645dc"
 tenant_id="11111111-1111-4111-8111-111111111111"
 
 [[ "$run_id" =~ ^[0-9]{1,20}$ ]] || { printf 'run id is invalid\n' >&2; exit 1; }

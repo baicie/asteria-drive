@@ -1,0 +1,5 @@
+.gitattributes text eol=lf
+/.github/workflows/deploy-staging.yml text eol=lf
+/infra/docker/staging/compose.yaml text eol=lf
+/scripts/bootstrap-staging-host.sh text eol=lf
+/scripts/deploy-staging.sh text eol=lf
