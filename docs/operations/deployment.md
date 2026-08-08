@@ -12,6 +12,25 @@ The server refuses production startup unless authentication is OIDC, metadata is
 PostgreSQL, storage is S3, database TLS uses `sslmode=verify-full`, the cursor key is
 file-mounted, and automatic migration and bucket creation are disabled.
 
+## Automated single-host staging
+
+The `Deploy staging` workflow provides a narrower operational target for the first
+real server rollout. It verifies the `v0.1.0` OCI provenance and deploys only
+`ghcr.io/baicie/asteria-drive@sha256:f5da244cba2055764a8caae7b9e9a752cc8f07356c0d7ae6397a6a7992e0cccc`
+through a dedicated SSH key with strict host-key verification. Application secrets
+remain in server-managed Docker volumes and are not GitHub Secrets.
+
+The staging API, S3 diagnostic, and metrics ports bind to loopback. The workflow runs
+the migration from a candidate Compose file, verifies the schema transition and
+runtime image, performs an authenticated multipart upload and byte-equal download,
+scrapes metrics, and requires the storage verifier to check at least one object. It
+then uploads secret-free evidence. This target uses trusted development
+authentication and local non-TLS PostgreSQL/S3 links, so it must not be exposed
+publicly or used as production evidence. Its explicit boundary is
+`staging-not-production`; see
+[ADR-0022](../adr/0022-github-actions-staging-deployment.md) and
+[`infra/docker/staging`](../../infra/docker/staging/README.md).
+
 ## Image
 
 Build from an immutable source commit and record the resulting multi-architecture

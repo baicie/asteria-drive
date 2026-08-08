@@ -27,6 +27,7 @@
 | [0019](0019-production-identity-governance.md) | Invitations, membership removal, groups, resource ACLs, and audit events | Accepted |
 | [0020](0020-idempotency-maintenance-and-metrics.md) | Persistent creation idempotency, leased maintenance, metrics, and scale evidence | Accepted |
 | [0021](0021-production-runtime-and-recovery.md) | Production secrets, hardened runtime, backup/restore, and security review | Accepted |
+| [0022](0022-github-actions-staging-deployment.md) | GitHub Actions single-host staging deployment | Accepted |
 
 ## Conventions
 

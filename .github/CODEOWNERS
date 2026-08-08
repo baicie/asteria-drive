@@ -6,3 +6,5 @@
 /docs/adr/ @baicie
 /docs/process/ @baicie
 /infra/ @baicie
+/scripts/bootstrap-staging-host.sh @baicie
+/scripts/deploy-staging.sh @baicie

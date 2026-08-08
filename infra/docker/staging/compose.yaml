@@ -1,0 +1,200 @@
+name: asteria-drive-staging
+
+x-asteria-image: &asteria-image ghcr.io/baicie/asteria-drive@sha256:f5da244cba2055764a8caae7b9e9a752cc8f07356c0d7ae6397a6a7992e0cccc
+x-asteria-environment: &asteria-environment
+  ASTERIA_ENV: development
+  ASTERIA_AUTH_MODE: trusted-dev
+  ASTERIA_TRUSTED_TOKENS_JSON_FILE: /var/run/secrets/asteria/trusted-tokens.json
+  ASTERIA_CURSOR_HMAC_KEY_FILE: /var/run/secrets/asteria/cursor-hmac-key
+  ASTERIA_METADATA_DRIVER: postgres
+  ASTERIA_DATABASE_URL_FILE: /var/run/secrets/asteria/database-url
+  ASTERIA_AUTO_MIGRATE: "false"
+  ASTERIA_STORAGE_DRIVER: s3
+  ASTERIA_S3_ENDPOINT: http://seaweedfs:8333
+  ASTERIA_S3_REGION: us-east-1
+  ASTERIA_S3_BUCKET: asteria-drive-staging
+  ASTERIA_S3_ACCESS_KEY_ID_FILE: /var/run/secrets/asteria/s3-access-key-id
+  ASTERIA_S3_SECRET_ACCESS_KEY_FILE: /var/run/secrets/asteria/s3-secret-access-key
+  ASTERIA_S3_PATH_STYLE: "true"
+  ASTERIA_S3_AUTO_CREATE_BUCKET: "true"
+  ASTERIA_S3_CHECKSUM_HEADERS: "false"
+  ASTERIA_MAINTENANCE_ENABLED: "true"
+  ASTERIA_READ_HEADER_TIMEOUT: 5s
+  ASTERIA_READ_TIMEOUT: 15s
+  ASTERIA_WRITE_TIMEOUT: 30s
+  ASTERIA_IDLE_TIMEOUT: 60s
+
+x-asteria-runtime: &asteria-runtime
+  image: *asteria-image
+  pull_policy: always
+  user: "65532:65532"
+  read_only: true
+  init: true
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  networks:
+    - backend
+  volumes:
+    - type: volume
+      source: app-secrets
+      target: /var/run/secrets/asteria
+      read_only: true
+
+services:
+  postgres:
+    image: postgres:17.5-alpine@sha256:6567bca8d7bc8c82c5922425a0baee57be8402df92bae5eacad5f01ae9544daa
+    pull_policy: always
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: asteria
+      POSTGRES_USER: asteria
+      POSTGRES_PASSWORD_FILE: /var/run/secrets/asteria/postgres-password
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U asteria -d asteria"]
+      interval: 3s
+      timeout: 3s
+      retries: 40
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    cpus: 1.0
+    mem_limit: 768m
+    networks:
+      - backend
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - type: volume
+        source: postgres-secrets
+        target: /var/run/secrets/asteria
+        read_only: true
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  seaweedfs:
+    image: chrislusf/seaweedfs:3.85@sha256:49312939c00c01e5ee6afbd7d728b18027821d3764c35a797a72acd4fdf3296a
+    pull_policy: always
+    restart: unless-stopped
+    command:
+      - server
+      - -dir=/data
+      - -master.port=9333
+      - -volume.port=8080
+      - -filer.port=8888
+      - -s3
+      - -s3.port=8333
+      - -s3.config=/var/run/secrets/asteria/s3.json
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-T", "2", "-O", "/dev/null", "http://127.0.0.1:8333/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 40
+      start_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    cpus: 1.0
+    mem_limit: 768m
+    networks:
+      - backend
+    ports:
+      - "127.0.0.1:18333:8333"
+    volumes:
+      - seaweedfs-data:/data
+      - type: volume
+        source: seaweedfs-secrets
+        target: /var/run/secrets/asteria
+        read_only: true
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  migrate:
+    <<: *asteria-runtime
+    profiles: [tools]
+    entrypoint: ["/usr/local/bin/asteria-migrate"]
+    environment:
+      ASTERIA_ENV: development
+      ASTERIA_DATABASE_URL_FILE: /var/run/secrets/asteria/database-url
+    depends_on:
+      postgres:
+        condition: service_healthy
+    cpus: 1.0
+    mem_limit: 256m
+
+  api:
+    <<: *asteria-runtime
+    restart: unless-stopped
+    stop_grace_period: 30s
+    environment:
+      <<: *asteria-environment
+      ASTERIA_SERVER_ADDRESS: 0.0.0.0:8080
+      ASTERIA_METRICS_ADDRESS: 0.0.0.0:9090
+    depends_on:
+      postgres:
+        condition: service_healthy
+      seaweedfs:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:18080:8080"
+      - "127.0.0.1:19090:9090"
+    pids_limit: 128
+    cpus: 1.0
+    mem_limit: 512m
+    labels:
+      com.baicie.asteria.boundary: staging-not-production
+      com.baicie.asteria.release: v0.1.0
+      com.baicie.asteria.source: 8878d9eaaf88973c522a4f4742ea960acd63d503
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  verifier:
+    <<: *asteria-runtime
+    profiles: [tools]
+    entrypoint:
+      - /usr/local/bin/asteria-verify-storage
+      - -batch-size
+      - "500"
+      - -concurrency
+      - "8"
+      - -max-findings
+      - "100"
+      - -timeout
+      - 10m
+    environment: *asteria-environment
+    depends_on:
+      postgres:
+        condition: service_healthy
+      seaweedfs:
+        condition: service_healthy
+    cpus: 1.0
+    mem_limit: 256m
+
+networks:
+  backend:
+    name: asteria-drive-staging-backend
+    internal: true
+
+volumes:
+  postgres-data:
+    name: asteria-drive-staging-postgres-data
+  seaweedfs-data:
+    name: asteria-drive-staging-seaweedfs-data
+  app-secrets:
+    external: true
+    name: asteria-drive-staging-app-secrets
+  postgres-secrets:
+    external: true
+    name: asteria-drive-staging-postgres-secrets
+  seaweedfs-secrets:
+    external: true
+    name: asteria-drive-staging-seaweedfs-secrets

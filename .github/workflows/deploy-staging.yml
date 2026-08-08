@@ -1,0 +1,231 @@
+name: Deploy staging
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: Confirm the immutable v0.1.0 staging deployment
+        required: true
+        type: choice
+        options:
+          - deploy-v0.1.0
+
+permissions:
+  contents: read
+  attestations: read
+  packages: read
+
+concurrency:
+  group: asteria-drive-staging
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: v0.1.0
+  RELEASE_COMMIT: 8878d9eaaf88973c522a4f4742ea960acd63d503
+  IMAGE: ghcr.io/baicie/asteria-drive@sha256:f5da244cba2055764a8caae7b9e9a752cc8f07356c0d7ae6397a6a7992e0cccc
+
+jobs:
+  deploy:
+    name: Deploy / staging
+    if: github.ref == 'refs/heads/main' && inputs.confirmation == 'deploy-v0.1.0'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: staging
+    steps:
+      - name: Check out protected main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Validate immutable candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --force origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+          actual_commit="$(git rev-list -n 1 "$RELEASE_TAG")"
+          if [[ "$actual_commit" != "$RELEASE_COMMIT" ]]; then
+            printf 'release tag commit mismatch\n' >&2
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$RELEASE_COMMIT" HEAD; then
+            printf 'release commit is not an ancestor of protected main\n' >&2
+            exit 1
+          fi
+          if [[ "$(git status --porcelain)" != "" ]]; then
+            printf 'deployment checkout is dirty\n' >&2
+            exit 1
+          fi
+
+      - name: Authenticate to GHCR
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+
+      - name: Verify OCI provenance
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh attestation verify "oci://$IMAGE" \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow baicie/asteria-drive/.github/workflows/release.yml \
+            --source-ref "refs/tags/$RELEASE_TAG" \
+            --source-digest "$RELEASE_COMMIT" \
+            --deny-self-hosted-runners
+          docker pull --quiet "$IMAGE"
+          docker image inspect "$IMAGE" >/dev/null
+
+      - name: Prepare strict SSH transport
+        shell: bash
+        env:
+          DEPLOY_KEY: ${{ secrets.ASTERIA_STAGING_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.ASTERIA_STAGING_SSH_KNOWN_HOSTS }}
+          DEPLOY_HOST: ${{ secrets.ASTERIA_STAGING_SSH_HOST }}
+          DEPLOY_PORT: ${{ secrets.ASTERIA_STAGING_SSH_PORT }}
+          DEPLOY_USER: ${{ secrets.ASTERIA_STAGING_SSH_USER }}
+        run: |
+          set -euo pipefail
+          for value in DEPLOY_KEY KNOWN_HOSTS DEPLOY_HOST DEPLOY_PORT DEPLOY_USER; do
+            [[ -n "${!value:-}" ]] || { printf '%s is empty\n' "$value" >&2; exit 1; }
+          done
+          [[ "$DEPLOY_HOST" =~ ^[A-Za-z0-9.-]+$ ]] || { printf 'deploy host is invalid\n' >&2; exit 1; }
+          [[ "$DEPLOY_USER" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || { printf 'deploy user is invalid\n' >&2; exit 1; }
+          [[ "$DEPLOY_PORT" =~ ^[0-9]+$ && "$DEPLOY_PORT" -ge 1 && "$DEPLOY_PORT" -le 65535 ]] || {
+            printf 'deploy port is invalid\n' >&2
+            exit 1
+          }
+          install -d -m 0700 "$RUNNER_TEMP/ssh"
+          install -d -m 0700 "$RUNNER_TEMP/deployment-evidence"
+          printf '%s\n' "$DEPLOY_KEY" >"$RUNNER_TEMP/ssh/key"
+          printf '%s\n' "$KNOWN_HOSTS" >"$RUNNER_TEMP/ssh/known_hosts"
+          chmod 0600 "$RUNNER_TEMP/ssh/key" "$RUNNER_TEMP/ssh/known_hosts"
+          ssh-keygen -y -f "$RUNNER_TEMP/ssh/key" >/dev/null
+          host_lookup="$DEPLOY_HOST"
+          if [[ "$DEPLOY_PORT" != "22" ]]; then
+            host_lookup="[$DEPLOY_HOST]:$DEPLOY_PORT"
+          fi
+          ssh-keygen -F "$host_lookup" -f "$RUNNER_TEMP/ssh/known_hosts" |
+            grep -Eq 'ssh-ed25519[[:space:]]' || { printf 'approved ED25519 host key is missing\n' >&2; exit 1; }
+          ssh_options=(
+            -F none
+            -i "$RUNNER_TEMP/ssh/key"
+            -p "$DEPLOY_PORT"
+            -o BatchMode=yes
+            -o ConnectTimeout=15
+            -o GlobalKnownHostsFile=/dev/null
+            -o IdentitiesOnly=yes
+            -o ProxyCommand=none
+            -o StrictHostKeyChecking=yes
+            -o UserKnownHostsFile="$RUNNER_TEMP/ssh/known_hosts"
+          )
+          target="$DEPLOY_USER@$DEPLOY_HOST"
+          prepared=false
+          cleanup_prepare_failure() {
+            code="$?"
+            trap - EXIT
+            if [[ "$code" -ne 0 && "$prepared" == "true" ]]; then
+              ssh "${ssh_options[@]}" "$target" "cleanup $GITHUB_RUN_ID $GITHUB_RUN_ATTEMPT" || true
+            fi
+            exit "$code"
+          }
+          trap cleanup_prepare_failure EXIT
+          ssh "${ssh_options[@]}" "$target" "prepare $GITHUB_RUN_ID $GITHUB_RUN_ATTEMPT"
+          prepared=true
+          printf 'DEPLOY_HOST=%s\n' "$DEPLOY_HOST" >>"$GITHUB_ENV"
+          printf 'DEPLOY_PORT=%s\n' "$DEPLOY_PORT" >>"$GITHUB_ENV"
+          printf 'DEPLOY_USER=%s\n' "$DEPLOY_USER" >>"$GITHUB_ENV"
+          printf 'DEPLOY_PREPARED=true\n' >>"$GITHUB_ENV"
+          trap - EXIT
+
+      - name: Upload approved deployment files
+        shell: bash
+        run: |
+          set -euo pipefail
+          ssh_options=(
+            -F none -i "$RUNNER_TEMP/ssh/key" -p "$DEPLOY_PORT"
+            -o BatchMode=yes -o ConnectTimeout=15 -o GlobalKnownHostsFile=/dev/null
+            -o IdentitiesOnly=yes -o ProxyCommand=none -o StrictHostKeyChecking=yes
+            -o UserKnownHostsFile="$RUNNER_TEMP/ssh/known_hosts"
+          )
+          target="$DEPLOY_USER@$DEPLOY_HOST"
+          ssh "${ssh_options[@]}" "$target" \
+            "upload-compose $GITHUB_RUN_ID $GITHUB_RUN_ATTEMPT" <infra/docker/staging/compose.yaml
+          ssh "${ssh_options[@]}" "$target" \
+            "upload-script $GITHUB_RUN_ID $GITHUB_RUN_ATTEMPT" <scripts/deploy-staging.sh
+
+      - name: Deploy exact image and verify
+        id: deploy
+        shell: bash
+        run: |
+          set -euo pipefail
+          ssh \
+            -F none -i "$RUNNER_TEMP/ssh/key" -p "$DEPLOY_PORT" \
+            -o BatchMode=yes -o ConnectTimeout=15 -o GlobalKnownHostsFile=/dev/null \
+            -o IdentitiesOnly=yes -o ProxyCommand=none -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$RUNNER_TEMP/ssh/known_hosts" \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "deploy $GITHUB_RUN_ID $GITHUB_RUN_ATTEMPT $GITHUB_SHA"
+
+      - name: Collect sanitized deployment evidence
+        if: ${{ always() }}
+        shell: bash
+        env:
+          DEPLOY_OUTCOME: ${{ steps.deploy.outcome }}
+        run: |
+          set -euo pipefail
+          install -d -m 0700 "$RUNNER_TEMP/deployment-evidence"
+          if [[ "${DEPLOY_PREPARED:-}" != "true" || ! -s "$RUNNER_TEMP/ssh/key" || \
+                -z "${DEPLOY_HOST:-}" || -z "${DEPLOY_PORT:-}" || -z "${DEPLOY_USER:-}" ]]; then
+            printf 'remote evidence is unavailable because SSH preparation did not complete\n'
+            exit 0
+          fi
+          ssh_options=(
+            -F none -i "$RUNNER_TEMP/ssh/key" -p "$DEPLOY_PORT"
+            -o BatchMode=yes -o ConnectTimeout=15 -o GlobalKnownHostsFile=/dev/null
+            -o IdentitiesOnly=yes -o ProxyCommand=none -o StrictHostKeyChecking=yes
+            -o UserKnownHostsFile="$RUNNER_TEMP/ssh/known_hosts"
+          )
+          target="$DEPLOY_USER@$DEPLOY_HOST"
+          for artifact in deployment-evidence storage-verifier; do
+            temporary="$RUNNER_TEMP/deployment-evidence/${artifact}.tmp"
+            destination="$RUNNER_TEMP/deployment-evidence/${artifact}.json"
+            if ssh "${ssh_options[@]}" "$target" \
+              "fetch $GITHUB_RUN_ID $GITHUB_RUN_ATTEMPT $artifact" >"$temporary"; then
+              mv "$temporary" "$destination"
+            else
+              rm -f "$temporary"
+            fi
+          done
+          if [[ "$DEPLOY_OUTCOME" == "success" ]]; then
+            [[ -s "$RUNNER_TEMP/deployment-evidence/deployment-evidence.json" ]]
+            [[ -s "$RUNNER_TEMP/deployment-evidence/storage-verifier.json" ]]
+          fi
+
+      - name: Upload deployment evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: staging-deployment-evidence
+          path: ${{ runner.temp }}/deployment-evidence
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Remove remote temporary files
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${DEPLOY_PREPARED:-}" == "true" && -s "$RUNNER_TEMP/ssh/key" && \
+                -n "${DEPLOY_HOST:-}" && -n "${DEPLOY_PORT:-}" && -n "${DEPLOY_USER:-}" ]]; then
+            ssh \
+              -F none -i "$RUNNER_TEMP/ssh/key" -p "$DEPLOY_PORT" \
+              -o BatchMode=yes -o ConnectTimeout=15 -o GlobalKnownHostsFile=/dev/null \
+              -o IdentitiesOnly=yes -o ProxyCommand=none -o StrictHostKeyChecking=yes \
+              -o UserKnownHostsFile="$RUNNER_TEMP/ssh/known_hosts" \
+              "$DEPLOY_USER@$DEPLOY_HOST" "cleanup $GITHUB_RUN_ID $GITHUB_RUN_ATTEMPT"
+          fi
