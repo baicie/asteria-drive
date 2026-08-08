@@ -21,6 +21,15 @@ and S3 links. Therefore it cannot satisfy the production OIDC, PITR/WAL, Object 
 TLS, secret-controller, independent review, high availability, or public-ingress
 gates. Do not expose ports `18080`, `18333`, or `19090` publicly.
 
+The pinned container image's `/entrypoint.sh` prepends
+`-master.volumePreallocate`, `-master.volumeSizeLimitMB=1024`, and
+`-volume.max=0` when its `server` command is used. This target explicitly overrides
+those image-level arguments, advertises the stable `seaweedfs` service identity,
+limits each of eight slots to 256 MiB, and marks storage read-only below 5 GiB free
+space. The deployment also checks the root filesystem, Docker data root, and both
+application data volumes before accepting an 85% usage / 5 GiB reserve guard. These
+limits protect the shared staging host; they are not a production capacity plan.
+
 The immutable `v0.1.0` binary uses the internal endpoint `http://seaweedfs:8333` for
 both S3 operations and presigned URLs. The deployment smoke test reaches that exact
 signed host through the loopback mapping with `curl --connect-to`; it does not turn

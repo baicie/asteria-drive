@@ -83,8 +83,13 @@ services:
       - server
       - -dir=/data
       - -master.port=9333
+      - -master.volumePreallocate=false
+      - -master.volumeSizeLimitMB=256
       - -volume.port=8080
+      - -volume.max=8
+      - -volume.minFreeSpace=5GiB
       - -filer.port=8888
+      - -ip=seaweedfs
       - -ip.bind=0.0.0.0
       - -s3
       - -s3.port=8333

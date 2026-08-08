@@ -23,7 +23,7 @@ env:
   RELEASE_TAG: v0.1.0
   RELEASE_COMMIT: 8878d9eaaf88973c522a4f4742ea960acd63d503
   IMAGE: ghcr.io/baicie/asteria-drive@sha256:f5da244cba2055764a8caae7b9e9a752cc8f07356c0d7ae6397a6a7992e0cccc
-  COMPOSE_SHA256: 30ae6bf17e8a146f8de6cadf25e0890ac934d285d05959bb9b6dc01b431bdbf1
+  COMPOSE_SHA256: d7d39a2e965849f364ceb25ab4106efd575f9a6d924e8ebfd9d508a594adc5dc
 
 jobs:
   deploy:
@@ -234,6 +234,8 @@ jobs:
               "claim_boundary": "staging-not-production",
               "exposure": "loopback-bindings-verified",
               "secret_source": "server-managed-docker-volumes",
+              "capacity_max_disk_used_percent": 85,
+              "capacity_min_disk_available_bytes": 5 * 1024 * 1024 * 1024,
           }
           for key, expected in expected_identity.items():
               if deployment.get(key) != expected:
@@ -249,6 +251,8 @@ jobs:
               "storage_verifier_succeeded",
               "binary_version_verified",
               "loopback_bindings_verified",
+              "capacity_guard_verified",
+              "data_volume_filesystems_verified",
           ):
               if deployment.get(key) is not True:
                   raise SystemExit(f"deployment evidence did not prove {key}")
@@ -256,6 +260,32 @@ jobs:
           checked = deployment.get("storage_verifier_checked")
           if deployment.get("migration_schema_after") != 3 or type(checked) is not int or checked < 1:
               raise SystemExit("deployment evidence has invalid schema or verifier counts")
+          for prefix in ("", "docker_"):
+              for suffix in ("before", "after"):
+                  used = deployment.get(f"{prefix}disk_used_percent_{suffix}")
+                  available = deployment.get(f"{prefix}disk_available_bytes_{suffix}")
+                  if type(used) is not int or used < 0 or used > 85:
+                      raise SystemExit(f"deployment evidence exceeded the {prefix}{suffix} disk usage limit")
+                  if type(available) is not int or available < 5 * 1024 * 1024 * 1024:
+                      raise SystemExit(f"deployment evidence missed the {prefix}{suffix} free-space reserve")
+          for prefix in ("postgres_data_", "seaweedfs_data_"):
+              used = deployment.get(f"{prefix}disk_used_percent")
+              available = deployment.get(f"{prefix}disk_available_bytes")
+              if type(used) is not int or used < 0 or used > 85:
+                  raise SystemExit(f"deployment evidence exceeded the {prefix}disk usage limit")
+              if type(available) is not int or available < 5 * 1024 * 1024 * 1024:
+                  raise SystemExit(f"deployment evidence missed the {prefix}free-space reserve")
+          for prefix in ("root_filesystem_", "docker_filesystem_"):
+              before = deployment.get(f"{prefix}before")
+              after = deployment.get(f"{prefix}after")
+              if not isinstance(before, str) or not before or before == "unknown" or before != after:
+                  raise SystemExit(f"deployment evidence has unstable {prefix}identity")
+          docker_filesystem = deployment["docker_filesystem_after"]
+          for key in ("postgres_data_filesystem", "seaweedfs_data_filesystem"):
+              if deployment.get(key) != docker_filesystem:
+                  raise SystemExit(f"deployment evidence has unexpected {key}")
+          if type(deployment.get("docker_data_root_on_root_filesystem")) is not bool:
+              raise SystemExit("deployment evidence has invalid Docker/root filesystem relationship")
           verifier_checked = verifier.get("checked")
           verifier_healthy = verifier.get("healthy")
           if (

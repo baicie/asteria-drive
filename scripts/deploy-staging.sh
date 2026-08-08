@@ -20,8 +20,10 @@ release_tag="v0.1.0"
 source_commit="8878d9eaaf88973c522a4f4742ea960acd63d503"
 expected_image="ghcr.io/baicie/asteria-drive@sha256:f5da244cba2055764a8caae7b9e9a752cc8f07356c0d7ae6397a6a7992e0cccc"
 helper_image="chrislusf/seaweedfs:3.85@sha256:49312939c00c01e5ee6afbd7d728b18027821d3764c35a797a72acd4fdf3296a"
-expected_compose_sha256="30ae6bf17e8a146f8de6cadf25e0890ac934d285d05959bb9b6dc01b431bdbf1"
+expected_compose_sha256="d7d39a2e965849f364ceb25ab4106efd575f9a6d924e8ebfd9d508a594adc5dc"
 tenant_id="11111111-1111-4111-8111-111111111111"
+max_disk_used_percent=85
+min_disk_available_kib=$((5 * 1024 * 1024))
 
 [[ "$run_id" =~ ^[0-9]{1,20}$ ]] || { printf 'run id is invalid\n' >&2; exit 1; }
 [[ "$run_attempt" =~ ^[0-9]{1,6}$ ]] || { printf 'run attempt is invalid\n' >&2; exit 1; }
@@ -39,6 +41,8 @@ metrics_scrape="false"
 storage_verified="false"
 binary_version_verified="false"
 loopback_bindings_verified="false"
+capacity_guard_verified="false"
+data_volume_filesystems_verified="false"
 previous_image="none"
 deployed_image_ref="none"
 deployed_image_id="none"
@@ -53,16 +57,118 @@ memory_used_before="0"
 memory_used_after="0"
 disk_used_before="0"
 disk_used_after="0"
+disk_available_kib_before="0"
+disk_available_kib_after="0"
+root_filesystem_before="unknown"
+root_filesystem_after="unknown"
+docker_filesystem_before="unknown"
+docker_filesystem_after="unknown"
+docker_disk_used_before="0"
+docker_disk_used_after="0"
+docker_disk_available_kib_before="0"
+docker_disk_available_kib_after="0"
+postgres_data_filesystem="unknown"
+postgres_data_disk_used="0"
+postgres_data_disk_available_kib="0"
+seaweedfs_data_filesystem="unknown"
+seaweedfs_data_disk_used="0"
+seaweedfs_data_disk_available_kib="0"
 smoke_dir=""
+captured_filesystem=""
+captured_available_kib=""
+captured_used_percent=""
 
-snapshot() {
-  local prefix="$1" load memory disk
+parse_filesystem_output() {
+  local output="$1" parsed extra
+  parsed="$(printf '%s\n' "$output" | awk '
+    NR == 1 { next }
+    NR == 2 {
+      gsub(/%/, "", $5)
+      if (NF != 6 || $1 == "" || $4 !~ /^[0-9]+$/ || $5 !~ /^[0-9]+$/) exit 1
+      print $1 "\t" $4 "\t" $5
+      rows = 1
+      next
+    }
+    NF > 0 { exit 1 }
+    END { if (rows != 1) exit 1 }
+  ')" || return 1
+  IFS=$'\t' read -r captured_filesystem captured_available_kib captured_used_percent extra <<<"$parsed"
+  [[ -n "$captured_filesystem" && -z "$extra" ]] || return 1
+}
+
+capture_host_filesystem() {
+  local path="$1" output
+  [[ -n "$path" && -d "$path" ]] || return 1
+  output="$(df -Pk -- "$path")" || return 1
+  parse_filesystem_output "$output"
+}
+
+capture_volume_filesystem() {
+  local volume="$1" driver options output
+  [[ "$volume" =~ ^asteria-drive-staging-[a-z0-9-]+$ ]] || return 1
+  driver="$(docker volume inspect --format '{{.Driver}}' "$volume")" || return 1
+  options="$(docker volume inspect --format '{{json .Options}}' "$volume")" || return 1
+  [[ "$driver" == "local" && "$options" == "{}" ]] || return 1
+  output="$(docker run --rm --pull never --network none --read-only \
+    --cap-drop ALL --security-opt no-new-privileges:true --pids-limit 16 \
+    --memory 32m --cpus 0.25 --log-driver none \
+    --volume "$volume:/capacity:ro" --entrypoint /bin/sh "$helper_image" \
+    -c 'df -Pk /capacity')" || return 1
+  parse_filesystem_output "$output"
+}
+
+snapshot_host() {
+  local prefix="$1" load memory
   load="$(awk '{print $1}' /proc/loadavg)"
   memory="$(awk '/MemTotal:/ {t=$2} /MemAvailable:/ {a=$2} END {printf "%.2f", (t-a)*100/t}' /proc/meminfo)"
-  disk="$(df -P / | awk 'NR==2 {gsub(/%/, "", $5); print $5}')"
+  capture_host_filesystem "/" || return 1
   printf -v "load_${prefix}" '%s' "$load"
   printf -v "memory_used_${prefix}" '%s' "$memory"
-  printf -v "disk_used_${prefix}" '%s' "$disk"
+  printf -v "root_filesystem_${prefix}" '%s' "$captured_filesystem"
+  printf -v "disk_used_${prefix}" '%s' "$captured_used_percent"
+  printf -v "disk_available_kib_${prefix}" '%s' "$captured_available_kib"
+}
+
+snapshot_docker() {
+  local prefix="$1"
+  capture_volume_filesystem "asteria-drive-staging-app-secrets" || return 1
+  printf -v "docker_filesystem_${prefix}" '%s' "$captured_filesystem"
+  printf -v "docker_disk_used_${prefix}" '%s' "$captured_used_percent"
+  printf -v "docker_disk_available_kib_${prefix}" '%s' "$captured_available_kib"
+}
+
+verify_capacity() {
+  local label="$1" used_percent="$2" available_kib="$3"
+  if (( used_percent > max_disk_used_percent || available_kib < min_disk_available_kib )); then
+    printf 'staging capacity guard failed: %s is %s%% used with %s KiB available\n' \
+      "$label" "$used_percent" "$available_kib" >&2
+    return 1
+  fi
+}
+
+verify_data_volume_filesystems() {
+  local expected_filesystem="$1" volume project_label
+  for volume in asteria-drive-staging-postgres-data asteria-drive-staging-seaweedfs-data; do
+    project_label="$(docker volume inspect --format '{{ index .Labels "com.docker.compose.project" }}' "$volume")" || return 1
+    [[ "$project_label" == "$project" ]] || return 1
+    capture_volume_filesystem "$volume" || return 1
+    [[ "$captured_filesystem" == "$expected_filesystem" ]] || return 1
+    verify_capacity "$volume" "$captured_used_percent" "$captured_available_kib" || return 1
+    case "$volume" in
+      asteria-drive-staging-postgres-data)
+        postgres_data_filesystem="$captured_filesystem"
+        postgres_data_disk_used="$captured_used_percent"
+        postgres_data_disk_available_kib="$captured_available_kib"
+        ;;
+      asteria-drive-staging-seaweedfs-data)
+        seaweedfs_data_filesystem="$captured_filesystem"
+        seaweedfs_data_disk_used="$captured_used_percent"
+        seaweedfs_data_disk_available_kib="$captured_available_kib"
+        ;;
+      *) return 1 ;;
+    esac
+  done
+  data_volume_filesystems_verified="true"
 }
 
 write_evidence() {
@@ -95,6 +201,8 @@ write_evidence() {
   E_STORAGE_VERIFIED="$storage_verified" \
   E_BINARY_VERSION="$binary_version_verified" \
   E_LOOPBACK="$loopback_bindings_verified" \
+  E_CAPACITY_GUARD="$capacity_guard_verified" \
+  E_DATA_VOLUME_FILESYSTEMS="$data_volume_filesystems_verified" \
   E_VERIFIER_CHECKED="$verifier_checked" \
   E_SCHEMA_BEFORE="$migration_schema_before" \
   E_SCHEMA_AFTER="$migration_schema_after" \
@@ -104,6 +212,24 @@ write_evidence() {
   E_MEMORY_AFTER="$memory_used_after" \
   E_DISK_BEFORE="$disk_used_before" \
   E_DISK_AFTER="$disk_used_after" \
+  E_DISK_AVAILABLE_KIB_BEFORE="$disk_available_kib_before" \
+  E_DISK_AVAILABLE_KIB_AFTER="$disk_available_kib_after" \
+  E_ROOT_FILESYSTEM_BEFORE="$root_filesystem_before" \
+  E_ROOT_FILESYSTEM_AFTER="$root_filesystem_after" \
+  E_DOCKER_FILESYSTEM_BEFORE="$docker_filesystem_before" \
+  E_DOCKER_FILESYSTEM_AFTER="$docker_filesystem_after" \
+  E_DOCKER_DISK_BEFORE="$docker_disk_used_before" \
+  E_DOCKER_DISK_AFTER="$docker_disk_used_after" \
+  E_DOCKER_AVAILABLE_KIB_BEFORE="$docker_disk_available_kib_before" \
+  E_DOCKER_AVAILABLE_KIB_AFTER="$docker_disk_available_kib_after" \
+  E_POSTGRES_DATA_FILESYSTEM="$postgres_data_filesystem" \
+  E_POSTGRES_DATA_DISK_USED="$postgres_data_disk_used" \
+  E_POSTGRES_DATA_AVAILABLE_KIB="$postgres_data_disk_available_kib" \
+  E_SEAWEEDFS_DATA_FILESYSTEM="$seaweedfs_data_filesystem" \
+  E_SEAWEEDFS_DATA_DISK_USED="$seaweedfs_data_disk_used" \
+  E_SEAWEEDFS_DATA_AVAILABLE_KIB="$seaweedfs_data_disk_available_kib" \
+  E_MAX_DISK_USED_PERCENT="$max_disk_used_percent" \
+  E_MIN_DISK_AVAILABLE_KIB="$min_disk_available_kib" \
   python3 - "$tmp_path" <<'PY'
 import json
 import os
@@ -140,6 +266,8 @@ payload = {
     "storage_verifier_succeeded": boolean("E_STORAGE_VERIFIED"),
     "binary_version_verified": boolean("E_BINARY_VERSION"),
     "loopback_bindings_verified": boolean("E_LOOPBACK"),
+    "capacity_guard_verified": boolean("E_CAPACITY_GUARD"),
+    "data_volume_filesystems_verified": boolean("E_DATA_VOLUME_FILESYSTEMS"),
     "storage_verifier_checked": int(os.environ["E_VERIFIER_CHECKED"]),
     "migration_schema_before": int(os.environ["E_SCHEMA_BEFORE"]),
     "migration_schema_after": int(os.environ["E_SCHEMA_AFTER"]),
@@ -149,6 +277,25 @@ payload = {
     "memory_used_percent_after": float(os.environ["E_MEMORY_AFTER"]),
     "disk_used_percent_before": int(os.environ["E_DISK_BEFORE"]),
     "disk_used_percent_after": int(os.environ["E_DISK_AFTER"]),
+    "disk_available_bytes_before": int(os.environ["E_DISK_AVAILABLE_KIB_BEFORE"]) * 1024,
+    "disk_available_bytes_after": int(os.environ["E_DISK_AVAILABLE_KIB_AFTER"]) * 1024,
+    "root_filesystem_before": os.environ["E_ROOT_FILESYSTEM_BEFORE"],
+    "root_filesystem_after": os.environ["E_ROOT_FILESYSTEM_AFTER"],
+    "docker_filesystem_before": os.environ["E_DOCKER_FILESYSTEM_BEFORE"],
+    "docker_filesystem_after": os.environ["E_DOCKER_FILESYSTEM_AFTER"],
+    "docker_data_root_on_root_filesystem": os.environ["E_ROOT_FILESYSTEM_AFTER"] == os.environ["E_DOCKER_FILESYSTEM_AFTER"],
+    "docker_disk_used_percent_before": int(os.environ["E_DOCKER_DISK_BEFORE"]),
+    "docker_disk_used_percent_after": int(os.environ["E_DOCKER_DISK_AFTER"]),
+    "docker_disk_available_bytes_before": int(os.environ["E_DOCKER_AVAILABLE_KIB_BEFORE"]) * 1024,
+    "docker_disk_available_bytes_after": int(os.environ["E_DOCKER_AVAILABLE_KIB_AFTER"]) * 1024,
+    "postgres_data_filesystem": os.environ["E_POSTGRES_DATA_FILESYSTEM"],
+    "postgres_data_disk_used_percent": int(os.environ["E_POSTGRES_DATA_DISK_USED"]),
+    "postgres_data_disk_available_bytes": int(os.environ["E_POSTGRES_DATA_AVAILABLE_KIB"]) * 1024,
+    "seaweedfs_data_filesystem": os.environ["E_SEAWEEDFS_DATA_FILESYSTEM"],
+    "seaweedfs_data_disk_used_percent": int(os.environ["E_SEAWEEDFS_DATA_DISK_USED"]),
+    "seaweedfs_data_disk_available_bytes": int(os.environ["E_SEAWEEDFS_DATA_AVAILABLE_KIB"]) * 1024,
+    "capacity_max_disk_used_percent": int(os.environ["E_MAX_DISK_USED_PERCENT"]),
+    "capacity_min_disk_available_bytes": int(os.environ["E_MIN_DISK_AVAILABLE_KIB"]) * 1024,
     "exposure": "loopback-bindings-verified",
     "secret_source": "server-managed-docker-volumes",
     "claim_boundary": "staging-not-production",
@@ -184,7 +331,22 @@ finish() {
   local code="$?" evidence_code=0
   trap - EXIT
   set +e
-  snapshot after
+  if ! snapshot_host after; then
+    printf 'could not capture final staging host resource snapshot\n' >&2
+    [[ "$code" -ne 0 ]] || phase="snapshot-after"
+    code=1
+  fi
+  if docker image inspect "$helper_image" >/dev/null 2>&1; then
+    if ! snapshot_docker after; then
+      printf 'could not capture final Docker data resource snapshot\n' >&2
+      [[ "$code" -ne 0 ]] || phase="snapshot-docker-after"
+      code=1
+    fi
+  elif [[ "$code" -eq 0 ]]; then
+    printf 'capacity probe image is unavailable for final snapshot\n' >&2
+    code=1
+    phase="snapshot-docker-after"
+  fi
   if ! cleanup_smoke; then
     printf 'could not remove staging smoke files\n' >&2
     code=1
@@ -207,10 +369,8 @@ finish() {
 }
 trap finish EXIT
 
-snapshot before
-
 phase="validate-prerequisites"
-for command in cmp curl docker python3 sha256sum; do
+for command in awk cmp curl df docker python3 sha256sum; do
   command -v "$command" >/dev/null || { printf '%s is required\n' "$command" >&2; exit 1; }
 done
 docker compose version >/dev/null
@@ -220,6 +380,10 @@ for volume in \
   asteria-drive-staging-seaweedfs-secrets; do
   docker volume inspect "$volume" >/dev/null
 done
+
+snapshot_host before
+phase="capacity-preflight"
+verify_capacity "root filesystem" "$disk_used_before" "$disk_available_kib_before"
 
 phase="validate-compose"
 install -d -m 0750 "$deploy_root"
@@ -241,12 +405,22 @@ if [[ -n "$api_id" ]]; then
   previous_image="$(docker inspect --format '{{.Config.Image}}' "$api_id")"
 fi
 
+phase="prepare-capacity-probe"
+docker pull --quiet "$helper_image" >/dev/null
+snapshot_docker before
+verify_capacity "Docker data filesystem" "$docker_disk_used_before" "$docker_disk_available_kib_before"
+
 phase="pull-images"
 docker compose -p "$project" -f "$compose_file" --profile tools pull --quiet
 version_output="$(docker run --rm "$expected_image" --version)"
 grep -Fq "$release_tag" <<<"$version_output"
 grep -Fq "$source_commit" <<<"$version_output"
 binary_version_verified="true"
+
+phase="capacity-prestart"
+capture_volume_filesystem "asteria-drive-staging-app-secrets"
+[[ "$captured_filesystem" == "$docker_filesystem_before" ]]
+verify_capacity "Docker data filesystem" "$captured_used_percent" "$captured_available_kib"
 
 phase="start-dependencies"
 docker compose -p "$project" -f "$compose_file" up -d --wait --wait-timeout 180 postgres seaweedfs
@@ -502,6 +676,14 @@ PY
 )"
 [[ "$verifier_exit" -eq 0 ]] || { printf 'storage verifier exited unsuccessfully\n' >&2; exit 1; }
 storage_verified="true"
+
+phase="capacity-postflight"
+snapshot_host after
+snapshot_docker after
+verify_capacity "root filesystem" "$disk_used_after" "$disk_available_kib_after"
+verify_capacity "Docker data filesystem" "$docker_disk_used_after" "$docker_disk_available_kib_after"
+verify_data_volume_filesystems "$docker_filesystem_after"
+capacity_guard_verified="true"
 
 phase="activate-compose"
 mv -f -- "$compose_file" "$active_compose_file"
