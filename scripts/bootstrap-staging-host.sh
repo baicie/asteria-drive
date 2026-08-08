@@ -7,7 +7,7 @@ public_key_b64="${ASTERIA_DEPLOY_PUBLIC_KEY_B64:-}"
 dispatcher_path="/usr/local/libexec/asteria-staging-dispatch"
 dispatcher_config="/etc/asteria-drive/staging-dispatch.conf"
 expected_compose_sha256="37a5922a4058632813ba893da65e5f975e0142612732d02e75ef7a922f4dfcf6"
-expected_deploy_script_sha256="b5b5e072e344b53db978b42b6af16aa9bf74936001d587c1aa589cbf88e3a8f9"
+expected_deploy_script_sha256="1a588d002c6a0c062720214246246d2bb962aa4e73d7ab4fa7c6527d9042bc60"
 
 if [[ "$(id -u)" -ne 0 ]]; then
   printf 'bootstrap-staging-host.sh must run as root\n' >&2

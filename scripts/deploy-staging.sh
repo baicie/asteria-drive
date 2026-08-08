@@ -66,11 +66,13 @@ snapshot() {
 }
 
 write_evidence() {
-  local completed_at tmp_path
-  completed_at="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+  local completed_at tmp_path evidence_dir
+  completed_at="$(date -u +'%Y-%m-%dT%H:%M:%SZ')" || return 1
   tmp_path="${evidence_path}.tmp"
-  install -d -m 0750 "$(dirname "$evidence_path")"
-  E_STATUS="$status" \
+  evidence_dir="$(dirname "$evidence_path")" || return 1
+  install -d -m 0750 "$evidence_dir" || return 1
+  rm -f -- "$tmp_path" || return 1
+  if ! E_STATUS="$status" \
   E_PHASE="$phase" \
   E_RELEASE_TAG="$release_tag" \
   E_SOURCE_COMMIT="$source_commit" \
@@ -155,8 +157,18 @@ with open(sys.argv[1], "w", encoding="utf-8") as handle:
     json.dump(payload, handle, indent=2, sort_keys=True)
     handle.write("\n")
 PY
-  chmod 0600 "$tmp_path"
-  mv -f -- "$tmp_path" "$evidence_path"
+  then
+    rm -f -- "$tmp_path"
+    return 1
+  fi
+  if ! chmod 0600 "$tmp_path"; then
+    rm -f -- "$tmp_path"
+    return 1
+  fi
+  if ! mv -f -- "$tmp_path" "$evidence_path"; then
+    rm -f -- "$tmp_path"
+    return 1
+  fi
 }
 
 cleanup_smoke() {
