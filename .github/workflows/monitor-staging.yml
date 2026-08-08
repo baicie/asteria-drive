@@ -1,0 +1,145 @@
+name: Monitor staging
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "23 * * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: asteria-drive-staging
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    name: Monitor / staging
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: staging
+    steps:
+      - name: Prepare strict SSH transport
+        shell: bash
+        env:
+          DEPLOY_KEY: ${{ secrets.ASTERIA_STAGING_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.ASTERIA_STAGING_SSH_KNOWN_HOSTS }}
+          DEPLOY_HOST: ${{ secrets.ASTERIA_STAGING_SSH_HOST }}
+          DEPLOY_PORT: ${{ secrets.ASTERIA_STAGING_SSH_PORT }}
+          DEPLOY_USER: ${{ secrets.ASTERIA_STAGING_SSH_USER }}
+        run: |
+          set -euo pipefail
+          for value in DEPLOY_KEY KNOWN_HOSTS DEPLOY_HOST DEPLOY_PORT DEPLOY_USER; do
+            [[ -n "${!value:-}" ]] || { printf '%s is empty\n' "$value" >&2; exit 1; }
+          done
+          [[ "$DEPLOY_HOST" =~ ^[A-Za-z0-9.-]+$ ]] || { printf 'deploy host is invalid\n' >&2; exit 1; }
+          [[ "$DEPLOY_USER" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || { printf 'deploy user is invalid\n' >&2; exit 1; }
+          [[ "$DEPLOY_PORT" =~ ^[0-9]+$ && "$DEPLOY_PORT" -ge 1 && "$DEPLOY_PORT" -le 65535 ]] || {
+            printf 'deploy port is invalid\n' >&2
+            exit 1
+          }
+          install -d -m 0700 "$RUNNER_TEMP/ssh" "$RUNNER_TEMP/staging-monitor-evidence"
+          printf '%s\n' "$DEPLOY_KEY" >"$RUNNER_TEMP/ssh/key"
+          printf '%s\n' "$KNOWN_HOSTS" >"$RUNNER_TEMP/ssh/known_hosts"
+          chmod 0600 "$RUNNER_TEMP/ssh/key" "$RUNNER_TEMP/ssh/known_hosts"
+          ssh-keygen -y -f "$RUNNER_TEMP/ssh/key" >/dev/null
+          host_lookup="$DEPLOY_HOST"
+          if [[ "$DEPLOY_PORT" != "22" ]]; then
+            host_lookup="[$DEPLOY_HOST]:$DEPLOY_PORT"
+          fi
+          ssh-keygen -F "$host_lookup" -f "$RUNNER_TEMP/ssh/known_hosts" |
+            grep -Eq 'ssh-ed25519[[:space:]]' || { printf 'approved ED25519 host key is missing\n' >&2; exit 1; }
+          printf 'DEPLOY_HOST=%s\n' "$DEPLOY_HOST" >>"$GITHUB_ENV"
+          printf 'DEPLOY_PORT=%s\n' "$DEPLOY_PORT" >>"$GITHUB_ENV"
+          printf 'DEPLOY_USER=%s\n' "$DEPLOY_USER" >>"$GITHUB_ENV"
+
+      - name: Probe capacity and health
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/staging-monitor-evidence/monitor-evidence.json"
+          set +e
+          ssh \
+            -F none -i "$RUNNER_TEMP/ssh/key" -p "$DEPLOY_PORT" \
+            -o BatchMode=yes -o ConnectTimeout=15 -o GlobalKnownHostsFile=/dev/null \
+            -o IdentitiesOnly=yes -o ProxyCommand=none -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$RUNNER_TEMP/ssh/known_hosts" \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "status $GITHUB_RUN_ID $GITHUB_RUN_ATTEMPT $GITHUB_SHA" >"$evidence"
+          probe_exit="$?"
+          set -e
+          PROBE_EXIT="$probe_exit" python3 - "$evidence" <<'PY'
+          import json
+          import os
+          import sys
+
+          with open(sys.argv[1], encoding="utf-8") as handle:
+              report = json.load(handle)
+
+          expected_identity = {
+              "schema": "asteria-drive-staging-monitor/v1",
+              "status": "success",
+              "last_phase": "complete",
+              "github_run_id": os.environ["GITHUB_RUN_ID"],
+              "github_run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              "workflow_sha": os.environ["GITHUB_SHA"],
+              "compose_sha256": "d7d39a2e965849f364ceb25ab4106efd575f9a6d924e8ebfd9d508a594adc5dc",
+              "expected_image": "sha256:f5da244cba2055764a8caae7b9e9a752cc8f07356c0d7ae6397a6a7992e0cccc",
+              "claim_boundary": "staging-not-production",
+              "capacity_max_disk_used_percent": 85,
+              "capacity_min_disk_available_bytes": 5 * 1024 * 1024 * 1024,
+          }
+          for key, expected in expected_identity.items():
+              if report.get(key) != expected:
+                  raise SystemExit(f"monitor evidence has unexpected {key}")
+
+          if int(os.environ["PROBE_EXIT"]) != 0:
+              raise SystemExit("remote staging monitor failed")
+          for key in (
+              "compose_verified",
+              "api_container_verified",
+              "postgres_container_verified",
+              "seaweedfs_container_verified",
+              "health_succeeded",
+              "readiness_succeeded",
+              "metrics_scrape_succeeded",
+              "loopback_bindings_verified",
+              "capacity_guard_verified",
+              "data_volume_filesystems_verified",
+          ):
+              if report.get(key) is not True:
+                  raise SystemExit(f"monitor evidence did not prove {key}")
+
+          for prefix in ("", "docker_", "postgres_data_", "seaweedfs_data_"):
+              used = report.get(f"{prefix}disk_used_percent")
+              available = report.get(f"{prefix}disk_available_bytes")
+              if type(used) is not int or used < 0 or used > 85:
+                  raise SystemExit(f"monitor evidence exceeded the {prefix}disk usage limit")
+              if type(available) is not int or available < 5 * 1024 * 1024 * 1024:
+                  raise SystemExit(f"monitor evidence missed the {prefix}free-space reserve")
+
+          root_filesystem = report.get("root_filesystem")
+          docker_filesystem = report.get("docker_filesystem")
+          if not isinstance(root_filesystem, str) or not root_filesystem or root_filesystem == "unknown":
+              raise SystemExit("monitor evidence has no root filesystem identity")
+          if not isinstance(docker_filesystem, str) or not docker_filesystem or docker_filesystem == "unknown":
+              raise SystemExit("monitor evidence has no Docker filesystem identity")
+          for key in ("postgres_data_filesystem", "seaweedfs_data_filesystem"):
+              if report.get(key) != docker_filesystem:
+                  raise SystemExit(f"monitor evidence has unexpected {key}")
+          if type(report.get("docker_data_root_on_root_filesystem")) is not bool:
+              raise SystemExit("monitor evidence has invalid Docker/root filesystem relationship")
+          for key in ("started_at", "completed_at"):
+              if not isinstance(report.get(key), str) or not report[key]:
+                  raise SystemExit(f"monitor evidence has invalid {key}")
+          PY
+
+      - name: Upload monitor evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: staging-monitor-evidence
+          path: ${{ runner.temp }}/staging-monitor-evidence/monitor-evidence.json
+          if-no-files-found: error
+          retention-days: 30

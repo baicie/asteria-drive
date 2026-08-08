@@ -4,10 +4,13 @@ set -Eeuo pipefail
 deploy_user="${ASTERIA_DEPLOY_USER:-asteria-deploy}"
 deploy_root="${ASTERIA_DEPLOY_ROOT:-/opt/asteria-drive/staging}"
 public_key_b64="${ASTERIA_DEPLOY_PUBLIC_KEY_B64:-}"
+monitor_source_b64="${ASTERIA_STAGING_MONITOR_B64:-}"
 dispatcher_path="/usr/local/libexec/asteria-staging-dispatch"
 dispatcher_config="/etc/asteria-drive/staging-dispatch.conf"
+monitor_path="/usr/local/libexec/asteria-staging-monitor"
 expected_compose_sha256="d7d39a2e965849f364ceb25ab4106efd575f9a6d924e8ebfd9d508a594adc5dc"
 expected_deploy_script_sha256="d493441e028f06ca45c72d19f9a1796e6c248be057d42678376d77fc1d508518"
+expected_monitor_script_sha256="8c7e3526c091e0c73b5300f8ec105c027bf9fbee750554f716f15772c6d4e134"
 
 if [[ "$(id -u)" -ne 0 ]]; then
   printf 'bootstrap-staging-host.sh must run as root\n' >&2
@@ -15,6 +18,10 @@ if [[ "$(id -u)" -ne 0 ]]; then
 fi
 if [[ -z "$public_key_b64" ]]; then
   printf 'ASTERIA_DEPLOY_PUBLIC_KEY_B64 is required\n' >&2
+  exit 1
+fi
+if [[ -z "$monitor_source_b64" || ! "$monitor_source_b64" =~ ^[A-Za-z0-9+/=]+$ || "${#monitor_source_b64}" -gt 1048576 ]]; then
+  printf 'ASTERIA_STAGING_MONITOR_B64 is invalid\n' >&2
   exit 1
 fi
 if [[ ! "$deploy_user" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]]; then
@@ -171,10 +178,18 @@ PY
 
 dispatcher_tmp="$(mktemp /tmp/asteria-staging-dispatch.XXXXXXXX)"
 config_tmp="$(mktemp /tmp/asteria-staging-dispatch-config.XXXXXXXX)"
+monitor_tmp="$(mktemp /tmp/asteria-staging-monitor.XXXXXXXX)"
 cleanup_bootstrap() {
-  rm -f -- "$dispatcher_tmp" "$config_tmp"
+  rm -f -- "$dispatcher_tmp" "$config_tmp" "$monitor_tmp"
 }
 trap cleanup_bootstrap EXIT
+
+printf '%s' "$monitor_source_b64" | base64 -d >"$monitor_tmp"
+[[ "$(sha256sum "$monitor_tmp" | awk '{print $1}')" == "$expected_monitor_script_sha256" ]] || {
+  printf 'staging monitor script digest mismatch\n' >&2
+  exit 1
+}
+bash -n "$monitor_tmp"
 
 cat >"$dispatcher_tmp" <<'DISPATCHER'
 #!/usr/bin/env bash
@@ -251,6 +266,17 @@ case "$action" in
       "$run_dir/compose.yaml" "$run_dir/deployment-evidence.json" \
       "$run_id" "$run_attempt" "$workflow_sha"
     ;;
+  status)
+    [[ "${#fields[@]}" -eq 4 ]] || fail
+    validate_run
+    workflow_sha="${fields[3]}"
+    [[ "$workflow_sha" =~ ^[0-9a-f]{40}$ ]] || fail
+    [[ -f "$monitor_path" && ! -L "$monitor_path" ]] || fail
+    [[ "$(stat -c '%u:%g:%a' "$monitor_path")" == "0:0:755" ]] || fail
+    [[ "$(sha256sum "$monitor_path" | awk '{print $1}')" == "$monitor_script_sha256" ]] || fail
+    exec env ASTERIA_DEPLOY_ROOT="$deploy_root" \
+      "$monitor_path" "$run_id" "$run_attempt" "$workflow_sha"
+    ;;
   fetch)
     [[ "${#fields[@]}" -eq 4 ]] || fail
     validate_run
@@ -279,13 +305,16 @@ DISPATCHER
 {
   printf 'compose_sha256=%q\n' "$expected_compose_sha256"
   printf 'deploy_script_sha256=%q\n' "$expected_deploy_script_sha256"
+  printf 'monitor_script_sha256=%q\n' "$expected_monitor_script_sha256"
   printf 'deploy_root=%q\n' "$deploy_root"
+  printf 'monitor_path=%q\n' "$monitor_path"
 } >"$config_tmp"
 
 install -d -m 0755 /usr/local/libexec
 install -d -m 0755 /etc/asteria-drive
-install -m 0755 -o root -g root "$dispatcher_tmp" "$dispatcher_path"
 install -m 0644 -o root -g root "$config_tmp" "$dispatcher_config"
+install -m 0755 -o root -g root "$monitor_tmp" "$monitor_path"
+install -m 0755 -o root -g root "$dispatcher_tmp" "$dispatcher_path"
 install -d -m 0700 -o "$deploy_user" -g "$deploy_group" "$deploy_home/.ssh"
 printf 'restrict,command="%s" %s\n' "$dispatcher_path" "$public_key" >"$deploy_home/.ssh/authorized_keys"
 chown "$deploy_user:$deploy_group" "$deploy_home/.ssh/authorized_keys"

@@ -8,3 +8,4 @@
 /infra/ @baicie
 /scripts/bootstrap-staging-host.sh @baicie
 /scripts/deploy-staging.sh @baicie
+/scripts/monitor-staging.sh @baicie
