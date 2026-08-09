@@ -12,7 +12,7 @@ target environment's immutable evidence.
 | ACL-01 | Tenant-local inherited allow-only ACL | ACL service/repository matrix tests; ADR-0019 | Access review export | Every release and quarterly |
 | AUD-01 | Atomic append-only security audit | transaction tests and database mutation trigger | Export retention and SIEM ingestion | Every release and monthly sample |
 | DAT-01 | Tenant-scoped data access | memory/PostgreSQL acceptance tests | Database role grants | Every release |
-| DAT-02 | Private object storage with no API key disclosure | S3 adapter/API tests and recovery verifier | Bucket policy, versioning, encryption, lifecycle | Every deployment and quarterly |
+| DAT-02 | Private object storage with no API key disclosure | S3 adapter/API tests, split control/public endpoint contract, and recovery verifier | Public endpoint DNS/TLS/CORS test plus bucket policy, versioning, encryption, lifecycle | Every deployment and quarterly |
 | SEC-01 | Sensitive values loaded from files/workload identity | configuration negative tests | Secret-controller and rotation evidence | Every deployment and rotation |
 | NET-01 | Default-deny workload network | Kubernetes NetworkPolicy contract tests | Rendered overlay and CNI enforcement test | Every deployment |
 | RUN-01 | Least-privilege container | Dockerfile and deployment contract tests | Admission-policy result | Every image and deployment |

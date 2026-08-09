@@ -62,7 +62,8 @@ func main() {
 		storage = memory.NewStorage("asteria-memory")
 	case "s3":
 		storage, err = s3store.New(startupCtx, s3store.Options{
-			Endpoint: cfg.S3Endpoint, Region: cfg.S3Region, Bucket: cfg.S3Bucket,
+			Endpoint: cfg.S3Endpoint, PublicEndpoint: cfg.S3PublicEndpoint,
+			Region: cfg.S3Region, Bucket: cfg.S3Bucket,
 			AccessKey: cfg.S3AccessKey, SecretKey: cfg.S3SecretKey, UsePathStyle: cfg.S3PathStyle,
 			AutoCreateBucket: cfg.S3AutoCreate, EnableChecksumHeaders: cfg.S3ChecksumHeaders,
 		})

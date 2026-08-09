@@ -54,6 +54,10 @@ func TestKubernetesDeploymentHardeningContract(t *testing.T) {
 			t.Errorf("Deployment hardening contract is missing %q", required)
 		}
 	}
+	configMap := readContractFile(t, "../../infra/kubernetes/base/config-map.yaml")
+	if !strings.Contains(configMap, "ASTERIA_S3_PUBLIC_ENDPOINT: https://") {
+		t.Error("production ConfigMap must declare an HTTPS client-visible S3 endpoint")
+	}
 }
 
 func TestKubernetesNetworkPolicyDefaultsToDeny(t *testing.T) {

@@ -17,11 +17,12 @@ and short-lived signed URLs. File bytes remain on the S3 data path.
 Trust boundaries are:
 
 1. Internet client to trusted TLS ingress and HTTP API.
-2. API process to OIDC discovery and JWKS endpoints.
-3. API and maintenance processes to PostgreSQL.
-4. API, recovery verifier, and maintenance processes to private S3.
-5. GitHub tag and protected release environment to GitHub Releases and GHCR.
-6. Backup operators and isolated recovery infrastructure to backup media.
+2. Internet client to the client-visible S3 endpoint through a short-lived signed URL.
+3. API process to OIDC discovery and JWKS endpoints.
+4. API and maintenance processes to PostgreSQL.
+5. API, recovery verifier, and maintenance processes to the private S3 control endpoint.
+6. GitHub tag and protected release environment to GitHub Releases and GHCR.
+7. Backup operators and isolated recovery infrastructure to backup media.
 
 ## Threats and controls
 
@@ -31,7 +32,7 @@ Trust boundaries are:
 | TM-02 | Cross-tenant metadata access | Tenant-scoped repository predicates and composite foreign keys; foreign IDs map to not-found; contract tests | A missing tenant predicate in a new query remains a review-sensitive defect |
 | TM-03 | Privilege escalation through membership, group, or ACL mutation | Owner/admin mutation rules, last-owner invariant, tenant-local subjects, inherited allow-only ACL evaluation, atomic audit event | Allow-only ACLs cannot subtract an inherited grant |
 | TM-04 | Invitation theft or replay | 256-bit token, SHA-256 digest at rest, exact issuer/subject binding, expiry, one-way terminal state, single response of raw token | A stolen unexpired token and matching IdP account can be used until revocation |
-| TM-05 | Signed URL, object key, or credential disclosure | Bounded errors and logs, no storage identifiers in API models, secret-file inputs, no high-cardinality identifiers in metrics | Client endpoints and provider access logs necessarily observe signed URLs |
+| TM-05 | Signed URL, object key, credential disclosure, or endpoint confusion | Bounded errors and logs, no storage identifiers in API models, secret-file inputs, separate control/public endpoint signing, production HTTPS validation, no post-sign rewrite | Client endpoints and provider access logs necessarily observe signed URLs; DNS, TLS, CORS, and routing remain platform controls |
 | TM-06 | Namespace corruption or duplicate creation | Tenant mutation lock ordering, database constraints, revisions, idempotency claims with leases | Provider success immediately before process loss can leave a multipart orphan until lifecycle cleanup |
 | TM-07 | Maintenance double execution or destructive cleanup | PostgreSQL row claims with `SKIP LOCKED`, owner tokens, expiring leases, bounded retries, kill switch | Storage operations are not transactional with PostgreSQL and must be idempotent |
 | TM-08 | Audit deletion or silent governance mutation | Governance mutation and event share a transaction; append-only trigger rejects update/delete; bounded NDJSON export | Database superusers and backup administrators remain privileged actors |

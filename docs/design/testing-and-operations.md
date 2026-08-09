@@ -139,7 +139,8 @@ OpenAPI syntax/route coverage check
 | `ASTERIA_DATABASE_URL` | postgres 时必需，日志脱敏 |
 | `ASTERIA_AUTO_MIGRATE` | 开发/验收可开；生产迁移流程单独执行 |
 | `ASTERIA_STORAGE_DRIVER` | `memory` 仅测试；P4 使用 `s3` |
-| `ASTERIA_S3_ENDPOINT/REGION/BUCKET` | s3 时必需；生产要求 HTTPS |
+| `ASTERIA_S3_ENDPOINT/REGION/BUCKET` | s3 时必需；控制端点用于 API、维护任务和校验器，生产要求 HTTPS |
+| `ASTERIA_S3_PUBLIC_ENDPOINT` | 预签名 URL 的客户端可见端点，默认等于控制端点；生产要求 HTTPS |
 | `ASTERIA_S3_ACCESS_KEY_ID/SECRET_ACCESS_KEY` | Secret；优先短期工作负载凭据 |
 | `ASTERIA_S3_PATH_STYLE` | SeaweedFS 本地环境为 true |
 | `ASTERIA_S3_CHECKSUM_HEADERS` | 默认 false；只有真实契约验证支持 checksum request headers 的后端才启用 |
@@ -158,6 +159,11 @@ Secret 不进入仓库、镜像、命令参数、日志、Trace、Metrics 或错
 - 关闭时先停止接收请求，再取消维护循环，限时等待在途控制请求，最后关闭连接池。已签数据面 URL 不依赖 API 存活。
 
 HTTP server 必须配置 Header/Read/Write/Idle 超时、最大 Header 和有界 JSON Body。请求 ID 在入口产生或验证后传递；日志使用路由模板而非原始含签名 Query 的 URL。
+
+S3 控制调用和客户端数据传输可以使用不同 DNS 名称。`ASTERIA_S3_ENDPOINT`
+只供服务进程访问，`ASTERIA_S3_PUBLIC_ENDPOINT` 只决定预签名请求的 scheme、host
+和 canonical request。签名后不得改写 host 或 path；公网网关必须把同一 bucket/key
+路由到控制端点对应的存储，并在真实客户端上验证上传、下载、Range、CORS 和过期行为。
 
 ## 6. 本地集成环境
 

@@ -96,6 +96,25 @@ func TestLoadValidProductionOIDCConfiguration(t *testing.T) {
 	if err != nil || configuration.Environment != "production" || configuration.AuthMode != "oidc" {
 		t.Fatalf("valid production OIDC configuration rejected: config=%+v err=%v", configuration, err)
 	}
+	if configuration.S3PublicEndpoint != configuration.S3Endpoint {
+		t.Fatalf("default public S3 endpoint = %q, want control endpoint %q", configuration.S3PublicEndpoint, configuration.S3Endpoint)
+	}
+}
+
+func TestLoadSeparateS3PublicEndpoint(t *testing.T) {
+	configuration, err := load(mapLookup(map[string]string{
+		"ASTERIA_TRUSTED_TOKENS_JSON": validTokens,
+		"ASTERIA_CURSOR_HMAC_KEY":     "test-cursor-hmac-key-at-least-32-bytes",
+		"ASTERIA_STORAGE_DRIVER":      "s3",
+		"ASTERIA_S3_ENDPOINT":         "http://s3.internal:8333",
+		"ASTERIA_S3_PUBLIC_ENDPOINT":  "https://objects.example.test",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if configuration.S3Endpoint != "http://s3.internal:8333" || configuration.S3PublicEndpoint != "https://objects.example.test" {
+		t.Fatalf("unexpected S3 endpoints: control=%q public=%q", configuration.S3Endpoint, configuration.S3PublicEndpoint)
+	}
 }
 
 func TestLoadReadsSecretFilesAndRejectsAmbiguousSources(t *testing.T) {
@@ -147,6 +166,8 @@ func TestProductionRejectsWeakOrInlineSecretConfiguration(t *testing.T) {
 		{name: "inline cursor key", values: map[string]string{"ASTERIA_CURSOR_HMAC_KEY_FILE": "", "ASTERIA_CURSOR_HMAC_KEY": "test-cursor-hmac-key-at-least-32-bytes"}, message: "HMAC key"},
 		{name: "automatic migration", values: map[string]string{"ASTERIA_AUTO_MIGRATE": "true"}, message: "must be false"},
 		{name: "automatic bucket creation", values: map[string]string{"ASTERIA_S3_AUTO_CREATE_BUCKET": "true"}, message: "must be false"},
+		{name: "non-TLS S3 control endpoint", values: map[string]string{"ASTERIA_S3_ENDPOINT": "http://s3.internal", "ASTERIA_S3_PUBLIC_ENDPOINT": "https://objects.example.test"}, message: "S3_ENDPOINT must use HTTPS"},
+		{name: "non-TLS public S3 endpoint", values: map[string]string{"ASTERIA_S3_PUBLIC_ENDPOINT": "http://objects.example.test"}, message: "S3_PUBLIC_ENDPOINT must use HTTPS"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -180,6 +201,7 @@ func TestLoadRejectsUnsafeOrIncompleteConfiguration(t *testing.T) {
 		{name: "short trusted token", values: map[string]string{"ASTERIA_TRUSTED_TOKENS_JSON": `{"short":{"tenant_id":"11111111-1111-4111-8111-111111111111","principal_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}}`}, message: "32-byte token"},
 		{name: "postgres without URL", values: map[string]string{"ASTERIA_METADATA_DRIVER": "postgres"}, message: "DATABASE_URL"},
 		{name: "S3 without endpoint", values: map[string]string{"ASTERIA_STORAGE_DRIVER": "s3"}, message: "endpoint"},
+		{name: "S3 public endpoint with credentials", values: map[string]string{"ASTERIA_STORAGE_DRIVER": "s3", "ASTERIA_S3_ENDPOINT": "http://127.0.0.1:8333", "ASTERIA_S3_PUBLIC_ENDPOINT": "http://user:password@objects.example.test"}, message: "without credentials"},
 		{name: "negative HTTP timeout", values: map[string]string{"ASTERIA_READ_TIMEOUT": "-1s"}, message: "must be positive"},
 		{name: "long signing TTL", values: map[string]string{"ASTERIA_UPLOAD_SIGN_TTL": "2h"}, message: "TTL"},
 		{name: "unknown auth mode", values: map[string]string{"ASTERIA_AUTH_MODE": "basic"}, message: "trusted-dev or oidc"},
