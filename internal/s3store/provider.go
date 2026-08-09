@@ -20,6 +20,7 @@ import (
 
 type Options struct {
 	Endpoint              string
+	PublicEndpoint        string
 	Region                string
 	Bucket                string
 	AccessKey             string
@@ -59,14 +60,18 @@ func New(ctx context.Context, options Options) (*Provider, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load S3 configuration: %w", err)
 	}
-	client := s3.NewFromConfig(configuration, func(s3Options *s3.Options) {
-		if options.Endpoint != "" {
-			s3Options.BaseEndpoint = aws.String(strings.TrimRight(options.Endpoint, "/"))
-		}
-		s3Options.UsePathStyle = options.UsePathStyle
-	})
+	endpoint := strings.TrimRight(options.Endpoint, "/")
+	publicEndpoint := strings.TrimRight(options.PublicEndpoint, "/")
+	if publicEndpoint == "" {
+		publicEndpoint = endpoint
+	}
+	client := newClient(configuration, endpoint, options.UsePathStyle)
+	presignClient := client
+	if publicEndpoint != endpoint {
+		presignClient = newClient(configuration, publicEndpoint, options.UsePathStyle)
+	}
 	provider := &Provider{
-		client: client, presigner: s3.NewPresignClient(client), bucket: options.Bucket,
+		client: client, presigner: s3.NewPresignClient(presignClient), bucket: options.Bucket,
 		checksumHeaders: options.Endpoint == "" || options.EnableChecksumHeaders,
 	}
 	if options.AutoCreateBucket {
@@ -75,6 +80,15 @@ func New(ctx context.Context, options Options) (*Provider, error) {
 		}
 	}
 	return provider, nil
+}
+
+func newClient(configuration aws.Config, endpoint string, usePathStyle bool) *s3.Client {
+	return s3.NewFromConfig(configuration, func(s3Options *s3.Options) {
+		if endpoint != "" {
+			s3Options.BaseEndpoint = aws.String(endpoint)
+		}
+		s3Options.UsePathStyle = usePathStyle
+	})
 }
 
 func (p *Provider) Bucket() string { return p.bucket }

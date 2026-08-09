@@ -109,7 +109,8 @@ $tenant.data
 | `ASTERIA_DATABASE_URL` | 无 | PostgreSQL DSN；使用 `postgres` 时必填 |
 | `ASTERIA_AUTO_MIGRATE` | `false` | 服务启动时自动前进迁移；正式部署建议使用独立迁移步骤 |
 | `ASTERIA_STORAGE_DRIVER` | `memory` | `memory` 或 `s3` |
-| `ASTERIA_S3_ENDPOINT` | 无 | S3-compatible endpoint；使用 `s3` 时必填 |
+| `ASTERIA_S3_ENDPOINT` | 无 | API、维护和校验器使用的 S3 控制端点；使用 `s3` 时必填 |
+| `ASTERIA_S3_PUBLIC_ENDPOINT` | `ASTERIA_S3_ENDPOINT` | 只用于生成客户端直传/下载 URL；production 必须为客户端可达的 HTTPS 端点 |
 | `ASTERIA_S3_REGION` | `us-east-1` | S3 region |
 | `ASTERIA_S3_BUCKET` | `asteria-drive` | 私有对象 Bucket |
 | `ASTERIA_S3_ACCESS_KEY_ID` | 无 | S3 Access Key，通过 Secret 注入 |

@@ -714,3 +714,26 @@ production PITR/WAL, object versioning/Object Lock, accepted production RPO/RTO,
 public TLS and HTTPS OIDC lifecycle, `verify-full`, KMS-backed rotation,
 production monitoring/SIEM and alerts, host-level HA, external presign routing,
 capacity planning, and independent security/platform approval remain open.
+
+## 2026-08-09 - S3 control/public endpoint separation
+
+The S3 adapter now accepts a distinct client-visible presign endpoint while
+retaining the existing endpoint for API control calls, readiness, maintenance, and
+recovery verification. `ASTERIA_S3_PUBLIC_ENDPOINT` defaults to
+`ASTERIA_S3_ENDPOINT`, so existing single-endpoint deployments remain compatible.
+When the values differ, upload-part and download URLs are signed directly against
+the public scheme and host; the application does not rewrite a signed URL and does
+not contact the public endpoint during presigning.
+
+Production validation requires both endpoints to be HTTPS URLs without embedded
+credentials, query strings, or fragments. The Kubernetes base exposes separate
+placeholders, ADR-0023 records the routing and Signature V4 invariants, and the
+deployment runbook requires external DNS/TLS, CORS, signed-host preservation, and
+real client transfer evidence. Unit coverage proves that readiness reaches only the
+private control endpoint while both upload and download signatures carry the public
+host and a Signature V4 value.
+
+This closes the repository capability gap only. No user-owned public hostname or
+certificate has been supplied, and `v0.1.0` predates this change. A later immutable
+release plus target-platform evidence is required before the external-presign or
+public-production gates can be marked complete.

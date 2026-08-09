@@ -43,6 +43,7 @@ type Config struct {
 	AutoMigrate           bool
 	StorageDriver         string
 	S3Endpoint            string
+	S3PublicEndpoint      string
 	S3Region              string
 	S3Bucket              string
 	S3AccessKey           string
@@ -126,13 +127,15 @@ func load(lookup func(string) (string, bool)) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	s3Endpoint := get("ASTERIA_S3_ENDPOINT", "")
 	cfg := Config{
 		Environment: get("ASTERIA_ENV", "development"), Address: get("ASTERIA_SERVER_ADDRESS", "127.0.0.1:8080"),
 		MetricsAddress: get("ASTERIA_METRICS_ADDRESS", "127.0.0.1:9090"),
 		AuthMode:       get("ASTERIA_AUTH_MODE", "trusted-dev"), MetadataDriver: get("ASTERIA_METADATA_DRIVER", "memory"),
 		DatabaseURL: databaseURL, DatabaseURLFromFile: databaseURLFromFile,
-		StorageDriver: get("ASTERIA_STORAGE_DRIVER", "memory"),
-		S3Endpoint:    get("ASTERIA_S3_ENDPOINT", ""), S3Region: get("ASTERIA_S3_REGION", "us-east-1"),
+		StorageDriver:    get("ASTERIA_STORAGE_DRIVER", "memory"),
+		S3Endpoint:       s3Endpoint,
+		S3PublicEndpoint: get("ASTERIA_S3_PUBLIC_ENDPOINT", s3Endpoint), S3Region: get("ASTERIA_S3_REGION", "us-east-1"),
 		S3Bucket: get("ASTERIA_S3_BUCKET", "asteria-drive"), S3AccessKey: s3AccessKey,
 		S3AccessKeyFromFile: s3AccessKeyFromFile, S3SecretKey: s3SecretKey,
 		S3SecretKeyFromFile: s3SecretKeyFromFile, CursorKey: []byte(cursorKey),
@@ -270,14 +273,23 @@ func (c Config) Validate() error {
 	if c.StorageDriver != "memory" && c.StorageDriver != "s3" {
 		return fmt.Errorf("ASTERIA_STORAGE_DRIVER must be memory or s3")
 	}
-	if c.StorageDriver == "s3" && (c.S3Endpoint == "" || c.S3Region == "" || c.S3Bucket == "") {
-		return fmt.Errorf("S3 endpoint, region and bucket are required for s3")
+	if c.StorageDriver == "s3" && (c.S3Endpoint == "" || c.S3PublicEndpoint == "" || c.S3Region == "" || c.S3Bucket == "") {
+		return fmt.Errorf("S3 endpoint, public endpoint, region and bucket are required for s3")
+	}
+	if c.StorageDriver == "s3" {
+		for _, endpoint := range []struct {
+			name  string
+			value string
+		}{
+			{name: "ASTERIA_S3_ENDPOINT", value: c.S3Endpoint},
+			{name: "ASTERIA_S3_PUBLIC_ENDPOINT", value: c.S3PublicEndpoint},
+		} {
+			if err := validateS3Endpoint(endpoint.name, endpoint.value, c.Environment == "production"); err != nil {
+				return err
+			}
+		}
 	}
 	if c.Environment == "production" && c.StorageDriver == "s3" {
-		endpoint, err := url.Parse(c.S3Endpoint)
-		if err != nil || endpoint.Host == "" || endpoint.Scheme != "https" || endpoint.User != nil {
-			return fmt.Errorf("production S3 endpoint must use HTTPS without credentials")
-		}
 		if c.S3AccessKey != "" && (!c.S3AccessKeyFromFile || !c.S3SecretKeyFromFile) {
 			return fmt.Errorf("production static S3 credentials must use *_FILE inputs")
 		}
@@ -314,6 +326,17 @@ func parseIssuerURL(value string) (*url.URL, error) {
 		return nil, fmt.Errorf("ASTERIA_OIDC_ISSUER must be an HTTP(S) URL without credentials, query, or fragment")
 	}
 	return parsed, nil
+}
+
+func validateS3Endpoint(name, value string, production bool) error {
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return fmt.Errorf("%s must be an HTTP(S) URL without credentials, query, or fragment", name)
+	}
+	if production && parsed.Scheme != "https" {
+		return fmt.Errorf("production %s must use HTTPS", name)
+	}
+	return nil
 }
 
 func validateDatabaseURL(value string, production, fromFile bool) error {

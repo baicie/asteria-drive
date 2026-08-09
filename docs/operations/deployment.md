@@ -4,9 +4,9 @@
 
 The checked-in Kubernetes manifests are a hardened base, not a complete cloud
 environment. A production overlay must replace the zero image digest, OIDC issuer,
-initial owner, tenant IDs, S3 endpoint/bucket, ingress namespace labels, and network
-CIDRs. PostgreSQL, S3, OIDC, TLS termination, DNS, KMS, and workload-identity
-resources are owned by the target platform.
+initial owner, tenant IDs, S3 control/public endpoints and bucket, ingress namespace
+labels, and network CIDRs. PostgreSQL, S3, OIDC, TLS termination, DNS, KMS, and
+workload-identity resources are owned by the target platform.
 
 The server refuses production startup unless authentication is OIDC, metadata is
 PostgreSQL, storage is S3, database TLS uses `sslmode=verify-full`, the cursor key is
@@ -97,6 +97,23 @@ private bucket prefix and may not administer buckets or IAM.
 Rotate secrets by introducing the new credential, rolling instances until readiness
 passes, then revoking the old credential. Cursor-key rotation invalidates existing
 pagination cursors and must be announced as a control-plane compatibility event.
+
+## S3 control and client endpoints
+
+`ASTERIA_S3_ENDPOINT` is the private control endpoint used by the API, maintenance
+worker, and recovery verifier. `ASTERIA_S3_PUBLIC_ENDPOINT` is used only when
+signing client upload and download requests; it defaults to the control endpoint for
+single-endpoint installations. Both must be HTTPS in production and must not contain
+credentials, a query, or a fragment.
+
+The two names must route to the same bucket and object namespace with identical
+signing credentials, region, and path-style behavior. Do not rewrite a URL after it
+has been signed: the scheme, host, path, signed headers, and query are part of the
+AWS canonical request. A production overlay must prove the public endpoint's DNS and
+certificate chain, preserve the signed `Host`, enforce CORS, and complete a real
+external multipart upload and download before claiming that this platform gate is
+closed. Readiness continues to check the private control endpoint and does not prove
+client reachability.
 
 ## Rollout
 
