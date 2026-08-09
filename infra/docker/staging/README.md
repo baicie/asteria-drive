@@ -49,3 +49,38 @@ boundary, and retains sanitized capacity, image, container-health, endpoint, met
 and loopback-binding evidence for 30 days. A threshold or probe failure makes the
 Actions run fail. This is a staging failure signal, not a production monitoring,
 SIEM, paging, or capacity-planning system.
+
+## Staging recovery drill
+
+The `Drill staging recovery` workflow runs weekly and can be started manually from
+protected `main`. It uses the `staging` environment and the same
+`asteria-drive-staging` concurrency group, so it cannot overlap deployment or
+monitoring. The forced-command dispatcher accepts only
+`recovery <run-id> <attempt> <workflow-sha> <recovery-script-sha256>` for this
+workflow. The recovery script is installed during host bootstrap, and the dispatcher
+requires the requested digest to equal its host-side pin before checking root
+ownership, mode, and file SHA-256; no application secret is sent to GitHub Actions.
+
+The drill takes a read-only logical `pg_dump` of the active metadata database and
+restores it into a run-labelled PostgreSQL volume on a temporary `--internal`
+Docker network. It starts a digest-pinned recovered API without publishing any
+ports, checks schema and table counts, runs the storage verifier, probes health,
+readiness, metrics, and one authenticated read, then removes only the containers,
+network, volume, and temporary files carrying the current run labels. Existing
+`postgres-data`, `seaweedfs-data`, and secret volumes are not targets for cleanup.
+
+The uploaded `staging-recovery-evidence` artifact is retained for 90 days and
+contains one sanitized JSON report (plus, when needed, a SHA-256 file for discarded
+remote stderr) with schema `asteria-drive-staging-recovery/v1`. Its identity includes
+the GitHub run/attempt, workflow SHA, pinned Compose and image digests, and
+`claim_boundary=staging-recovery-not-production`. It records backup catalog and
+source-stability checks, restore/schema/table/row comparisons, archive size and
+SHA-256, verifier checked/healthy/finding counts, recovered API checks, cleanup,
+timing, and capacity thresholds. A successful report requires
+`status=success`, `last_phase=complete`, every positive check field to be `true`,
+and both `object_versions_restored=false` and `pitr_wal_replayed=false`.
+
+This drill proves only a staging logical metadata restore and a read-only check
+against the existing object store. It does not prove PostgreSQL PITR/WAL replay,
+object versioning or Object Lock, encrypted production backups, production RPO/RTO,
+public TLS ingress, or production monitoring and approval.

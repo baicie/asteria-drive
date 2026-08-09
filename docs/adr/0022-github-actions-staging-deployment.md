@@ -30,6 +30,11 @@ Provide a manual, protected `staging` GitHub Actions deployment with these rules
 - run the forward-only migration from a candidate Compose file before activating it,
   then verify binary identity, loopback bindings, health, readiness, authenticated
   upload/download bytes, metrics, and non-empty storage integrity;
+- install digest-pinned, root-owned monitor and recovery scripts that the dispatcher
+  can invoke only with validated GitHub run identities; serialize their scheduled
+  and manual workflows with deployment;
+- keep recovery drills on a run-labelled internal network, restore only logical
+  PostgreSQL metadata into temporary resources, verify read paths, and prove cleanup;
 - archive only secret-free deployment evidence.
 
 The staging topology intentionally uses trusted development authentication and
@@ -46,9 +51,15 @@ node high availability, or two-person approval.
 The deployment account belongs to the Docker group, so local execution as that
 account remains root-equivalent. The SSH key cannot invoke arbitrary commands: a
 root-owned forced-command dispatcher permits only hash-pinned upload, deployment,
-sanitized evidence fetch, and cleanup operations. The key disables forwarding and
-PTY features, lives only in the GitHub `staging` environment, and must be rotated if
-the environment, dispatcher allowlist, or host ownership changes.
+sanitized evidence fetch and cleanup, plus digest-pinned monitor and isolated
+logical-recovery operations. The key disables forwarding and PTY features, lives
+only in the GitHub `staging` environment, and must be rotated if the environment,
+dispatcher allowlist, or host ownership changes.
+
+Recovery evidence carries `staging-recovery-not-production` and explicitly records
+that object versions were not restored and PITR/WAL was not replayed. It validates
+the repository procedure against the existing staging object store; it does not
+change the production recovery, immutability, RPO/RTO, or approval requirements.
 
 The released binary signs URLs with its internal `seaweedfs:8333` endpoint. The
 deployment verifier connects that signed host to loopback port `18333` without

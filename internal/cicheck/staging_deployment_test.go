@@ -418,6 +418,151 @@ func TestStagingMonitorWorkflowAndScriptTrustBoundary(t *testing.T) {
 	}
 }
 
+func TestStagingRecoveryWorkflowAndScriptTrustBoundary(t *testing.T) {
+	t.Parallel()
+
+	workflowContents, err := os.ReadFile("../../.github/workflows/drill-staging-recovery.yml")
+	if err != nil {
+		t.Fatalf("read staging recovery workflow: %v", err)
+	}
+	workflowText := string(workflowContents)
+	for _, forbidden := range []string{
+		"pull_request_target", "ssh-keyscan", "ssh_password", "scp ",
+		"ASTERIA_DATABASE_URL", "ASTERIA_CURSOR_HMAC_KEY", "ASTERIA_S3_SECRET_ACCESS_KEY",
+	} {
+		if strings.Contains(strings.ToLower(workflowText), strings.ToLower(forbidden)) {
+			t.Errorf("staging recovery workflow contains forbidden value %q", forbidden)
+		}
+	}
+	for _, required := range []string{
+		"17 4 * * 1",
+		"github.ref == 'refs/heads/main'",
+		checkoutAction,
+		"persist-credentials: false",
+		"sha256sum --check --strict",
+		"bash -n scripts/recover-staging.sh",
+		"StrictHostKeyChecking=yes",
+		"UserKnownHostsFile=",
+		"recovery $GITHUB_RUN_ID $GITHUB_RUN_ATTEMPT $GITHUB_SHA $RECOVERY_SCRIPT_SHA256",
+		"asteria-drive-staging-recovery/v1",
+		"staging-recovery-not-production",
+		"object_versions_restored",
+		"pitr_wal_replayed",
+		"recovery evidence fields mismatch",
+		"remote-stderr.sha256",
+		"rm -f -- \"$remote_stderr\"",
+		"staging-recovery-evidence",
+		"if-no-files-found: error",
+	} {
+		if !strings.Contains(workflowText, required) {
+			t.Errorf("staging recovery workflow is missing %q", required)
+		}
+	}
+	if count := strings.Count(workflowText, "secrets.ASTERIA_STAGING_SSH_"); count != 5 {
+		t.Errorf("recovery workflow references %d staging SSH secrets, want exactly five", count)
+	}
+
+	var workflow workflowDocument
+	if err := yaml.Unmarshal(workflowContents, &workflow); err != nil {
+		t.Fatalf("parse staging recovery workflow: %v", err)
+	}
+	if workflow.Name != "Drill staging recovery" {
+		t.Errorf("workflow name = %q, want Drill staging recovery", workflow.Name)
+	}
+	for _, event := range []string{"workflow_dispatch", "schedule"} {
+		if _, ok := workflow.On[event]; !ok {
+			t.Errorf("staging recovery trigger %q is missing", event)
+		}
+	}
+	if len(workflow.On) != 2 {
+		t.Errorf("staging recovery triggers = %#v, want workflow_dispatch and schedule", workflow.On)
+	}
+	if !reflect.DeepEqual(workflow.Permissions, map[string]string{"contents": "read"}) {
+		t.Errorf("staging recovery permissions = %#v", workflow.Permissions)
+	}
+	if workflow.Concurrency.Group != "asteria-drive-staging" || workflow.Concurrency.CancelInProgress != "false" {
+		t.Errorf("unexpected staging recovery concurrency: %#v", workflow.Concurrency)
+	}
+	if len(workflow.Jobs) != 1 {
+		t.Fatalf("staging recovery has %d jobs, want one", len(workflow.Jobs))
+	}
+	job := workflow.Jobs["recovery"]
+	if job.Name != "Recovery drill / staging" || job.RunsOn != "ubuntu-24.04" || job.Environment != "staging" || job.TimeoutMinutes != 30 {
+		t.Errorf("unexpected staging recovery job contract: %#v", job)
+	}
+	for _, step := range job.Steps {
+		if step.Uses != "" && !pinnedAction.MatchString(step.Uses) {
+			t.Errorf("staging recovery uses mutable Action reference %q", step.Uses)
+		}
+	}
+
+	recovery, err := os.ReadFile("../../scripts/recover-staging.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	recoveryText := string(recovery)
+	for _, required := range []string{
+		"set -Eeuo pipefail",
+		"max_archive_bytes=$((512 * 1024 * 1024))",
+		"head -c \"$((max_archive_bytes + 1))\"",
+		"pg_dump --username asteria --dbname asteria --format=custom",
+		"pg_restore --list",
+		"--exit-on-error --single-transaction",
+		"docker network create --internal",
+		"resource_labels_match volume \"$target_volume\"",
+		"--mount \"type=volume,source=$volume,target=/capacity,readonly\"",
+		"verify_source_ids",
+		"verify_capacity_scope",
+		"verify_volume_capacity \"$target_volume\"",
+		"restore_capacity_failed=\"true\"",
+		"ASTERIA_MAINTENANCE_ENABLED=false",
+		"recovered_authenticated_read_succeeded=\"true\"",
+		"resource_absent container \"$capacity_container\"",
+		"cleanup_resources || code=1",
+		"cleanup_verified=\"true\"",
+		"object_versions_restored=\"false\"",
+		"pitr_wal_replayed=\"false\"",
+		"staging-recovery-not-production",
+	} {
+		if !strings.Contains(recoveryText, required) {
+			t.Errorf("staging recovery script is missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{
+		"set -x", "--publish", "--volume", "ssh-keyscan",
+		`if [[ "$cleanup_verified" != "true" ]]`,
+	} {
+		if strings.Contains(recoveryText, forbidden) {
+			t.Errorf("staging recovery script contains forbidden value %q", forbidden)
+		}
+	}
+
+	recoveryDigest := fmt.Sprintf("%x", sha256.Sum256(recovery))
+	if workflow.Env["RECOVERY_SCRIPT_SHA256"] != recoveryDigest {
+		t.Errorf("recovery workflow digest = %q, want %s", workflow.Env["RECOVERY_SCRIPT_SHA256"], recoveryDigest)
+	}
+	bootstrap, err := os.ReadFile("../../scripts/bootstrap-staging-host.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bootstrapText := string(bootstrap)
+	for _, required := range []string{
+		"ASTERIA_STAGING_RECOVERY_B64",
+		"recovery_script_sha256",
+		"recovery)",
+		`[[ "$requested_recovery_sha" == "$recovery_script_sha256" ]]`,
+		"install -d -m 0755 -o root -g root /usr/local/libexec",
+		`[[ "$(stat -c '%u:%g:%a' "$directory")" == "0:0:755" ]]`,
+		`[[ "$(stat -c '%u:%g:%a' "$recovery_path")" == "0:0:755" ]]`,
+		`[[ "$(sha256sum "$recovery_path" | awk '{print $1}')" == "$recovery_script_sha256" ]]`,
+		recoveryDigest,
+	} {
+		if !strings.Contains(bootstrapText, required) {
+			t.Errorf("staging bootstrap recovery contract is missing %q", required)
+		}
+	}
+}
+
 func TestStagingDeploymentFilesUseStableLineEndings(t *testing.T) {
 	t.Parallel()
 
@@ -428,11 +573,13 @@ func TestStagingDeploymentFilesUseStableLineEndings(t *testing.T) {
 	text := string(attributes)
 	for _, required := range []string{
 		"/.github/workflows/deploy-staging.yml text eol=lf",
+		"/.github/workflows/drill-staging-recovery.yml text eol=lf",
 		"/.github/workflows/monitor-staging.yml text eol=lf",
 		"/infra/docker/staging/compose.yaml text eol=lf",
 		"/scripts/bootstrap-staging-host.sh text eol=lf",
 		"/scripts/deploy-staging.sh text eol=lf",
 		"/scripts/monitor-staging.sh text eol=lf",
+		"/scripts/recover-staging.sh text eol=lf",
 	} {
 		if !strings.Contains(text, required) {
 			t.Errorf(".gitattributes is missing %q", required)
