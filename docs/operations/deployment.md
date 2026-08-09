@@ -38,6 +38,30 @@ metrics, and the 85%/5 GiB capacity thresholds, then retains sanitized JSON for 
 days. A failed workflow is a staging signal only; production still requires
 platform-owned monitoring, alert routing, SIEM retention, and capacity planning.
 
+The weekly `Drill staging recovery` workflow uses the same protected `main` ref,
+`staging` environment, strict host-key boundary, and `asteria-drive-staging`
+concurrency group. It can also be started with `workflow_dispatch`. The workflow
+invokes only the forced
+`recovery <run-id> <attempt> <workflow-sha> <recovery-script-sha256>` operation.
+The host requires that requested digest to match its dispatcher pin, then performs a
+file ownership/mode and SHA-256 check on the root-owned script installed during
+bootstrap, performs a read-only logical PostgreSQL backup, restores it into
+run-labelled temporary resources on an internal Docker network, verifies the
+restored metadata and application read paths, and removes those resources before
+returning. It does not publish a port or modify the active staging volumes.
+
+The workflow accepts a run only when the sanitized JSON uses schema
+`asteria-drive-staging-recovery/v1`, has `status=success` and
+`last_phase=complete`, matches the pinned Compose/image and GitHub run identities,
+and carries `claim_boundary=staging-recovery-not-production`. The artifact is named
+`staging-recovery-evidence` and is retained for 90 days; it contains the archive
+digest, schema/table/row comparisons, storage-verifier counts,
+health/readiness/authenticated-read/metrics results, cleanup proof, timing, and
+capacity measurements. The report must retain
+`object_versions_restored=false` and `pitr_wal_replayed=false`. This proves a
+staging logical-restore path only; it is not evidence of encrypted PITR/WAL,
+object-version recovery, production RPO/RTO, or public-service readiness.
+
 ## Image
 
 Build from an immutable source commit and record the resulting multi-architecture

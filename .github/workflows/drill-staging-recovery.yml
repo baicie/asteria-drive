@@ -1,0 +1,255 @@
+name: Drill staging recovery
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 4 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: asteria-drive-staging
+  cancel-in-progress: false
+
+env:
+  RECOVERY_SCRIPT_SHA256: 0e03a8e03ee2a98c277818e172822a401614f778f58f8c3e85130a83467402a6
+
+jobs:
+  recovery:
+    name: Recovery drill / staging
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: staging
+    steps:
+      - name: Check out protected main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Verify reviewed recovery script
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ -f scripts/recover-staging.sh && ! -L scripts/recover-staging.sh ]] || {
+            printf 'recovery script is missing or symlinked\n' >&2
+            exit 1
+          }
+          printf '%s  scripts/recover-staging.sh\n' "$RECOVERY_SCRIPT_SHA256" |
+            sha256sum --check --strict -
+          bash -n scripts/recover-staging.sh
+          [[ "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]] || {
+            printf 'checked-out commit does not match the workflow SHA\n' >&2
+            exit 1
+          }
+
+      - name: Prepare strict SSH transport
+        shell: bash
+        env:
+          DEPLOY_KEY: ${{ secrets.ASTERIA_STAGING_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.ASTERIA_STAGING_SSH_KNOWN_HOSTS }}
+          DEPLOY_HOST: ${{ secrets.ASTERIA_STAGING_SSH_HOST }}
+          DEPLOY_PORT: ${{ secrets.ASTERIA_STAGING_SSH_PORT }}
+          DEPLOY_USER: ${{ secrets.ASTERIA_STAGING_SSH_USER }}
+        run: |
+          set -euo pipefail
+          for value in DEPLOY_KEY KNOWN_HOSTS DEPLOY_HOST DEPLOY_PORT DEPLOY_USER; do
+            [[ -n "${!value:-}" ]] || { printf '%s is empty\n' "$value" >&2; exit 1; }
+          done
+          [[ "$DEPLOY_HOST" =~ ^[A-Za-z0-9.-]+$ ]] || { printf 'deploy host is invalid\n' >&2; exit 1; }
+          [[ "$DEPLOY_USER" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || { printf 'deploy user is invalid\n' >&2; exit 1; }
+          [[ "$DEPLOY_PORT" =~ ^[0-9]+$ && "$DEPLOY_PORT" -ge 1 && "$DEPLOY_PORT" -le 65535 ]] || {
+            printf 'deploy port is invalid\n' >&2
+            exit 1
+          }
+          install -d -m 0700 "$RUNNER_TEMP/ssh" "$RUNNER_TEMP/staging-recovery-evidence"
+          printf '%s\n' "$DEPLOY_KEY" >"$RUNNER_TEMP/ssh/key"
+          printf '%s\n' "$KNOWN_HOSTS" >"$RUNNER_TEMP/ssh/known_hosts"
+          chmod 0600 "$RUNNER_TEMP/ssh/key" "$RUNNER_TEMP/ssh/known_hosts"
+          ssh-keygen -y -f "$RUNNER_TEMP/ssh/key" >/dev/null
+          host_lookup="$DEPLOY_HOST"
+          if [[ "$DEPLOY_PORT" != "22" ]]; then
+            host_lookup="[$DEPLOY_HOST]:$DEPLOY_PORT"
+          fi
+          ssh-keygen -F "$host_lookup" -f "$RUNNER_TEMP/ssh/known_hosts" |
+            grep -Eq 'ssh-ed25519[[:space:]]' || { printf 'approved ED25519 host key is missing\n' >&2; exit 1; }
+          printf 'DEPLOY_HOST=%s\n' "$DEPLOY_HOST" >>"$GITHUB_ENV"
+          printf 'DEPLOY_PORT=%s\n' "$DEPLOY_PORT" >>"$GITHUB_ENV"
+          printf 'DEPLOY_USER=%s\n' "$DEPLOY_USER" >>"$GITHUB_ENV"
+
+      - name: Run isolated recovery drill
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/staging-recovery-evidence/recovery-evidence.json"
+          remote_stderr="$RUNNER_TEMP/staging-recovery-evidence/remote-stderr.log"
+          [[ "$GITHUB_RUN_ID" =~ ^[0-9]{1,20}$ ]] || { printf 'run id is invalid\n' >&2; exit 1; }
+          [[ "$GITHUB_RUN_ATTEMPT" =~ ^[0-9]{1,6}$ ]] || { printf 'run attempt is invalid\n' >&2; exit 1; }
+          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]] || { printf 'workflow SHA is invalid\n' >&2; exit 1; }
+          trap 'rm -f -- "$remote_stderr"' EXIT
+          set +e
+          ssh \
+            -F none -i "$RUNNER_TEMP/ssh/key" -p "$DEPLOY_PORT" \
+            -o BatchMode=yes -o ConnectTimeout=15 -o GlobalKnownHostsFile=/dev/null \
+            -o IdentitiesOnly=yes -o ProxyCommand=none -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$RUNNER_TEMP/ssh/known_hosts" \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "recovery $GITHUB_RUN_ID $GITHUB_RUN_ATTEMPT $GITHUB_SHA $RECOVERY_SCRIPT_SHA256" >"$evidence" 2>"$remote_stderr"
+          probe_exit="$?"
+          set -e
+          if [[ -s "$remote_stderr" ]]; then
+            stderr_sha256="$(sha256sum "$remote_stderr" | awk '{print $1}')"
+            printf 'remote recovery stderr was captured (sha256=%s)\n' "$stderr_sha256"
+            printf '%s\n' "$stderr_sha256" >"$RUNNER_TEMP/staging-recovery-evidence/remote-stderr.sha256"
+          else
+            printf 'remote recovery stderr was empty\n'
+          fi
+          rm -f -- "$remote_stderr"
+          trap - EXIT
+          PROBE_EXIT="$probe_exit" python3 - "$evidence" <<'PY'
+          import json
+          import os
+          import re
+          import sys
+
+          path = sys.argv[1]
+          if not os.path.isfile(path) or os.path.getsize(path) == 0:
+              raise SystemExit("remote recovery produced no evidence")
+          if os.path.getsize(path) > 64 * 1024:
+              raise SystemExit("remote recovery evidence exceeds the size limit")
+
+          class UniqueObject(dict):
+              pass
+
+          def reject_duplicates(pairs):
+              result = UniqueObject()
+              for key, value in pairs:
+                  if key in result:
+                      raise ValueError(f"duplicate evidence key: {key}")
+                  result[key] = value
+              return result
+
+          try:
+              with open(path, encoding="utf-8") as handle:
+                  report = json.load(handle, object_pairs_hook=reject_duplicates)
+          except (OSError, ValueError, json.JSONDecodeError) as error:
+              raise SystemExit(f"invalid recovery evidence JSON: {error}") from error
+          if not isinstance(report, dict):
+              raise SystemExit("recovery evidence must be a JSON object")
+
+          expected_keys = {
+              "schema", "status", "last_phase", "started_at", "completed_at",
+              "github_run_id", "github_run_attempt", "workflow_sha",
+              "compose_sha256", "expected_image", "expected_postgres_image",
+              "claim_boundary", "backup_catalog_verified",
+              "source_stable_during_backup", "restore_succeeded", "schema_verified",
+              "table_counts_verified", "storage_verifier_succeeded",
+              "recovered_health_succeeded", "recovered_readiness_succeeded",
+              "recovered_authenticated_read_succeeded", "recovered_metrics_scrape_succeeded",
+              "cleanup_verified", "capacity_guard_verified", "object_versions_restored",
+              "pitr_wal_replayed", "backup_archive_size_bytes", "backup_archive_sha256",
+              "source_schema_version", "restored_schema_version", "tables_checked",
+              "source_total_rows", "restored_total_rows", "row_counts_sha256",
+              "storage_verifier_checked", "storage_verifier_healthy",
+              "storage_verifier_finding_count", "storage_verifier_findings_truncated",
+              "backup_elapsed_seconds", "restore_elapsed_seconds",
+              "disk_used_percent_before", "disk_available_bytes_before",
+              "disk_used_percent_after", "disk_available_bytes_after",
+              "capacity_max_disk_used_percent", "capacity_min_disk_available_bytes",
+              "backup_archive_max_bytes",
+          }
+          if set(report) != expected_keys:
+              missing = sorted(expected_keys - set(report))
+              extra = sorted(set(report) - expected_keys)
+              raise SystemExit(f"recovery evidence fields mismatch (missing={missing}, extra={extra})")
+
+          expected_identity = {
+              "schema": "asteria-drive-staging-recovery/v1",
+              "status": "success",
+              "last_phase": "complete",
+              "github_run_id": os.environ["GITHUB_RUN_ID"],
+              "github_run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              "workflow_sha": os.environ["GITHUB_SHA"],
+              "compose_sha256": "d7d39a2e965849f364ceb25ab4106efd575f9a6d924e8ebfd9d508a594adc5dc",
+              "expected_image": "sha256:f5da244cba2055764a8caae7b9e9a752cc8f07356c0d7ae6397a6a7992e0cccc",
+              "expected_postgres_image": "sha256:6567bca8d7bc8c82c5922425a0baee57be8402df92bae5eacad5f01ae9544daa",
+              "claim_boundary": "staging-recovery-not-production",
+              "capacity_max_disk_used_percent": 85,
+              "capacity_min_disk_available_bytes": 5 * 1024 * 1024 * 1024,
+              "backup_archive_max_bytes": 512 * 1024 * 1024,
+          }
+          for key, expected in expected_identity.items():
+              if report.get(key) != expected:
+                  raise SystemExit(f"recovery evidence has unexpected {key}")
+
+          if os.environ.get("PROBE_EXIT") != "0":
+              raise SystemExit("remote staging recovery failed")
+
+          required_true = (
+              "backup_catalog_verified", "source_stable_during_backup", "restore_succeeded",
+              "schema_verified", "table_counts_verified", "storage_verifier_succeeded",
+              "recovered_health_succeeded", "recovered_readiness_succeeded",
+              "recovered_authenticated_read_succeeded", "recovered_metrics_scrape_succeeded",
+              "cleanup_verified", "capacity_guard_verified",
+          )
+          for key in required_true:
+              if type(report.get(key)) is not bool or report[key] is not True:
+                  raise SystemExit(f"recovery evidence did not prove {key}")
+          for key in ("object_versions_restored", "pitr_wal_replayed"):
+              if type(report.get(key)) is not bool or report[key] is not False:
+                  raise SystemExit(f"recovery evidence crossed the non-production boundary for {key}")
+
+          integer_keys = (
+              "backup_archive_size_bytes", "source_schema_version", "restored_schema_version",
+              "tables_checked", "source_total_rows", "restored_total_rows",
+              "storage_verifier_checked", "storage_verifier_healthy",
+              "storage_verifier_finding_count", "backup_elapsed_seconds",
+              "restore_elapsed_seconds", "disk_used_percent_before",
+              "disk_available_bytes_before", "disk_used_percent_after",
+              "disk_available_bytes_after",
+          )
+          for key in integer_keys:
+              if type(report.get(key)) is not int or report[key] < 0:
+                  raise SystemExit(f"recovery evidence has invalid integer {key}")
+          if report["backup_archive_size_bytes"] <= 0 or report["backup_archive_size_bytes"] > report["backup_archive_max_bytes"]:
+              raise SystemExit("recovery archive size is outside the allowed bound")
+          if report["source_schema_version"] != 3 or report["restored_schema_version"] != 3:
+              raise SystemExit("recovery schema version is unexpected")
+          if report["tables_checked"] != 15 or report["source_total_rows"] != report["restored_total_rows"]:
+              raise SystemExit("recovery row-count checkpoint is inconsistent")
+          if report["storage_verifier_checked"] < 1 or report["storage_verifier_healthy"] != report["storage_verifier_checked"]:
+              raise SystemExit("recovery verifier counts are inconsistent")
+          if report["storage_verifier_finding_count"] != 0 or report["storage_verifier_findings_truncated"] is not False:
+              raise SystemExit("recovery verifier evidence contains findings")
+
+          for prefix in ("before", "after"):
+              used = report[f"disk_used_percent_{prefix}"]
+              available = report[f"disk_available_bytes_{prefix}"]
+              if used > 85 or available < 5 * 1024 * 1024 * 1024:
+                  raise SystemExit(f"recovery {prefix} capacity guard is outside its bound")
+
+          if not isinstance(report["workflow_sha"], str) or not re.fullmatch(r"[0-9a-f]{40}", report["workflow_sha"]):
+              raise SystemExit("recovery evidence has invalid workflow digest")
+          for key in ("compose_sha256", "backup_archive_sha256", "row_counts_sha256"):
+              if not isinstance(report[key], str) or not re.fullmatch(r"[0-9a-f]{64}", report[key]):
+                  raise SystemExit(f"recovery evidence has invalid digest {key}")
+          for key in ("backup_archive_sha256", "row_counts_sha256"):
+              if report[key] == "0" * 64:
+                  raise SystemExit(f"recovery evidence has an empty digest for {key}")
+          for key in ("started_at", "completed_at"):
+              if not isinstance(report[key], str) or not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z", report[key]):
+                  raise SystemExit(f"recovery evidence has invalid timestamp {key}")
+          if report["storage_verifier_findings_truncated"] is not False:
+              raise SystemExit("recovery verifier findings must not be truncated")
+          PY
+
+      - name: Upload recovery evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: staging-recovery-evidence
+          path: ${{ runner.temp }}/staging-recovery-evidence
+          if-no-files-found: error
+          retention-days: 90

@@ -10,6 +10,77 @@ retention. Cloud-specific policies belong in the deployment overlay and its evid
 No RPO or RTO is promised by this document. Only a timed, seeded restore drill can
 establish those values for an environment.
 
+## Automated staging recovery drill
+
+The `Drill staging recovery` workflow in
+`.github/workflows/drill-staging-recovery.yml` is the repeatable staging check for
+the repository-owned recovery procedure. It is available through
+`workflow_dispatch` and runs on a weekly schedule from protected `main`. It uses
+the `staging` environment and shares the `asteria-drive-staging` concurrency group
+with deployment and monitoring, so a drill cannot race a rollout or a capacity
+probe.
+
+The explicit host bootstrap installs `scripts/recover-staging.sh` root-owned and
+pins its digest in the forced-command dispatcher. Before every execution, the
+dispatcher checks the installed file's ownership, mode, and SHA-256. The workflow
+can invoke only
+`recovery <run-id> <attempt> <workflow-sha> <recovery-script-sha256>`; the
+dispatcher requires the workflow's reviewed digest to equal its host-side pin and does
+not provide an interactive shell, SFTP, forwarding, or application credentials.
+The pinned script reads the active staging PostgreSQL database, creates a
+run-labelled temporary internal Docker network, PostgreSQL volume, and recovered
+API, and removes every resource it created before returning. Existing staging
+database and object-store volumes are never deleted or replaced, and no recovery
+port is published.
+
+This drill restores PostgreSQL metadata with a custom-format `pg_dump` archive. It
+does not copy object data or object versions: the verifier reads the existing
+staging object store over the temporary internal network to check metadata/object
+consistency. Consequently it is a logical metadata restore check, not a point-in-
+time recovery or a production failover exercise.
+
+The workflow validates the returned JSON before uploading the secret-free
+`staging-recovery-evidence` artifact. The artifact contains the recovery JSON and,
+when the remote command writes diagnostics, only a SHA-256 of that stderr; raw
+remote stderr is discarded. GitHub retains this artifact for 90 days. A successful
+report has schema
+`asteria-drive-staging-recovery/v1`, `status=success`, `last_phase=complete`, the
+current GitHub run identity, the pinned Compose and image digests, and the claim
+boundary `staging-recovery-not-production`. The check fields that must be true are
+`backup_catalog_verified`, `source_stable_during_backup`, `restore_succeeded`,
+`schema_verified`, `table_counts_verified`, `storage_verifier_succeeded`,
+`recovered_health_succeeded`, `recovered_readiness_succeeded`,
+`recovered_authenticated_read_succeeded`, `recovered_metrics_scrape_succeeded`,
+`cleanup_verified`, and `capacity_guard_verified`.
+
+The same report records the archive byte count and SHA-256, source/restored schema
+versions, checked table and row totals, row-count digest, verifier checked/healthy
+counts and finding status, backup/restore elapsed seconds, and before/after disk
+threshold measurements. `object_versions_restored` and `pitr_wal_replayed` must be
+`false`; those values document what the drill did not prove. The workflow rejects
+unknown or extra JSON fields, malformed identities, failed cleanup, or a disk use
+above 85% / free space below 5 GiB. A failed run is an actionable staging signal,
+but its artifact is not approval to promote traffic.
+
+The exact v1 field allowlist is:
+
+```text
+schema status last_phase started_at completed_at github_run_id github_run_attempt
+workflow_sha compose_sha256 expected_image expected_postgres_image claim_boundary
+backup_catalog_verified source_stable_during_backup restore_succeeded schema_verified
+table_counts_verified storage_verifier_succeeded recovered_health_succeeded
+recovered_readiness_succeeded recovered_authenticated_read_succeeded
+recovered_metrics_scrape_succeeded cleanup_verified capacity_guard_verified
+object_versions_restored pitr_wal_replayed backup_archive_size_bytes
+backup_archive_sha256 source_schema_version restored_schema_version tables_checked
+source_total_rows restored_total_rows row_counts_sha256 storage_verifier_checked
+storage_verifier_healthy storage_verifier_finding_count
+storage_verifier_findings_truncated backup_elapsed_seconds restore_elapsed_seconds
+disk_used_percent_before disk_available_bytes_before disk_used_percent_after
+disk_available_bytes_after capacity_max_disk_used_percent
+capacity_min_disk_available_bytes backup_archive_max_bytes
+```
+
 ## Prerequisites
 
 - Use an isolated recovery account, network, PostgreSQL instance, and S3 bucket.
@@ -77,13 +148,15 @@ explicitly dedicated to an isolated target.
 
 ## Drill cadence and failure handling
 
-Run a seeded restore drill at least quarterly and before releases with migration or
-storage-state risk. Preserve sanitized commands, versions, row/object counts,
-timestamps, verifier JSON, measured RPO/RTO, findings, and reviewer identity. Never
-archive database URLs, credentials, signed URLs, raw object keys, or customer data in
-the repository.
+Run the automated staging drill weekly and run a production-scoped, seeded restore
+drill at least quarterly and before releases with migration or storage-state risk.
+Preserve sanitized commands, versions, row/object counts, timestamps, verifier JSON,
+measured RPO/RTO, findings, and reviewer identity. Never archive database URLs,
+credentials, signed URLs, raw object keys, or customer data in the repository.
 
 The latest repository-procedure evidence is the
 [2026-08-05 isolated recovery drill](evidence/recovery-drill-20260805.md). It passed
 the local seeded restore path but explicitly leaves production PITR, object
 immutability, platform controls, candidate binding, and independent approval open.
+An automated staging artifact may supplement that report, but it carries the same
+`staging-recovery-not-production` boundary and cannot establish production RPO/RTO.
