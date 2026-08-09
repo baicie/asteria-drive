@@ -662,3 +662,55 @@ SIEM retention, capacity planning, HTTPS OIDC/IdP lifecycle, PostgreSQL
 `verify-full` and PITR/WAL, object lock/versioning, KMS or secret-controller
 rotation, public TLS ingress, host-level HA, an externally valid presign endpoint,
 and independent security/platform approval remain open.
+
+## 2026-08-09 - staging recovery automation and evidence closeout
+
+PR [#34](https://github.com/baicie/asteria-drive/pull/34) added the weekly and
+manually dispatchable `Drill staging recovery` workflow. It runs only from
+protected `main`, shares the staging deployment/monitor concurrency group, checks
+the reviewed recovery script digest before transport, and invokes only a
+run-bound forced SSH command. The remote root-owned script creates a bounded
+logical PostgreSQL archive, restores it into isolated internal-network resources,
+compares schema/table/row checkpoints, runs `asteria-verify-storage`, exercises
+recovered application probes, enforces the 85%/5 GiB capacity guard, and performs
+idempotent cleanup. It never mutates or deletes the source staging data or its
+server-managed secret volumes.
+
+The merged recovery script SHA-256 is
+`0e03a8e03ee2a98c277818e172822a401614f778f58f8c3e85130a83467402a6`.
+The host dispatcher requires that digest in the forced command and rechecks the
+root-owned installed file. Host bootstrap and negative-path tests verified the
+script and parent-directory ownership, accepted `prepare`, `cleanup`, `status`,
+and the exact recovery command, and rejected arbitrary shell, port forwarding,
+the legacy four-argument recovery command, and a wrong script digest. The staging
+ED25519 key was rotated with the private key held only in process memory; GitHub
+received it through the sealed-box secret API and the host received only the
+public key.
+
+PR #34 passed all seven protected checks plus the additional CodeQL check and
+merged as `0a7a5360dbb0fd0ad6f46e262929a7a2e318cb18`. No review approval is recorded,
+so independent approval remains open. Workflow run
+[31292745979](https://github.com/baicie/asteria-drive/actions/runs/31292745979)
+attempt 1 then completed successfully from that exact protected-main commit.
+Artifact `9031929907` is retained for 90 days and has digest
+`sha256:e1edc196bf2b33d08f2567509136bdd94b23a73ddde01a6a28bdc4e87d9accad`.
+Independent in-memory verification found exactly one member,
+`recovery-evidence.json`, whose digest is
+`sha256:4d1f55d5ac166cae12b87c35046a456e78710217e24762b9b78de29a5b5034c7`;
+no raw remote stderr was archived.
+
+The evidence reports `success` and final phase `complete`: the 51,454-byte archive
+catalog was valid, schema stayed `3 -> 3`, all 15 tables were checked, total rows
+matched `12 -> 12`, and the storage verifier reported one checked and healthy
+object with no findings. Backup and restore took 1 and 8 seconds, recovered
+health/readiness/authenticated-read/metrics probes passed, capacity remained at
+62% disk use, and cleanup left no drill resources. The checked-in detail is
+`docs/operations/evidence/staging-recovery-20260809.md`.
+
+This closes staging logical-recovery automation and retained evidence only. The
+report explicitly records `object_versions_restored=false`,
+`pitr_wal_replayed=false`, and `staging-recovery-not-production`; encrypted
+production PITR/WAL, object versioning/Object Lock, accepted production RPO/RTO,
+public TLS and HTTPS OIDC lifecycle, `verify-full`, KMS-backed rotation,
+production monitoring/SIEM and alerts, host-level HA, external presign routing,
+capacity planning, and independent security/platform approval remain open.
