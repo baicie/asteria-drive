@@ -23,6 +23,7 @@ fi
 command -v pg_dump >/dev/null
 command -v pg_restore >/dev/null
 command -v sha256sum >/dev/null
+connection="service=$PGSERVICE sslmode=verify-full"
 
 umask 077
 destination="$1"
@@ -38,7 +39,7 @@ partial="$(mktemp "$destination/.asteria_${timestamp}.partial.XXXXXX")"
 trap 'rm -f -- "$partial"' EXIT
 
 pg_dump \
-  --dbname="service=$PGSERVICE" \
+  --dbname="$connection" \
   --format=custom \
   --compress=9 \
   --no-owner \

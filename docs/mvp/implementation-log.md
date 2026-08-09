@@ -737,3 +737,26 @@ This closes the repository capability gap only. No user-owned public hostname or
 certificate has been supplied, and `v0.1.0` predates this change. A later immutable
 release plus target-platform evidence is required before the external-presign or
 public-production gates can be marked complete.
+
+## 2026-08-09 - PostgreSQL production TLS guardrails
+
+Production database validation now requires the entire DSN to come from
+`ASTERIA_DATABASE_URL_FILE`, rather than checking only a password in URL userinfo.
+This closes the alternate `?password=` path and also rejects inline passwordless
+DSNs, which could otherwise gain credentials later without changing the source
+boundary. The query must contain exactly one `sslmode=verify-full`; missing, weak,
+or duplicated modes are rejected before a connection attempt.
+
+The portable backup and isolated-restore scripts now append
+`sslmode=verify-full` to their password-free `service=<name>` conninfo, overriding
+weaker service-file or environment settings while keeping credentials off the
+command line. Contract tests fix that invariant. The Kubernetes migration Job also
+sets `fsGroup: 65532`, matching the application Deployment so its `0400` projected
+database URL and CA material are readable by the non-root runtime group.
+
+Negative tests cover inline userinfo and query passwords, inline passwordless DSNs,
+missing/weak/duplicate TLS modes, and valid file-sourced `verify-full`. These changes
+close a repository configuration bypass only. Current staging still uses a non-TLS
+development PostgreSQL link, and `v0.1.0` predates the fix; a new immutable release,
+real CA/host-name validation, measured `pg_stat_ssl` evidence, and target-platform
+certificate rotation remain required.

@@ -37,6 +37,7 @@ if [[ ! -f "$archive" || ! -f "$archive.sha256" ]]; then
 fi
 command -v pg_restore >/dev/null
 command -v sha256sum >/dev/null
+connection="service=$PGSERVICE sslmode=verify-full"
 
 (
   cd "$(dirname "$archive")"
@@ -44,7 +45,7 @@ command -v sha256sum >/dev/null
 )
 pg_restore --list "$archive" >/dev/null
 pg_restore \
-  --dbname="service=$PGSERVICE" \
+  --dbname="$connection" \
   --clean \
   --if-exists \
   --no-owner \

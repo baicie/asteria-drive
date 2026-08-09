@@ -347,10 +347,11 @@ func validateDatabaseURL(value string, production, fromFile bool) error {
 	if !production {
 		return nil
 	}
-	if _, hasPassword := parsed.User.Password(); hasPassword && !fromFile {
-		return fmt.Errorf("production database credentials must use ASTERIA_DATABASE_URL_FILE")
+	if !fromFile {
+		return fmt.Errorf("production database URL must use ASTERIA_DATABASE_URL_FILE")
 	}
-	if parsed.Query().Get("sslmode") != "verify-full" {
+	sslModes := parsed.Query()["sslmode"]
+	if len(sslModes) != 1 || sslModes[0] != "verify-full" {
 		return fmt.Errorf("production PostgreSQL requires sslmode=verify-full")
 	}
 	return nil

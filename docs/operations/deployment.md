@@ -9,8 +9,9 @@ labels, and network CIDRs. PostgreSQL, S3, OIDC, TLS termination, DNS, KMS, and
 workload-identity resources are owned by the target platform.
 
 The server refuses production startup unless authentication is OIDC, metadata is
-PostgreSQL, storage is S3, database TLS uses `sslmode=verify-full`, the cursor key is
-file-mounted, and automatic migration and bucket creation are disabled.
+PostgreSQL, storage is S3, the entire database DSN is file-mounted and contains
+exactly one `sslmode=verify-full`, the cursor key is file-mounted, and automatic
+migration and bucket creation are disabled.
 
 ## Automated single-host staging
 
@@ -85,8 +86,9 @@ mutable tag.
 Create `asteria-runtime-secrets` through the platform secret controller. Do not
 commit a Secret manifest. It must expose these file keys:
 
-- `database-url`: a PostgreSQL URL using `sslmode=verify-full`; credentials, when
-  needed, are present only in this mounted file;
+- `database-url`: the complete PostgreSQL URL with exactly one
+  `sslmode=verify-full`; production never accepts an inline DSN, including one with
+  a query-string password or no current password;
 - `cursor-hmac-key`: at least 32 cryptographically random bytes.
 
 Prefer workload identity for S3. If the S3 implementation requires static keys,

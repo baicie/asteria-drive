@@ -162,7 +162,10 @@ func TestProductionRejectsWeakOrInlineSecretConfiguration(t *testing.T) {
 		message string
 	}{
 		{name: "inline database password", values: map[string]string{"ASTERIA_DATABASE_URL_FILE": "", "ASTERIA_DATABASE_URL": "postgres://asteria:password@db.example.test/asteria?sslmode=verify-full"}, message: "DATABASE_URL_FILE"},
+		{name: "inline database URL without password", values: map[string]string{"ASTERIA_DATABASE_URL_FILE": "", "ASTERIA_DATABASE_URL": "postgres://asteria@db.example.test/asteria?sslmode=verify-full"}, message: "DATABASE_URL_FILE"},
+		{name: "inline query password", values: map[string]string{"ASTERIA_DATABASE_URL_FILE": "", "ASTERIA_DATABASE_URL": "postgres://asteria@db.example.test/asteria?sslmode=verify-full&password=dummy"}, message: "DATABASE_URL_FILE"},
 		{name: "weak database TLS", values: map[string]string{"ASTERIA_DATABASE_URL_FILE": writeConfigFile(t, "weak-database-url", "postgres://asteria@db.example.test/asteria?sslmode=require")}, message: "verify-full"},
+		{name: "duplicate database TLS mode", values: map[string]string{"ASTERIA_DATABASE_URL_FILE": writeConfigFile(t, "duplicate-sslmode-database-url", "postgres://asteria@db.example.test/asteria?sslmode=verify-full&sslmode=disable")}, message: "verify-full"},
 		{name: "inline cursor key", values: map[string]string{"ASTERIA_CURSOR_HMAC_KEY_FILE": "", "ASTERIA_CURSOR_HMAC_KEY": "test-cursor-hmac-key-at-least-32-bytes"}, message: "HMAC key"},
 		{name: "automatic migration", values: map[string]string{"ASTERIA_AUTO_MIGRATE": "true"}, message: "must be false"},
 		{name: "automatic bucket creation", values: map[string]string{"ASTERIA_S3_AUTO_CREATE_BUCKET": "true"}, message: "must be false"},
@@ -181,6 +184,33 @@ func TestProductionRejectsWeakOrInlineSecretConfiguration(t *testing.T) {
 			_, err := load(mapLookup(values))
 			if err == nil || !strings.Contains(err.Error(), test.message) {
 				t.Fatalf("load error=%v, want message containing %q", err, test.message)
+			}
+		})
+	}
+}
+
+func TestValidateProductionDatabaseURLRequiresFileAndOneStrongTLSMode(t *testing.T) {
+	tests := []struct {
+		name     string
+		url      string
+		fromFile bool
+		want     string
+	}{
+		{name: "valid", url: "postgres://asteria@db.example.test/asteria?sslmode=verify-full", fromFile: true},
+		{name: "inline without password", url: "postgres://asteria@db.example.test/asteria?sslmode=verify-full", want: "DATABASE_URL_FILE"},
+		{name: "inline query password", url: "postgres://asteria@db.example.test/asteria?sslmode=verify-full&password=dummy", want: "DATABASE_URL_FILE"},
+		{name: "missing mode", url: "postgres://asteria@db.example.test/asteria", fromFile: true, want: "verify-full"},
+		{name: "weak mode", url: "postgres://asteria@db.example.test/asteria?sslmode=require", fromFile: true, want: "verify-full"},
+		{name: "duplicate modes", url: "postgres://asteria@db.example.test/asteria?sslmode=verify-full&sslmode=disable", fromFile: true, want: "verify-full"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := validateDatabaseURL(test.url, true, test.fromFile)
+			if test.want == "" && err != nil {
+				t.Fatalf("valid production URL rejected: %v", err)
+			}
+			if test.want != "" && (err == nil || !strings.Contains(err.Error(), test.want)) {
+				t.Fatalf("validation error=%v, want message containing %q", err, test.want)
 			}
 		})
 	}

@@ -106,7 +106,7 @@ $tenant.data
 | `ASTERIA_OIDC_BOOTSTRAP_JSON` | 无 | 预置 issuer/subject、内部 principal、tenant member 和 role 的 JSON 数组 |
 | `ASTERIA_CURSOR_HMAC_KEY` | 无 | 必填；至少 32 bytes，不得复用示例值 |
 | `ASTERIA_METADATA_DRIVER` | `memory` | `memory` 或 `postgres` |
-| `ASTERIA_DATABASE_URL` | 无 | PostgreSQL DSN；使用 `postgres` 时必填 |
+| `ASTERIA_DATABASE_URL` | 无 | PostgreSQL DSN；使用 `postgres` 时必填；production 整个 DSN 必须从 `ASTERIA_DATABASE_URL_FILE` 读取且只允许一个 `sslmode=verify-full` |
 | `ASTERIA_AUTO_MIGRATE` | `false` | 服务启动时自动前进迁移；正式部署建议使用独立迁移步骤 |
 | `ASTERIA_STORAGE_DRIVER` | `memory` | `memory` 或 `s3` |
 | `ASTERIA_S3_ENDPOINT` | 无 | API、维护和校验器使用的 S3 控制端点；使用 `s3` 时必填 |
