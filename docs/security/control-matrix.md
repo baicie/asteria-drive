@@ -18,8 +18,8 @@ target environment's immutable evidence.
 | RUN-01 | Least-privilege container | Dockerfile and deployment contract tests | Admission-policy result | Every image and deployment |
 | REL-01 | Immutable, attributable release | pinned workflow, checksums, SBOM, tag ancestry, binary and OCI provenance | Protected `release` approval record | Every release |
 | SCA-01 | Dependency and static analysis gates | govulncheck, dependency review, CodeQL workflows | Green required checks | Every change; weekly scan |
-| RES-01 | Recover metadata within accepted RPO/RTO | backup scripts, restore runbook, drill report | Encrypted PITR/WAL policy and measured timestamps | Quarterly and before schema-risk releases |
-| RES-02 | Prove metadata/object integrity before traffic | `asteria-verify-storage` tests and drill | Isolated restore verifier report | Every restore |
+| RES-01 | Recover metadata within accepted RPO/RTO | backup scripts, restore runbook, drill report, staging recovery workflow | Staging artifact `9031929907` proves bounded logical restore only; encrypted PITR/WAL policy and production RPO/RTO remain open | Quarterly and before schema-risk releases |
+| RES-02 | Prove metadata/object integrity before traffic | `asteria-verify-storage` tests and staging recovery drill | Staging artifact `9031929907` proves isolated metadata restore and live-object verification; production restore approval remains open | Every restore |
 | OBS-01 | Bounded monitoring labels and dependency signals | Prometheus metric tests | Scrape authentication/network restriction and alerts | Every release and deployment |
 | DOS-01 | Bounded API and worker workload | request limits, timeouts, leased worker tests | Ingress rate/connection limits | Every release and deployment |
 
