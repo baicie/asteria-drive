@@ -96,7 +96,7 @@ func TestKubernetesMigrationJobUsesTheHardenedRuntimeContract(t *testing.T) {
 	job := normalizeContractText(string(contents))
 	for _, required := range []string{
 		"/usr/local/bin/asteria-migrate", "ASTERIA_ENV", "value: production",
-		"ASTERIA_DATABASE_URL_FILE", "runAsNonRoot: true", "runAsUser: 65532",
+		"ASTERIA_DATABASE_URL_FILE", "runAsNonRoot: true", "runAsUser: 65532", "fsGroup: 65532",
 		"type: RuntimeDefault", "allowPrivilegeEscalation: false",
 		"readOnlyRootFilesystem: true", "drop:\n                - ALL", "requests:",
 		"limits:", "secretName: asteria-runtime-secrets", "defaultMode: 0400", "@sha256:",

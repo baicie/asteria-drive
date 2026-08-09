@@ -136,7 +136,7 @@ OpenAPI syntax/route coverage check
 | `ASTERIA_OIDC_CLIENT_ID` | API access-token audience/client ID |
 | `ASTERIA_OIDC_BOOTSTRAP_JSON` | 预置 `(issuer, subject)`、principal、tenant member 和 role 的 JSON 数组 |
 | `ASTERIA_METADATA_DRIVER` | `memory` 仅测试/演示；P4 使用 `postgres` |
-| `ASTERIA_DATABASE_URL` | postgres 时必需，日志脱敏 |
+| `ASTERIA_DATABASE_URL` | postgres 时必需，日志脱敏；production 整个 DSN 必须用 `_FILE` 且只有一个 `sslmode=verify-full` |
 | `ASTERIA_AUTO_MIGRATE` | 开发/验收可开；生产迁移流程单独执行 |
 | `ASTERIA_STORAGE_DRIVER` | `memory` 仅测试；P4 使用 `s3` |
 | `ASTERIA_S3_ENDPOINT/REGION/BUCKET` | s3 时必需；控制端点用于 API、维护任务和校验器，生产要求 HTTPS |

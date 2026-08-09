@@ -85,11 +85,16 @@ capacity_min_disk_available_bytes backup_archive_max_bytes
 
 - Use an isolated recovery account, network, PostgreSQL instance, and S3 bucket.
 - Mount a libpq service file with mode `0600`; set `PGSERVICEFILE` and `PGSERVICE`.
+  The service must provide a trusted root certificate (or approved system trust)
+  and a host name present in the PostgreSQL leaf certificate SAN.
 - Never pass a password-bearing database URL on a process command line.
 - Pin the application image by digest and retain the image that created the backup.
 - Disable maintenance and destructive cleanup before any recovered server starts.
 - Record database backup ID/time, WAL recovery point, object-storage version or
   inventory ID, image digest, schema version, operator, and UTC timestamps.
+- Retain only sanitized TLS evidence such as CA/leaf SHA-256, leaf SAN and expiry,
+  negotiated protocol and cipher. Never retain a DSN, password, private key, or
+  certificate body in the drill artifact.
 
 ## Create a portable metadata backup
 
@@ -101,11 +106,14 @@ export PGSERVICE=asteria_backup
 ./scripts/backup-postgres.sh /encrypted-backups/asteria
 ```
 
-The script requires a `0600` service file, creates a PostgreSQL custom-format
-archive, verifies its catalog, writes a SHA-256 sidecar, and publishes it only after
-success. It refuses to overwrite a same-second archive so operators must select a
-new destination after a collision. Upload both files to encrypted, immutable backup
-media. Capture the matching S3 inventory/version checkpoint.
+The script requires a `0600` service file and appends `sslmode=verify-full` to its
+password-free libpq connection string, so a weaker service-file or environment
+setting cannot disable certificate and host-name verification. It creates a
+PostgreSQL custom-format archive, verifies its catalog, writes a SHA-256 sidecar,
+and publishes it only after success. It refuses to overwrite a same-second archive
+so operators must select a new destination after a collision. Upload both files to
+encrypted, immutable backup media. Capture the matching S3 inventory/version
+checkpoint.
 
 ## Restore into isolation
 
@@ -122,6 +130,10 @@ export ASTERIA_RESTORE_TARGET_KIND=isolated
 export ASTERIA_RESTORE_CONFIRM=isolated-target
 ./scripts/restore-postgres.sh /encrypted-backups/asteria/asteria_UTC.dump
 ```
+
+The restore script also appends `sslmode=verify-full`; the isolated database must
+therefore present a certificate whose SAN matches the service-file host and chains
+to its configured root.
 
 4. Run `asteria-migrate` from the candidate image against the isolated database.
 5. Configure the verifier with the isolated PostgreSQL and S3 endpoints, then run:

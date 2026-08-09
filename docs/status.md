@@ -15,6 +15,7 @@
 | staging 周期监测 | 已通过受保护 `main` 启用并实跑 | 每小时及手工 workflow 仅执行 root-owned、摘要固定的只读探针；run `31265767434` 的 artifact 证明 Compose/镜像/容器、loopback、健康、metrics 与 85%/5 GiB 容量门禁；这只是 staging 信号，不是生产监控、SIEM、外部告警或容量规划 |
 | staging 恢复演练 | 已通过受保护 `main` 自动化并实跑 | 每周及手工 workflow 对现有 staging 数据做有界逻辑备份并在隔离临时资源中恢复；run `31292745979` 的 artifact 证明 schema/table/row、storage verifier、应用 smoke、容量和零残留；边界为 `staging-recovery-not-production`，不代表 PITR/WAL、对象版本恢复或生产 RPO/RTO |
 | 外部预签名端点 | 仓库能力已实现，平台证据待补 | S3 控制调用与客户端签名端点已解耦，production 对两者都强制 HTTPS；仍需用户自有 DNS/TLS、同一对象命名空间路由、CORS 和真实公网客户端上传下载证据 |
+| PostgreSQL TLS 门禁 | 仓库负向门禁已加固，运行证据待补 | production 整个 DSN 必须来自文件且只允许一个 `sslmode=verify-full`；备份/恢复强制覆盖为 `verify-full`，migration Secret 权限已修复；staging 真实 TLS 握手与生产 CA/DNS 仍未证明 |
 | 可靠性与可观测性 | 代码与仓库证据已完成 | `Idempotency-Key`、自动维护、Prometheus、fuzz/property、百万节点完整性和 10 分钟控制面 SLO 证据已归档；写路径与平台告警仍需独立测量 |
 | Phase 1 生产化 | 代码、迁移、Release 与 staging 平台证据已完成；公网生产门待闭环 | 邀请、成员删除、正式 ACL、审计、Secret 读取、备份恢复演练、部署加固、`v0.1.0` provenance 和 staging 部署均有证据；生产 PITR、对象不可变性、TLS/HA/监控、密钥托管与独立审批仍为硬门槛 |
 | Phase 2-4 愿景 | 不在当前交付目标 | 同步、预览、搜索、分块、多地域等另立产品目标 |

@@ -59,7 +59,7 @@ func TestProductionRecoveryAutomationContract(t *testing.T) {
 
 	backup := readContractFile(t, "../../scripts/backup-postgres.sh")
 	for _, required := range []string{
-		"PGSERVICEFILE", `--dbname="service=$PGSERVICE"`, "pg_restore --list", "sha256sum",
+		"PGSERVICEFILE", `connection="service=$PGSERVICE sslmode=verify-full"`, `--dbname="$connection"`, "pg_restore --list", "sha256sum",
 		"PGSERVICEFILE must have mode 0600", "backup destination already contains",
 	} {
 		if !strings.Contains(backup, required) {
@@ -70,6 +70,7 @@ func TestProductionRecoveryAutomationContract(t *testing.T) {
 	restore := readContractFile(t, "../../scripts/restore-postgres.sh")
 	for _, required := range []string{
 		"ASTERIA_RESTORE_TARGET_KIND", "ASTERIA_RESTORE_CONFIRM", "asteria_restore_*",
+		`connection="service=$PGSERVICE sslmode=verify-full"`, `--dbname="$connection"`,
 		"sha256sum -c", "--single-transaction", "PGSERVICEFILE must have mode 0600",
 	} {
 		if !strings.Contains(restore, required) {
