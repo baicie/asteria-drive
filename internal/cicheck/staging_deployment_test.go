@@ -309,6 +309,11 @@ func TestStagingScriptsKeepSecretsServerSideAndEmitEvidence(t *testing.T) {
 		"up -d --pull never",
 		"previous_compose_available",
 		"database-url-tls",
+		"app_secret_summary",
+		"postgres_secret_summary",
+		"--user 65532:65532",
+		"--user 0:70",
+		`unset app_secret_summary app_password_sha256 app_ca_sha256 app_summary_extra`,
 	} {
 		if !strings.Contains(string(deploy), required) {
 			t.Errorf("staging deployment script is missing %q", required)
@@ -319,6 +324,36 @@ func TestStagingScriptsKeepSecretsServerSideAndEmitEvidence(t *testing.T) {
 	}
 	if strings.Contains(string(deploy), "< <(df") {
 		t.Fatal("staging capacity snapshots must propagate df failures")
+	}
+	if strings.Contains(string(deploy), "--cap-add") {
+		t.Fatal("staging secret preflight must not gain a capability to cross secret ownership boundaries")
+	}
+	deployText := string(deploy)
+	appSummaryStart := strings.Index(deployText, `app_secret_summary="$(docker run`)
+	postgresSummaryStart := strings.Index(deployText, `postgres_secret_summary="$(docker run`)
+	preflightEnd := -1
+	if postgresSummaryStart >= 0 {
+		if relativeEnd := strings.Index(deployText[postgresSummaryStart:], `postgres_tls_dsn_verified="true"`); relativeEnd >= 0 {
+			preflightEnd = postgresSummaryStart + relativeEnd
+		}
+	}
+	if appSummaryStart < 0 || postgresSummaryStart <= appSummaryStart || preflightEnd < 0 {
+		t.Fatal("staging secret preflight ownership sections are missing or out of order")
+	}
+	appSummary := deployText[appSummaryStart:postgresSummaryStart]
+	postgresSummary := deployText[postgresSummaryStart:preflightEnd]
+	preflight := deployText[appSummaryStart:preflightEnd]
+	if strings.Contains(appSummary, "staging-postgres-secrets") {
+		t.Fatal("application-owned preflight must not mount PostgreSQL-owned secrets")
+	}
+	if strings.Contains(postgresSummary, "staging-app-secrets") {
+		t.Fatal("PostgreSQL-owned preflight must not mount application-owned secrets")
+	}
+	if strings.Contains(preflight, "--user root") || strings.Contains(preflight, "--cap-add") {
+		t.Fatal("staging secret preflight must preserve explicit least-privilege users and dropped capabilities")
+	}
+	if !strings.Contains(preflight, `[[ "$app_password_sha256" == "$postgres_password_sha256" && "$app_ca_sha256" == "$postgres_ca_sha256" ]]`) {
+		t.Fatal("staging secret preflight must compare password and CA identities across ownership boundaries")
 	}
 	if strings.Contains(string(deploy), `"$options" == "{}"`) {
 		t.Fatal("staging capacity probe must accept both null and empty Docker volume options")
