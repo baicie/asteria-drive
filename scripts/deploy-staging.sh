@@ -662,15 +662,38 @@ binary_version_verified="true"
 
 phase="validate-postgres-tls-secrets"
 smoke_dir="$(mktemp -d "$(dirname "$evidence_path")/smoke.XXXXXXXX")"
-docker run --rm --pull never --network none --read-only --user root \
+# Probe each volume as its file owner; only in-memory identities cross the ownership boundary.
+app_secret_summary="$(docker run --rm --pull never --network none --read-only --user 65532:65532 \
   --cap-drop ALL --security-opt no-new-privileges:true --pids-limit 32 \
   --memory 64m --cpus 0.25 --log-driver none \
   --volume asteria-drive-staging-app-secrets:/app-secrets:ro \
-  --volume asteria-drive-staging-postgres-secrets:/postgres-secrets:ro \
   --entrypoint /bin/sh "$postgres_image" -ec '
     for specification in \
       "/app-secrets/database-url-tls 65532:65532:400" \
-      "/app-secrets/postgres-ca.crt 65532:65532:400" \
+      "/app-secrets/postgres-ca.crt 65532:65532:400"; do
+      path="${specification% *}"
+      metadata="${specification##* }"
+      [ -s "$path" ] && [ ! -L "$path" ] && [ "$(stat -c "%u:%g:%a" "$path")" = "$metadata" ]
+    done
+    dsn="$(cat /app-secrets/database-url-tls)"
+    password="${dsn#postgres://asteria:}"
+    password="${password%%@*}"
+    printf "%s" "$password" | grep -Eq "^[0-9a-f]{48}$"
+    expected="postgres://asteria:${password}@postgres:5432/asteria?sslmode=verify-full&sslrootcert=/var/run/secrets/asteria/postgres-ca.crt&application_name=asteria-drive-staging-api"
+    [ "$dsn" = "$expected" ]
+    password_sha256="$(printf "%s" "$password" | sha256sum | awk "{print \$1}")"
+    ca_sha256="$(sha256sum /app-secrets/postgres-ca.crt | awk "{print \$1}")"
+    printf "%s %s\n" "$password_sha256" "$ca_sha256"
+  ')"
+IFS=' ' read -r app_password_sha256 app_ca_sha256 app_summary_extra <<<"$app_secret_summary"
+[[ "$app_password_sha256" =~ ^[0-9a-f]{64}$ && "$app_ca_sha256" =~ ^[0-9a-f]{64}$ && -z "$app_summary_extra" ]]
+
+postgres_secret_summary="$(docker run --rm --pull never --network none --read-only --user 0:70 \
+  --cap-drop ALL --security-opt no-new-privileges:true --pids-limit 32 \
+  --memory 64m --cpus 0.25 --log-driver none \
+  --volume asteria-drive-staging-postgres-secrets:/postgres-secrets:ro \
+  --entrypoint /bin/sh "$postgres_image" -ec '
+    for specification in \
       "/postgres-secrets/postgres-password 0:0:400" \
       "/postgres-secrets/postgres-ca.crt 0:70:640" \
       "/postgres-secrets/postgres-server.crt 0:70:640" \
@@ -680,25 +703,30 @@ docker run --rm --pull never --network none --read-only --user root \
       metadata="${specification##* }"
       [ -s "$path" ] && [ ! -L "$path" ] && [ "$(stat -c "%u:%g:%a" "$path")" = "$metadata" ]
     done
-    cmp -s /app-secrets/postgres-ca.crt /postgres-secrets/postgres-ca.crt
     [ "$(grep -Ec "^(local|hostnossl|hostssl) " /postgres-secrets/pg_hba.conf)" -eq 5 ]
     grep -Fxq "hostnossl all all 0.0.0.0/0 reject" /postgres-secrets/pg_hba.conf
     grep -Fxq "hostnossl all all ::/0 reject" /postgres-secrets/pg_hba.conf
     grep -Fxq "hostssl all all 0.0.0.0/0 scram-sha-256" /postgres-secrets/pg_hba.conf
     grep -Fxq "hostssl all all ::/0 scram-sha-256" /postgres-secrets/pg_hba.conf
     password="$(cat /postgres-secrets/postgres-password)"
-    [ "$password" != "" ]
-    expected="postgres://asteria:${password}@postgres:5432/asteria?sslmode=verify-full&sslrootcert=/var/run/secrets/asteria/postgres-ca.crt&application_name=asteria-drive-staging-api"
-    [ "$(cat /app-secrets/database-url-tls)" = "$expected" ]
-  '
+    printf "%s" "$password" | grep -Eq "^[0-9a-f]{48}$"
+    password_sha256="$(printf "%s" "$password" | sha256sum | awk "{print \$1}")"
+    ca_sha256="$(sha256sum /postgres-secrets/postgres-ca.crt | awk "{print \$1}")"
+    printf "%s %s\n" "$password_sha256" "$ca_sha256"
+  ')"
+IFS=' ' read -r postgres_password_sha256 postgres_ca_sha256 postgres_summary_extra <<<"$postgres_secret_summary"
+[[ "$postgres_password_sha256" =~ ^[0-9a-f]{64}$ && "$postgres_ca_sha256" =~ ^[0-9a-f]{64}$ && -z "$postgres_summary_extra" ]]
+[[ "$app_password_sha256" == "$postgres_password_sha256" && "$app_ca_sha256" == "$postgres_ca_sha256" ]]
+unset app_secret_summary app_password_sha256 app_ca_sha256 app_summary_extra
+unset postgres_secret_summary postgres_password_sha256 postgres_ca_sha256 postgres_summary_extra
 postgres_tls_dsn_verified="true"
-docker run --rm --pull never --network none --read-only --user root \
+docker run --rm --pull never --network none --read-only --user 65532:65532 \
   --cap-drop ALL --security-opt no-new-privileges:true --pids-limit 16 \
   --memory 32m --cpus 0.25 --log-driver none \
   --volume asteria-drive-staging-app-secrets:/app-secrets:ro \
   --entrypoint /bin/cat "$postgres_image" /app-secrets/postgres-ca.crt \
   >"$smoke_dir/preflight-postgres-ca.crt"
-docker run --rm --pull never --network none --read-only --user root \
+docker run --rm --pull never --network none --read-only --user 0:70 \
   --cap-drop ALL --security-opt no-new-privileges:true --pids-limit 16 \
   --memory 32m --cpus 0.25 --log-driver none \
   --volume asteria-drive-staging-postgres-secrets:/postgres-secrets:ro \

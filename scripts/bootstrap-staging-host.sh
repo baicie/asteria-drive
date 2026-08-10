@@ -11,7 +11,7 @@ dispatcher_config="/etc/asteria-drive/staging-dispatch.conf"
 monitor_path="/usr/local/libexec/asteria-staging-monitor"
 recovery_path="/usr/local/libexec/asteria-staging-recovery"
 expected_compose_sha256="aa4336dc8914faaccc304266cba715b8212d10722adb4afd7aeea5d40f4c9637"
-expected_deploy_script_sha256="8d405fcb372b54a2b7aa6f0abce1bb5f82b47cb209978f9e03e6332bf031d056"
+expected_deploy_script_sha256="fe980432f1b66328b4c06c5fb7319898e9e14f4c64ce7d648eb2ec18c2e6d355"
 expected_monitor_script_sha256="f32ef84387be1c1453f96be2fa466b46ba1b3a521dca72b74c67ad59b2be3682"
 expected_recovery_script_sha256="07b50b419b882873e75adf0b70ac3b960016c0b90634a159d0183fd85f93aad0"
 
