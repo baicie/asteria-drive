@@ -27,7 +27,8 @@ can invoke only
 `recovery <run-id> <attempt> <workflow-sha> <recovery-script-sha256>`; the
 dispatcher requires the workflow's reviewed digest to equal its host-side pin and does
 not provide an interactive shell, SFTP, forwarding, or application credentials.
-The pinned script reads the active staging PostgreSQL database, creates a
+The pinned script first verifies that the active API has a private-CA PostgreSQL TLS
+session, then reads the active staging database, creates a
 run-labelled temporary internal Docker network, PostgreSQL volume, and recovered
 API, and removes every resource it created before returning. Existing staging
 database and object-store volumes are never deleted or replaced, and no recovery
@@ -37,32 +38,40 @@ This drill restores PostgreSQL metadata with a custom-format `pg_dump` archive. 
 does not copy object data or object versions: the verifier reads the existing
 staging object store over the temporary internal network to check metadata/object
 consistency. Consequently it is a logical metadata restore check, not a point-in-
-time recovery or a production failover exercise.
+time recovery or a production failover exercise. The temporary recovery database
+uses an isolated internal drill connection; proving TLS on the source API does not
+make that target production TLS evidence.
 
 The workflow validates the returned JSON before uploading the secret-free
 `staging-recovery-evidence` artifact. The artifact contains the recovery JSON and,
 when the remote command writes diagnostics, only a SHA-256 of that stderr; raw
 remote stderr is discarded. GitHub retains this artifact for 90 days. A successful
-report has schema
-`asteria-drive-staging-recovery/v1`, `status=success`, `last_phase=complete`, the
+report is reserialized from an exact field and value allowlist only after remote
+stdout and stderr have been placed outside the artifact directory; those raw files
+are deleted on both success and failure. The local collection record contains only
+presence, byte count, and SHA-256 metadata. An accepted report has schema
+`asteria-drive-staging-recovery/v2`, `status=success`, `last_phase=complete`, the
 current GitHub run identity, the pinned Compose and image digests, and the claim
 boundary `staging-recovery-not-production`. The check fields that must be true are
 `backup_catalog_verified`, `source_stable_during_backup`, `restore_succeeded`,
 `schema_verified`, `table_counts_verified`, `storage_verifier_succeeded`,
 `recovered_health_succeeded`, `recovered_readiness_succeeded`,
 `recovered_authenticated_read_succeeded`, `recovered_metrics_scrape_succeeded`,
-`cleanup_verified`, and `capacity_guard_verified`.
+`cleanup_verified`, `capacity_guard_verified`, and
+`source_postgres_tls_verified`.
 
-The same report records the archive byte count and SHA-256, source/restored schema
+The same report records the archive byte count and SHA-256, source PostgreSQL TLS
+connection count, protocol, cipher and bit strength, source/restored schema
 versions, checked table and row totals, row-count digest, verifier checked/healthy
 counts and finding status, backup/restore elapsed seconds, and before/after disk
 threshold measurements. `object_versions_restored` and `pitr_wal_replayed` must be
 `false`; those values document what the drill did not prove. The workflow rejects
-unknown or extra JSON fields, malformed identities, failed cleanup, or a disk use
-above 85% / free space below 5 GiB. A failed run is an actionable staging signal,
-but its artifact is not approval to promote traffic.
+unknown or extra JSON fields, malformed identities, a missing source API TLS
+connection, a protocol outside TLS 1.2/1.3, cipher strength below 128 bits, failed
+cleanup, or a disk use above 85% / free space below 5 GiB. A failed run is an
+actionable staging signal, but its artifact is not approval to promote traffic.
 
-The exact v1 field allowlist is:
+The exact v2 field allowlist is:
 
 ```text
 schema status last_phase started_at completed_at github_run_id github_run_attempt
@@ -72,7 +81,9 @@ table_counts_verified storage_verifier_succeeded recovered_health_succeeded
 recovered_readiness_succeeded recovered_authenticated_read_succeeded
 recovered_metrics_scrape_succeeded cleanup_verified capacity_guard_verified
 object_versions_restored pitr_wal_replayed backup_archive_size_bytes
-backup_archive_sha256 source_schema_version restored_schema_version tables_checked
+backup_archive_sha256 source_postgres_tls_verified source_postgres_tls_connections
+source_postgres_tls_version source_postgres_tls_cipher source_postgres_tls_bits
+source_schema_version restored_schema_version tables_checked
 source_total_rows restored_total_rows row_counts_sha256 storage_verifier_checked
 storage_verifier_healthy storage_verifier_finding_count
 storage_verifier_findings_truncated backup_elapsed_seconds restore_elapsed_seconds
@@ -170,5 +181,6 @@ The latest repository-procedure evidence is the
 [2026-08-05 isolated recovery drill](evidence/recovery-drill-20260805.md). It passed
 the local seeded restore path but explicitly leaves production PITR, object
 immutability, platform controls, candidate binding, and independent approval open.
-An automated staging artifact may supplement that report, but it carries the same
-`staging-recovery-not-production` boundary and cannot establish production RPO/RTO.
+An automated staging artifact may supplement that report, but its source TLS uses a
+single-host private CA and it carries the same `staging-recovery-not-production`
+boundary. It cannot establish production TLS, PITR, HA, or RPO/RTO.

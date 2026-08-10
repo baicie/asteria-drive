@@ -13,7 +13,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  RECOVERY_SCRIPT_SHA256: 0e03a8e03ee2a98c277818e172822a401614f778f58f8c3e85130a83467402a6
+  RECOVERY_SCRIPT_SHA256: 07b50b419b882873e75adf0b70ac3b960016c0b90634a159d0183fd85f93aad0
 
 jobs:
   recovery:
@@ -83,12 +83,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          evidence="$RUNNER_TEMP/staging-recovery-evidence/recovery-evidence.json"
-          remote_stderr="$RUNNER_TEMP/staging-recovery-evidence/remote-stderr.log"
+          umask 077
+          evidence_dir="$RUNNER_TEMP/staging-recovery-evidence"
+          raw_evidence="$RUNNER_TEMP/staging-recovery.raw.json"
+          remote_stderr="$RUNNER_TEMP/staging-recovery.remote-stderr.log"
+          evidence="$evidence_dir/recovery-evidence.json"
+          collection_status="$evidence_dir/collection-status.json"
           [[ "$GITHUB_RUN_ID" =~ ^[0-9]{1,20}$ ]] || { printf 'run id is invalid\n' >&2; exit 1; }
           [[ "$GITHUB_RUN_ATTEMPT" =~ ^[0-9]{1,6}$ ]] || { printf 'run attempt is invalid\n' >&2; exit 1; }
           [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]] || { printf 'workflow SHA is invalid\n' >&2; exit 1; }
-          trap 'rm -f -- "$remote_stderr"' EXIT
+          trap 'rm -f -- "$raw_evidence" "$remote_stderr"' EXIT
           set +e
           ssh \
             -F none -i "$RUNNER_TEMP/ssh/key" -p "$DEPLOY_PORT" \
@@ -96,7 +100,8 @@ jobs:
             -o IdentitiesOnly=yes -o ProxyCommand=none -o StrictHostKeyChecking=yes \
             -o UserKnownHostsFile="$RUNNER_TEMP/ssh/known_hosts" \
             "$DEPLOY_USER@$DEPLOY_HOST" \
-            "recovery $GITHUB_RUN_ID $GITHUB_RUN_ATTEMPT $GITHUB_SHA $RECOVERY_SCRIPT_SHA256" >"$evidence" 2>"$remote_stderr"
+            "recovery $GITHUB_RUN_ID $GITHUB_RUN_ATTEMPT $GITHUB_SHA $RECOVERY_SCRIPT_SHA256" \
+            >"$raw_evidence" 2>"$remote_stderr"
           probe_exit="$?"
           set -e
           if [[ -s "$remote_stderr" ]]; then
@@ -106,9 +111,35 @@ jobs:
           else
             printf 'remote recovery stderr was empty\n'
           fi
-          rm -f -- "$remote_stderr"
-          trap - EXIT
-          PROBE_EXIT="$probe_exit" python3 - "$evidence" <<'PY'
+          RAW_EVIDENCE="$raw_evidence" RAW_STDERR="$remote_stderr" PROBE_EXIT="$probe_exit" \
+            python3 - "$collection_status" <<'PY'
+          import hashlib
+          import json
+          import os
+          import sys
+
+          def describe(path):
+              if not os.path.isfile(path):
+                  return {"present": False, "size_bytes": 0, "sha256": None}
+              digest = hashlib.sha256()
+              size = 0
+              with open(path, "rb") as handle:
+                  for chunk in iter(lambda: handle.read(65536), b""):
+                      size += len(chunk)
+                      digest.update(chunk)
+              return {"present": True, "size_bytes": size, "sha256": digest.hexdigest()}
+
+          status = {
+              "schema": "asteria-drive-staging-recovery-collection/v1",
+              "probe_exit": int(os.environ["PROBE_EXIT"]),
+              "raw_evidence": describe(os.environ["RAW_EVIDENCE"]),
+              "remote_stderr": describe(os.environ["RAW_STDERR"]),
+          }
+          with open(sys.argv[1], "x", encoding="utf-8") as handle:
+              json.dump(status, handle, indent=2, sort_keys=True)
+              handle.write("\n")
+          PY
+          PROBE_EXIT="$probe_exit" python3 - "$raw_evidence" "$evidence" <<'PY'
           import json
           import os
           import re
@@ -127,13 +158,18 @@ jobs:
               result = UniqueObject()
               for key, value in pairs:
                   if key in result:
-                      raise ValueError(f"duplicate evidence key: {key}")
+                      raise ValueError("duplicate evidence key")
                   result[key] = value
               return result
 
+          def reject_constant(value):
+              raise ValueError(f"non-finite JSON number is forbidden: {value}")
+
           try:
               with open(path, encoding="utf-8") as handle:
-                  report = json.load(handle, object_pairs_hook=reject_duplicates)
+                  report = json.load(
+                      handle, object_pairs_hook=reject_duplicates, parse_constant=reject_constant
+                  )
           except (OSError, ValueError, json.JSONDecodeError) as error:
               raise SystemExit(f"invalid recovery evidence JSON: {error}") from error
           if not isinstance(report, dict):
@@ -150,6 +186,9 @@ jobs:
               "recovered_authenticated_read_succeeded", "recovered_metrics_scrape_succeeded",
               "cleanup_verified", "capacity_guard_verified", "object_versions_restored",
               "pitr_wal_replayed", "backup_archive_size_bytes", "backup_archive_sha256",
+              "source_postgres_tls_verified", "source_postgres_tls_connections",
+              "source_postgres_tls_dsn_verified", "source_postgres_hba_verified",
+              "source_postgres_tls_version", "source_postgres_tls_cipher", "source_postgres_tls_bits",
               "source_schema_version", "restored_schema_version", "tables_checked",
               "source_total_rows", "restored_total_rows", "row_counts_sha256",
               "storage_verifier_checked", "storage_verifier_healthy",
@@ -163,17 +202,19 @@ jobs:
           if set(report) != expected_keys:
               missing = sorted(expected_keys - set(report))
               extra = sorted(set(report) - expected_keys)
-              raise SystemExit(f"recovery evidence fields mismatch (missing={missing}, extra={extra})")
+              raise SystemExit(
+                  f"recovery evidence fields mismatch (missing_count={len(missing)}, extra_count={len(extra)})"
+              )
 
           expected_identity = {
-              "schema": "asteria-drive-staging-recovery/v1",
+              "schema": "asteria-drive-staging-recovery/v2",
               "status": "success",
               "last_phase": "complete",
               "github_run_id": os.environ["GITHUB_RUN_ID"],
               "github_run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
               "workflow_sha": os.environ["GITHUB_SHA"],
-              "compose_sha256": "d7d39a2e965849f364ceb25ab4106efd575f9a6d924e8ebfd9d508a594adc5dc",
-              "expected_image": "sha256:f5da244cba2055764a8caae7b9e9a752cc8f07356c0d7ae6397a6a7992e0cccc",
+              "compose_sha256": "aa4336dc8914faaccc304266cba715b8212d10722adb4afd7aeea5d40f4c9637",
+              "expected_image": "sha256:2b73f8a7a271c0d7d6c7f73e15987b5e29290437146f07a57b57b9aef031d842",
               "expected_postgres_image": "sha256:6567bca8d7bc8c82c5922425a0baee57be8402df92bae5eacad5f01ae9544daa",
               "claim_boundary": "staging-recovery-not-production",
               "capacity_max_disk_used_percent": 85,
@@ -197,6 +238,19 @@ jobs:
           for key in required_true:
               if type(report.get(key)) is not bool or report[key] is not True:
                   raise SystemExit(f"recovery evidence did not prove {key}")
+          if report.get("source_postgres_tls_verified") is not True:
+              raise SystemExit("recovery evidence did not prove source PostgreSQL TLS")
+          for key in ("source_postgres_tls_dsn_verified", "source_postgres_hba_verified"):
+              if report.get(key) is not True:
+                  raise SystemExit(f"recovery evidence did not prove {key}")
+          if type(report.get("source_postgres_tls_connections")) is not int or report["source_postgres_tls_connections"] < 1:
+              raise SystemExit("recovery evidence has no source PostgreSQL TLS application connection")
+          if report.get("source_postgres_tls_version") not in {"TLSv1.2", "TLSv1.3"}:
+              raise SystemExit("recovery evidence has an unexpected source PostgreSQL TLS version")
+          if not isinstance(report.get("source_postgres_tls_cipher"), str) or not report["source_postgres_tls_cipher"].replace("_", "").replace("-", "").isalnum():
+              raise SystemExit("recovery evidence has an invalid source PostgreSQL TLS cipher")
+          if type(report.get("source_postgres_tls_bits")) is not int or report["source_postgres_tls_bits"] < 128:
+              raise SystemExit("recovery evidence has weak source PostgreSQL TLS cipher bits")
           for key in ("object_versions_restored", "pitr_wal_replayed"):
               if type(report.get(key)) is not bool or report[key] is not False:
                   raise SystemExit(f"recovery evidence crossed the non-production boundary for {key}")
@@ -243,7 +297,15 @@ jobs:
                   raise SystemExit(f"recovery evidence has invalid timestamp {key}")
           if report["storage_verifier_findings_truncated"] is not False:
               raise SystemExit("recovery verifier findings must not be truncated")
+          temporary = sys.argv[2] + ".tmp"
+          with open(temporary, "x", encoding="utf-8") as handle:
+              json.dump(report, handle, indent=2, sort_keys=True)
+              handle.write("\n")
+          os.chmod(temporary, 0o600)
+          os.replace(temporary, sys.argv[2])
           PY
+          rm -f -- "$raw_evidence" "$remote_stderr"
+          trap - EXIT
 
       - name: Upload recovery evidence
         if: ${{ always() }}

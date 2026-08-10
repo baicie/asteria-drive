@@ -29,6 +29,7 @@
 | [0021](0021-production-runtime-and-recovery.md) | Production secrets, hardened runtime, backup/restore, and security review | Accepted |
 | [0022](0022-github-actions-staging-deployment.md) | GitHub Actions single-host staging deployment | Accepted |
 | [0023](0023-s3-control-and-public-presign-endpoints.md) | Separate private S3 control traffic from client-visible presigned URLs | Accepted |
+| [0024](0024-staging-postgresql-private-pki.md) | Staging PostgreSQL private PKI, TLS verification, and sanitized evidence | Accepted |
 
 ## Conventions
 

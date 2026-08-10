@@ -6,13 +6,14 @@ import (
 	"os"
 	"reflect"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
 	"gopkg.in/yaml.v3"
 )
 
-const stagingImage = "ghcr.io/baicie/asteria-drive@sha256:f5da244cba2055764a8caae7b9e9a752cc8f07356c0d7ae6397a6a7992e0cccc"
+const stagingImage = "ghcr.io/baicie/asteria-drive@sha256:2b73f8a7a271c0d7d6c7f73e15987b5e29290437146f07a57b57b9aef031d842"
 
 func TestStagingDeploymentWorkflowTrustBoundary(t *testing.T) {
 	t.Parallel()
@@ -32,6 +33,7 @@ func TestStagingDeploymentWorkflowTrustBoundary(t *testing.T) {
 	}
 	for _, required := range []string{
 		stagingImage,
+		"deploy-v0.1.1",
 		"github.ref == 'refs/heads/main'",
 		"gh attestation verify",
 		"--signer-workflow baicie/asteria-drive/.github/workflows/release.yml",
@@ -45,7 +47,7 @@ func TestStagingDeploymentWorkflowTrustBoundary(t *testing.T) {
 		"upload-script $GITHUB_RUN_ID $GITHUB_RUN_ATTEMPT",
 		"fetch $GITHUB_RUN_ID $GITHUB_RUN_ATTEMPT $artifact",
 		"COMPOSE_SHA256",
-		"asteria-drive-staging-deployment/v1",
+		"asteria-drive-staging-deployment/v2",
 		"type(checked) is not int",
 		"type(available) is not int",
 		"data_volume_filesystems_verified",
@@ -53,6 +55,22 @@ func TestStagingDeploymentWorkflowTrustBoundary(t *testing.T) {
 		"seaweedfs_data_filesystem",
 		"deployment evidence did not prove",
 		"storage verifier identity does not match deployment evidence",
+		"postgres_tls_verified",
+		"postgres_plaintext_rejected",
+		"postgres_tls_leaf_san",
+		"postgres_tls_dsn_verified",
+		"postgres_hba_verified",
+		"rollback_attempted",
+		"runtime_changed",
+		"candidate_cleanup_attempted",
+		"failed deployment evidence omitted rollback attempt",
+		"deployment evidence fields mismatch",
+		"asteria-drive-staging-deployment-collection/v1",
+		"staging-deployment.raw.json",
+		"staging-deploy.remote-stdout.log",
+		"deployment_command_stderr",
+		"storage verifier fields mismatch",
+		"os.replace(temporary, destination)",
 		"scripts/deploy-staging.sh",
 		"deployment-evidence.json",
 		"storage-verifier.json",
@@ -91,12 +109,24 @@ func TestStagingDeploymentWorkflowTrustBoundary(t *testing.T) {
 	if job.Name != "Deploy / staging" || job.RunsOn != "ubuntu-24.04" || job.Environment != "staging" || job.TimeoutMinutes != 20 {
 		t.Errorf("unexpected deploy job contract: %#v", job)
 	}
+	if job.If != "github.ref == 'refs/heads/main' && inputs.confirmation == 'deploy-v0.1.1'" {
+		t.Errorf("deploy job condition = %q", job.If)
+	}
 	if len(job.Permissions) != 0 {
 		t.Errorf("deploy job overrides top-level permissions: %#v", job.Permissions)
 	}
+	deploySteps := make(map[string]workflowStep, len(job.Steps))
 	for _, step := range job.Steps {
+		deploySteps[step.Name] = step
 		if step.Uses != "" && !pinnedAction.MatchString(step.Uses) {
 			t.Errorf("deployment uses mutable Action reference %q", step.Uses)
+		}
+	}
+	for _, name := range []string{
+		"Collect sanitized deployment evidence", "Upload deployment evidence", "Remove remote temporary files",
+	} {
+		if deploySteps[name].If != `${{ always() }}` {
+			t.Errorf("deployment step %q condition = %q, want always()", name, deploySteps[name].If)
 		}
 	}
 	if count := strings.Count(text, "secrets.ASTERIA_STAGING_SSH_"); count != 5 {
@@ -133,6 +163,14 @@ func TestStagingComposePinsImagesAndKeepsPortsOnLoopback(t *testing.T) {
 		"cap_drop:",
 		"ASTERIA_TRUSTED_TOKENS_JSON_FILE",
 		"ASTERIA_DATABASE_URL_FILE",
+		"/var/run/secrets/asteria/database-url-tls",
+		"ssl=on",
+		"ssl_min_protocol_version=TLSv1.2",
+		"hba_file=/var/run/secrets/asteria/pg_hba.conf",
+		"sslmode=verify-full",
+		"postgres-ca.crt",
+		"postgres-server.crt",
+		"postgres-server.key",
 		"ASTERIA_CURSOR_HMAC_KEY_FILE",
 		"staging-not-production",
 	} {
@@ -154,7 +192,9 @@ func TestStagingComposePinsImagesAndKeepsPortsOnLoopback(t *testing.T) {
 
 	var compose struct {
 		Services map[string]struct {
-			Networks []string `yaml:"networks"`
+			Networks    []string          `yaml:"networks"`
+			Environment map[string]string `yaml:"environment"`
+			Command     []string          `yaml:"command"`
 		} `yaml:"services"`
 		Networks map[string]struct {
 			Internal bool `yaml:"internal"`
@@ -175,6 +215,25 @@ func TestStagingComposePinsImagesAndKeepsPortsOnLoopback(t *testing.T) {
 	if !compose.Networks["backend"].Internal || compose.Networks["loopback"].Internal {
 		t.Errorf("unexpected staging network isolation: %#v", compose.Networks)
 	}
+	if compose.Services["api"].Environment["ASTERIA_ENV"] != "development" {
+		t.Fatal("staging API must retain the explicit non-production boundary")
+	}
+	if compose.Services["migrate"].Environment["ASTERIA_ENV"] != "production" {
+		t.Fatal("staging migration must exercise production database URL validation")
+	}
+	for _, service := range []string{"api", "migrate", "verifier"} {
+		if got := compose.Services[service].Environment["ASTERIA_DATABASE_URL_FILE"]; got != "/var/run/secrets/asteria/database-url-tls" {
+			t.Errorf("%s database URL file = %q", service, got)
+		}
+	}
+	for _, required := range []string{
+		"ssl=on", "ssl_min_protocol_version=TLSv1.2",
+		"hba_file=/var/run/secrets/asteria/pg_hba.conf",
+	} {
+		if !slices.Contains(compose.Services["postgres"].Command, required) {
+			t.Errorf("PostgreSQL command is missing %q", required)
+		}
+	}
 }
 
 func TestStagingScriptsKeepSecretsServerSideAndEmitEvidence(t *testing.T) {
@@ -192,6 +251,11 @@ func TestStagingScriptsKeepSecretsServerSideAndEmitEvidence(t *testing.T) {
 		"restrict,command=\"%s\"", "SSH_ORIGINAL_COMMAND", "upload-compose", "upload-script",
 		"receive_file", "sha256sum", "openssl rand", "docker volume create",
 		"refusing to rotate implicitly", "require_metadata", "chmod 0400",
+		"staging-postgres-pki", "database-url-tls", "postgres-ca.crt",
+		"postgres-server.crt", "postgres-server.key", "pg_hba.conf",
+		"verify_hostname postgres", "DNS:postgres", "hostnossl all all 0.0.0.0/0 reject",
+		"basicConstraints=critical,CA:TRUE", "keyUsage=critical,keyCertSign,cRLSign",
+		"partial; refusing implicit repair or rotation", `"$pki_issuer/ca.key" "0:0" "400"`,
 	} {
 		if !strings.Contains(string(bootstrap), required) {
 			t.Errorf("staging bootstrap is missing %q", required)
@@ -229,6 +293,22 @@ func TestStagingScriptsKeepSecretsServerSideAndEmitEvidence(t *testing.T) {
 		"run --rm verifier",
 		"staging-not-production",
 		"server-managed-docker-volumes",
+		"verify_postgres_tls",
+		"verify_image_identity",
+		`docker inspect --format '{{.Config.Image}}'`,
+		`docker image inspect --format '{{.Id}}'`,
+		"pg_stat_activity a JOIN pg_stat_ssl s",
+		"pg_hba_file_rules",
+		"sslmode=disable connect_timeout=5",
+		"postgres_plaintext_stderr_sha256",
+		"postgres_scram_password_verified",
+		"rollback_runtime",
+		"rollback_attempted",
+		"cleanup_candidate_runtime",
+		"candidate_cleanup_succeeded",
+		"up -d --pull never",
+		"previous_compose_available",
+		"database-url-tls",
 	} {
 		if !strings.Contains(string(deploy), required) {
 			t.Errorf("staging deployment script is missing %q", required)
@@ -319,11 +399,24 @@ func TestStagingMonitorWorkflowAndScriptTrustBoundary(t *testing.T) {
 		"StrictHostKeyChecking=yes",
 		"UserKnownHostsFile=",
 		"status $GITHUB_RUN_ID $GITHUB_RUN_ATTEMPT $GITHUB_SHA",
-		"asteria-drive-staging-monitor/v1",
+		"asteria-drive-staging-monitor/v2",
 		"staging-not-production",
 		"capacity_max_disk_used_percent",
 		"capacity_min_disk_available_bytes",
 		"monitor evidence did not prove",
+		"postgres_tls_verified",
+		"postgres_plaintext_rejected",
+		"postgres_tls_leaf_san",
+		"postgres_tls_dsn_verified",
+		"postgres_hba_verified",
+		"MONITOR_SCRIPT_SHA256",
+		"status $GITHUB_RUN_ID $GITHUB_RUN_ATTEMPT $GITHUB_SHA $MONITOR_SCRIPT_SHA256",
+		"PostgreSQL certificate expires in under 30 days",
+		"monitor evidence fields mismatch",
+		"asteria-drive-staging-monitor-collection/v1",
+		"staging-monitor.raw.json",
+		`>"$raw_evidence" 2>"$raw_stderr"`,
+		"os.replace(temporary, sys.argv[2])",
 		"PROBE_EXIT",
 		"staging-monitor-evidence",
 	} {
@@ -363,9 +456,15 @@ func TestStagingMonitorWorkflowAndScriptTrustBoundary(t *testing.T) {
 	if job.Name != "Monitor / staging" || job.RunsOn != "ubuntu-24.04" || job.Environment != "staging" || job.TimeoutMinutes != 10 {
 		t.Errorf("unexpected staging monitor job contract: %#v", job)
 	}
+	if job.If != "github.ref == 'refs/heads/main'" {
+		t.Errorf("monitor job condition = %q", job.If)
+	}
 	for _, step := range job.Steps {
 		if step.Uses != "" && !pinnedAction.MatchString(step.Uses) {
 			t.Errorf("staging monitor uses mutable Action reference %q", step.Uses)
+		}
+		if step.Name == "Upload monitor evidence" && step.If != `${{ always() }}` {
+			t.Errorf("monitor upload condition = %q, want always()", step.If)
 		}
 	}
 
@@ -375,8 +474,8 @@ func TestStagingMonitorWorkflowAndScriptTrustBoundary(t *testing.T) {
 	}
 	monitorText := string(monitor)
 	for _, required := range []string{
-		"sha256:f5da244cba2055764a8caae7b9e9a752cc8f07356c0d7ae6397a6a7992e0cccc",
-		"asteria-drive-staging-monitor/v1",
+		"sha256:2b73f8a7a271c0d7d6c7f73e15987b5e29290437146f07a57b57b9aef031d842",
+		"asteria-drive-staging-monitor/v2",
 		"status=\"failed\"",
 		"trap finish EXIT",
 		"max_disk_used_percent=85",
@@ -390,6 +489,18 @@ func TestStagingMonitorWorkflowAndScriptTrustBoundary(t *testing.T) {
 		"127.0.0.1:19090/metrics",
 		"awk '/^asteria_http_requests_total([ {]|$)/ { found = 1 } END { exit(found ? 0 : 1) }'",
 		"staging-not-production",
+		"verify_postgres_tls",
+		"http-readiness",
+		`docker inspect --format '{{.Config.Image}}'`,
+		`docker image inspect --format '{{.Id}}'`,
+		"pg_stat_activity a JOIN pg_stat_ssl s",
+		"sslmode=disable connect_timeout=5",
+		"postgres_plaintext_stderr_sha256",
+		"postgres_tls_dsn_verified",
+		"postgres_hba_verified",
+		"pg_hba_file_rules",
+		`rm -f -- "$plaintext_stderr"`,
+		`-checkend $((30 * 24 * 60 * 60)) -noout >/dev/null`,
 	} {
 		if !strings.Contains(monitorText, required) {
 			t.Errorf("staging monitor script is missing %q", required)
@@ -404,9 +515,13 @@ func TestStagingMonitorWorkflowAndScriptTrustBoundary(t *testing.T) {
 		t.Fatal(err)
 	}
 	monitorDigest := fmt.Sprintf("%x", sha256.Sum256(monitor))
+	if workflow.Env["MONITOR_SCRIPT_SHA256"] != monitorDigest {
+		t.Errorf("monitor workflow digest = %q, want %s", workflow.Env["MONITOR_SCRIPT_SHA256"], monitorDigest)
+	}
 	for _, required := range []string{
 		"ASTERIA_STAGING_MONITOR_B64",
 		"monitor_script_sha256",
+		"requested_monitor_sha",
 		"status)",
 		`[[ "$(stat -c '%u:%g:%a' "$monitor_path")" == "0:0:755" ]]`,
 		`[[ "$(sha256sum "$monitor_path" | awk '{print $1}')" == "$monitor_script_sha256" ]]`,
@@ -444,13 +559,21 @@ func TestStagingRecoveryWorkflowAndScriptTrustBoundary(t *testing.T) {
 		"StrictHostKeyChecking=yes",
 		"UserKnownHostsFile=",
 		"recovery $GITHUB_RUN_ID $GITHUB_RUN_ATTEMPT $GITHUB_SHA $RECOVERY_SCRIPT_SHA256",
-		"asteria-drive-staging-recovery/v1",
+		"asteria-drive-staging-recovery/v2",
 		"staging-recovery-not-production",
 		"object_versions_restored",
 		"pitr_wal_replayed",
 		"recovery evidence fields mismatch",
+		"source_postgres_tls_verified",
+		"source_postgres_tls_connections",
+		"source_postgres_tls_dsn_verified",
+		"source_postgres_hba_verified",
+		"asteria-drive-staging-recovery-collection/v1",
+		"staging-recovery.raw.json",
+		`>"$raw_evidence" 2>"$remote_stderr"`,
+		"os.replace(temporary, sys.argv[2])",
 		"remote-stderr.sha256",
-		"rm -f -- \"$remote_stderr\"",
+		`rm -f -- "$raw_evidence" "$remote_stderr"`,
 		"staging-recovery-evidence",
 		"if-no-files-found: error",
 	} {
@@ -490,9 +613,15 @@ func TestStagingRecoveryWorkflowAndScriptTrustBoundary(t *testing.T) {
 	if job.Name != "Recovery drill / staging" || job.RunsOn != "ubuntu-24.04" || job.Environment != "staging" || job.TimeoutMinutes != 30 {
 		t.Errorf("unexpected staging recovery job contract: %#v", job)
 	}
+	if job.If != "github.ref == 'refs/heads/main'" {
+		t.Errorf("recovery job condition = %q", job.If)
+	}
 	for _, step := range job.Steps {
 		if step.Uses != "" && !pinnedAction.MatchString(step.Uses) {
 			t.Errorf("staging recovery uses mutable Action reference %q", step.Uses)
+		}
+		if step.Name == "Upload recovery evidence" && step.If != `${{ always() }}` {
+			t.Errorf("recovery upload condition = %q, want always()", step.If)
 		}
 	}
 
@@ -522,6 +651,16 @@ func TestStagingRecoveryWorkflowAndScriptTrustBoundary(t *testing.T) {
 		"cleanup_verified=\"true\"",
 		"object_versions_restored=\"false\"",
 		"pitr_wal_replayed=\"false\"",
+		"verify-source-postgres-tls",
+		"verify_image_identity",
+		`docker inspect --format '{{.Config.Image}}'`,
+		`docker image inspect --format '{{.Id}}'`,
+		"curl --fail --silent --show-error --max-time 5 http://127.0.0.1:18080/readyz >/dev/null",
+		"pg_stat_activity a JOIN pg_stat_ssl s",
+		"source_postgres_tls_verified=\"true\"",
+		"source_postgres_tls_dsn_verified",
+		"source_postgres_hba_verified",
+		"pg_hba_file_rules",
 		"staging-recovery-not-production",
 	} {
 		if !strings.Contains(recoveryText, required) {

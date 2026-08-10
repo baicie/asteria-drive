@@ -760,3 +760,65 @@ close a repository configuration bypass only. Current staging still uses a non-T
 development PostgreSQL link, and `v0.1.0` predates the fix; a new immutable release,
 real CA/host-name validation, measured `pg_stat_ssl` evidence, and target-platform
 certificate rotation remain required.
+
+## 2026-08-10 - v0.1.1 release and provenance closeout
+
+PostgreSQL production TLS guardrails merged into protected `main` through PR
+[#37](https://github.com/baicie/asteria-drive/pull/37) at
+`e8d26ded6e9138bbfdeac60f2487c5f835ab61a5`. Release workflow
+[31298871230](https://github.com/baicie/asteria-drive/actions/runs/31298871230)
+published immutable
+[`v0.1.1`](https://github.com/baicie/asteria-drive/releases/tag/v0.1.1) artifacts.
+Checksums, the SPDX 2.3 SBOM, all four Release subject provenance statements, and
+OCI provenance were independently verified.
+
+The published multi-architecture OCI digest is
+`sha256:2b73f8a7a271c0d7d6c7f73e15987b5e29290437146f07a57b57b9aef031d842`;
+its Linux `amd64` and `arm64` manifests are respectively
+`sha256:fa1d574cabfe0ca38b88e07bec5e4524bdfd2528757555850fda55472d397c1c`
+and
+`sha256:9a31d5c8f9b73dd44fdb181a052110bcd6792bf9160ab1fcff2185a0e5f4ca5b`.
+This closes the immutable release prerequisite for the staging TLS rollout. It does
+not prove that the staging host is running `v0.1.1`, and it does not close any
+platform-owned public-production gate.
+
+## 2026-08-10 - staging PostgreSQL private PKI implementation
+
+[ADR-0024](../adr/0024-staging-postgresql-private-pki.md) replaces only the
+single-host staging decision to use plaintext PostgreSQL. Explicit root bootstrap
+now creates a 3072-bit private CA and a `serverAuth` leaf whose SAN is exactly
+`DNS:postgres`. The CA private key is root-owned mode `0400` and remains only at
+`/etc/asteria-drive/staging-postgres-pki/issuer/ca.key`; Actions, Docker volumes, and
+evidence artifacts never receive it. Bootstrap refuses a partial PKI and does not
+implicitly repair or rotate certificates.
+
+The candidate Compose target enables PostgreSQL TLS with a TLS 1.2 minimum, rejects
+plaintext TCP, and requires SCRAM-SHA-256 on TLS TCP connections. The API stays
+inside the `development`/trusted-development staging boundary, while migration runs
+with `ASTERIA_ENV=production`; both consume the file-mounted `database-url-tls` with
+`sslmode=verify-full`. The old `database-url` remains only for automatic rollback to
+the previous active `v0.1.0` Compose definition.
+
+Deployment and monitor verification cover file ownership, chain and host-name
+validation, certificate validity, HBA and TLS settings, SCRAM storage, API sessions
+in `pg_stat_ssl`, negotiated TLS version/cipher/bits, and rejection of an explicit
+plaintext connection. The negative probe deletes raw stderr after retaining only a
+presence flag and SHA-256. Candidate failures after a runtime change restore the
+previous PostgreSQL, SeaweedFS, and API offline from local images and recheck
+readiness, the fixed image reference, and the matching local config ID. A failed
+first deployment removes only candidate containers and networks, preserving every
+persistent data and secret volume.
+
+Deployment, monitor, and recovery evidence advance to v2 schemas with duplicate-key
+rejection and exact field allowlists. Recovery v2 records the source API's TLS
+connection/version/cipher/bits before the logical backup; its temporary restore
+database remains an isolated staging resource and is not production TLS or PITR
+evidence.
+
+At this checkpoint the shell syntax checks, rendered staging Compose validation, and
+Actions policy lint pass locally. Runtime closure is intentionally still open until
+the change passes protected checks, merges to `main`, the selected host is explicitly
+re-bootstrapped without replacing data or credentials, `v0.1.1` is deployed, and the
+deployment/monitor/recovery v2 artifacts are independently verified. The private CA
+does not close public TLS, managed database PKI/rotation, encrypted production
+PITR/WAL, object immutability, KMS, HA, SIEM/alerts, or independent approval.
