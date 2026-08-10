@@ -10,10 +10,10 @@ dispatcher_path="/usr/local/libexec/asteria-staging-dispatch"
 dispatcher_config="/etc/asteria-drive/staging-dispatch.conf"
 monitor_path="/usr/local/libexec/asteria-staging-monitor"
 recovery_path="/usr/local/libexec/asteria-staging-recovery"
-expected_compose_sha256="d7d39a2e965849f364ceb25ab4106efd575f9a6d924e8ebfd9d508a594adc5dc"
-expected_deploy_script_sha256="d493441e028f06ca45c72d19f9a1796e6c248be057d42678376d77fc1d508518"
-expected_monitor_script_sha256="8c7e3526c091e0c73b5300f8ec105c027bf9fbee750554f716f15772c6d4e134"
-expected_recovery_script_sha256="0e03a8e03ee2a98c277818e172822a401614f778f58f8c3e85130a83467402a6"
+expected_compose_sha256="aa4336dc8914faaccc304266cba715b8212d10722adb4afd7aeea5d40f4c9637"
+expected_deploy_script_sha256="8d405fcb372b54a2b7aa6f0abce1bb5f82b47cb209978f9e03e6332bf031d056"
+expected_monitor_script_sha256="f32ef84387be1c1453f96be2fa466b46ba1b3a521dca72b74c67ad59b2be3682"
+expected_recovery_script_sha256="07b50b419b882873e75adf0b70ac3b960016c0b90634a159d0183fd85f93aad0"
 
 if [[ "$(id -u)" -ne 0 ]]; then
   printf 'bootstrap-staging-host.sh must run as root\n' >&2
@@ -43,7 +43,7 @@ if ! command -v docker >/dev/null || ! docker compose version >/dev/null 2>&1; t
   printf 'Docker Engine and Docker Compose are required\n' >&2
   exit 1
 fi
-for command in base64 openssl python3 sha256sum; do
+for command in awk base64 cmp grep openssl python3 sha256sum; do
   command -v "$command" >/dev/null || { printf '%s is required\n' "$command" >&2; exit 1; }
 done
 
@@ -65,6 +65,8 @@ install -d -m 0750 -o "$deploy_user" -g "$deploy_group" "$deploy_root"
 app_volume="asteria-drive-staging-app-secrets"
 postgres_volume="asteria-drive-staging-postgres-secrets"
 seaweedfs_volume="asteria-drive-staging-seaweedfs-secrets"
+pki_root="/etc/asteria-drive/staging-postgres-pki"
+pki_issuer="$pki_root/issuer"
 for volume in "$app_volume" "$postgres_volume" "$seaweedfs_volume"; do
   docker volume create "$volume" >/dev/null
 done
@@ -72,7 +74,7 @@ app_dir="$(docker volume inspect --format '{{.Mountpoint}}' "$app_volume")"
 postgres_dir="$(docker volume inspect --format '{{.Mountpoint}}' "$postgres_volume")"
 seaweedfs_dir="$(docker volume inspect --format '{{.Mountpoint}}' "$seaweedfs_volume")"
 
-expected=(
+core_expected=(
   "$app_dir/database-url"
   "$app_dir/cursor-hmac-key"
   "$app_dir/trusted-tokens.json"
@@ -81,16 +83,16 @@ expected=(
   "$postgres_dir/postgres-password"
   "$seaweedfs_dir/s3.json"
 )
-present=0
-for path in "${expected[@]}"; do
-  [[ -f "$path" ]] && present=$((present + 1))
+core_present=0
+for path in "${core_expected[@]}"; do
+  [[ -f "$path" ]] && core_present=$((core_present + 1))
 done
-if [[ "$present" -ne 0 && "$present" -ne "${#expected[@]}" ]]; then
+if [[ "$core_present" -ne 0 && "$core_present" -ne "${#core_expected[@]}" ]]; then
   printf 'staging secret volumes are only partially initialized; refusing to rotate implicitly\n' >&2
   exit 1
 fi
 
-if [[ "$present" -eq 0 ]]; then
+if [[ "$core_present" -eq 0 ]]; then
   postgres_password="$(openssl rand -hex 24)"
   cursor_key="$(openssl rand -hex 48)"
   trusted_token="$(openssl rand -hex 32)"
@@ -108,17 +110,21 @@ if [[ "$present" -eq 0 ]]; then
 {"identities":[{"name":"asteria-staging","credentials":[{"accessKey":"$s3_access_key","secretKey":"$s3_secret_key"}],"actions":["Admin","Read","List","Tagging","Write"]}]}
 EOF
 
-  chown -R 65532:65532 "$app_dir"
-  chmod 0400 "$app_dir"/*
-  chown -R root:root "$postgres_dir" "$seaweedfs_dir"
+  chown 65532:65532 \
+    "$app_dir/database-url" "$app_dir/cursor-hmac-key" "$app_dir/trusted-tokens.json" \
+    "$app_dir/s3-access-key-id" "$app_dir/s3-secret-access-key"
+  chmod 0400 \
+    "$app_dir/database-url" "$app_dir/cursor-hmac-key" "$app_dir/trusted-tokens.json" \
+    "$app_dir/s3-access-key-id" "$app_dir/s3-secret-access-key"
+  chown root:root "$postgres_dir/postgres-password" "$seaweedfs_dir/s3.json"
   chmod 0400 "$postgres_dir/postgres-password" "$seaweedfs_dir/s3.json"
 fi
 
 require_metadata() {
-  local path="$1" expected_owner="$2" actual
+  local path="$1" expected_owner="$2" expected_mode="$3" actual
   [[ -s "$path" && ! -L "$path" ]] || { printf 'invalid staging secret file: %s\n' "$path" >&2; exit 1; }
   actual="$(stat -c '%u:%g:%a' "$path")"
-  [[ "$actual" == "$expected_owner:400" ]] || {
+  [[ "$actual" == "$expected_owner:$expected_mode" ]] || {
     printf 'unsafe staging secret metadata for %s\n' "$path" >&2
     exit 1
   }
@@ -129,10 +135,10 @@ for path in \
   "$app_dir/trusted-tokens.json" \
   "$app_dir/s3-access-key-id" \
   "$app_dir/s3-secret-access-key"; do
-  require_metadata "$path" "65532:65532"
+  require_metadata "$path" "65532:65532" "400"
 done
-require_metadata "$postgres_dir/postgres-password" "0:0"
-require_metadata "$seaweedfs_dir/s3.json" "0:0"
+require_metadata "$postgres_dir/postgres-password" "0:0" "400"
+require_metadata "$seaweedfs_dir/s3.json" "0:0" "400"
 
 python3 - \
   "$app_dir/database-url" "$app_dir/cursor-hmac-key" "$app_dir/trusted-tokens.json" \
@@ -181,6 +187,149 @@ if credentials[0].get("accessKey") != access_key or credentials[0].get("secretKe
 required_actions = {"Admin", "Read", "List", "Tagging", "Write"}
 if set(identities[0].get("actions", [])) != required_actions:
     raise SystemExit("staging S3 actions are invalid")
+PY
+
+tls_expected=(
+  "$app_dir/database-url-tls"
+  "$app_dir/postgres-ca.crt"
+  "$postgres_dir/postgres-ca.crt"
+  "$postgres_dir/postgres-server.crt"
+  "$postgres_dir/postgres-server.key"
+  "$postgres_dir/pg_hba.conf"
+  "$pki_issuer/ca.crt"
+  "$pki_issuer/ca.key"
+)
+tls_present=0
+for path in "${tls_expected[@]}"; do
+  [[ -f "$path" ]] && tls_present=$((tls_present + 1))
+done
+if [[ "$tls_present" -ne 0 && "$tls_present" -ne "${#tls_expected[@]}" ]]; then
+  printf 'staging PostgreSQL TLS material is partial; refusing implicit repair or rotation\n' >&2
+  exit 1
+fi
+
+if [[ "$tls_present" -eq 0 ]]; then
+  install -d -m 0700 -o root -g root "$pki_root" "$pki_issuer"
+  pki_tmp="$(mktemp -d /tmp/asteria-staging-postgres-pki.XXXXXXXX)"
+  [[ "$pki_tmp" =~ ^/tmp/asteria-staging-postgres-pki\.[A-Za-z0-9]{8}$ ]] || exit 1
+  cleanup_pki_tmp() {
+    rm -rf -- "$pki_tmp"
+  }
+  trap cleanup_pki_tmp EXIT
+  umask 077
+  openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out "$pki_tmp/ca.key"
+  openssl req -x509 -new -sha256 -days 3650 \
+    -key "$pki_tmp/ca.key" -out "$pki_tmp/ca.crt" \
+    -subj '/CN=Asteria staging PostgreSQL CA' \
+    -addext 'basicConstraints=critical,CA:TRUE' \
+    -addext 'keyUsage=critical,keyCertSign,cRLSign'
+  openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out "$pki_tmp/server.key"
+  openssl req -new -sha256 -key "$pki_tmp/server.key" -out "$pki_tmp/server.csr" \
+    -subj '/CN=postgres'
+  cat >"$pki_tmp/server.ext" <<'EOF'
+basicConstraints=critical,CA:FALSE
+keyUsage=critical,digitalSignature,keyEncipherment
+extendedKeyUsage=serverAuth
+subjectAltName=DNS:postgres
+EOF
+  openssl x509 -req -sha256 -days 397 \
+    -in "$pki_tmp/server.csr" -CA "$pki_tmp/ca.crt" -CAkey "$pki_tmp/ca.key" \
+    -CAcreateserial -extfile "$pki_tmp/server.ext" -out "$pki_tmp/server.crt"
+  cat >"$pki_tmp/pg_hba.conf" <<'EOF'
+local all all trust
+hostnossl all all 0.0.0.0/0 reject
+hostnossl all all ::/0 reject
+hostssl all all 0.0.0.0/0 scram-sha-256
+hostssl all all ::/0 scram-sha-256
+EOF
+  openssl verify -CAfile "$pki_tmp/ca.crt" -verify_hostname postgres "$pki_tmp/server.crt" >/dev/null
+  openssl x509 -in "$pki_tmp/ca.crt" -noout -ext basicConstraints | grep -Fq 'CA:TRUE'
+  openssl x509 -in "$pki_tmp/ca.crt" -noout -ext keyUsage | grep -Fq 'Certificate Sign, CRL Sign'
+  openssl x509 -in "$pki_tmp/server.crt" -checkend $((30 * 24 * 60 * 60)) -noout
+  ca_public_key="$(openssl pkey -in "$pki_tmp/ca.key" -pubout -outform DER 2>/dev/null | sha256sum | awk '{print $1}')"
+  ca_certificate_key="$(openssl x509 -in "$pki_tmp/ca.crt" -pubkey -noout | \
+    openssl pkey -pubin -outform DER 2>/dev/null | sha256sum | awk '{print $1}')"
+  server_public_key="$(openssl pkey -in "$pki_tmp/server.key" -pubout -outform DER 2>/dev/null | sha256sum | awk '{print $1}')"
+  server_certificate_key="$(openssl x509 -in "$pki_tmp/server.crt" -pubkey -noout | \
+    openssl pkey -pubin -outform DER 2>/dev/null | sha256sum | awk '{print $1}')"
+  [[ "$ca_public_key" == "$ca_certificate_key" && "$server_public_key" == "$server_certificate_key" ]]
+
+  postgres_password="$(<"$postgres_dir/postgres-password")"
+  [[ "$postgres_password" =~ ^[0-9a-f]{48}$ ]] || { printf 'staging PostgreSQL password format is invalid\n' >&2; exit 1; }
+  printf 'postgres://asteria:%s@postgres:5432/asteria?sslmode=verify-full&sslrootcert=/var/run/secrets/asteria/postgres-ca.crt&application_name=asteria-drive-staging-api\n' \
+    "$postgres_password" >"$pki_tmp/database-url-tls"
+  unset postgres_password
+
+  install -m 0400 -o root -g root "$pki_tmp/ca.key" "$pki_issuer/ca.key"
+  install -m 0444 -o root -g root "$pki_tmp/ca.crt" "$pki_issuer/ca.crt"
+  install -m 0400 -o 65532 -g 65532 "$pki_tmp/ca.crt" "$app_dir/postgres-ca.crt"
+  install -m 0400 -o 65532 -g 65532 "$pki_tmp/database-url-tls" "$app_dir/database-url-tls"
+  install -m 0640 -o root -g 70 "$pki_tmp/ca.crt" "$postgres_dir/postgres-ca.crt"
+  install -m 0640 -o root -g 70 "$pki_tmp/server.crt" "$postgres_dir/postgres-server.crt"
+  install -m 0640 -o root -g 70 "$pki_tmp/server.key" "$postgres_dir/postgres-server.key"
+  install -m 0640 -o root -g 70 "$pki_tmp/pg_hba.conf" "$postgres_dir/pg_hba.conf"
+  trap - EXIT
+  cleanup_pki_tmp
+fi
+
+require_metadata "$app_dir/database-url-tls" "65532:65532" "400"
+require_metadata "$app_dir/postgres-ca.crt" "65532:65532" "400"
+require_metadata "$postgres_dir/postgres-ca.crt" "0:70" "640"
+require_metadata "$postgres_dir/postgres-server.crt" "0:70" "640"
+require_metadata "$postgres_dir/postgres-server.key" "0:70" "640"
+require_metadata "$postgres_dir/pg_hba.conf" "0:70" "640"
+require_metadata "$pki_issuer/ca.crt" "0:0" "444"
+require_metadata "$pki_issuer/ca.key" "0:0" "400"
+for directory in "$pki_root" "$pki_issuer"; do
+  [[ "$(stat -c '%u:%g:%a' "$directory")" == "0:0:700" ]] || {
+    printf 'unsafe staging PostgreSQL PKI directory metadata\n' >&2
+    exit 1
+  }
+done
+cmp --silent "$app_dir/postgres-ca.crt" "$postgres_dir/postgres-ca.crt"
+cmp --silent "$app_dir/postgres-ca.crt" "$pki_issuer/ca.crt"
+openssl x509 -in "$pki_issuer/ca.crt" -noout -ext basicConstraints | grep -Fq 'CA:TRUE'
+openssl x509 -in "$pki_issuer/ca.crt" -noout -ext keyUsage | grep -Fq 'Certificate Sign, CRL Sign'
+openssl verify -CAfile "$app_dir/postgres-ca.crt" -verify_hostname postgres \
+  "$postgres_dir/postgres-server.crt" >/dev/null
+openssl x509 -in "$postgres_dir/postgres-server.crt" -checkend $((30 * 24 * 60 * 60)) -noout
+leaf_san="$(openssl x509 -in "$postgres_dir/postgres-server.crt" -noout -ext subjectAltName |
+  awk 'NR > 1 { gsub(/[[:space:]]/, ""); printf "%s", $0 }')"
+[[ "$leaf_san" == "DNS:postgres" ]]
+ca_public_key="$(openssl pkey -in "$pki_issuer/ca.key" -pubout -outform DER 2>/dev/null | sha256sum | awk '{print $1}')"
+ca_certificate_key="$(openssl x509 -in "$pki_issuer/ca.crt" -pubkey -noout |
+  openssl pkey -pubin -outform DER 2>/dev/null | sha256sum | awk '{print $1}')"
+server_public_key="$(openssl pkey -in "$postgres_dir/postgres-server.key" -pubout -outform DER 2>/dev/null | sha256sum | awk '{print $1}')"
+server_certificate_key="$(openssl x509 -in "$postgres_dir/postgres-server.crt" -pubkey -noout |
+  openssl pkey -pubin -outform DER 2>/dev/null | sha256sum | awk '{print $1}')"
+[[ "$ca_public_key" == "$ca_certificate_key" && "$server_public_key" == "$server_certificate_key" ]]
+[[ "$(grep -Ec '^(local|hostnossl|hostssl) ' "$postgres_dir/pg_hba.conf")" -eq 5 ]]
+grep -Fxq 'local all all trust' "$postgres_dir/pg_hba.conf"
+grep -Fxq 'hostnossl all all 0.0.0.0/0 reject' "$postgres_dir/pg_hba.conf"
+grep -Fxq 'hostnossl all all ::/0 reject' "$postgres_dir/pg_hba.conf"
+grep -Fxq 'hostssl all all 0.0.0.0/0 scram-sha-256' "$postgres_dir/pg_hba.conf"
+grep -Fxq 'hostssl all all ::/0 scram-sha-256' "$postgres_dir/pg_hba.conf"
+
+python3 - "$app_dir/database-url-tls" "$postgres_dir/postgres-password" <<'PY'
+import sys
+import urllib.parse
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    database = urllib.parse.urlsplit(handle.read().strip())
+with open(sys.argv[2], encoding="utf-8") as handle:
+    password = handle.read().strip()
+query = urllib.parse.parse_qs(database.query, keep_blank_values=True)
+if database.scheme not in {"postgres", "postgresql"} or database.hostname != "postgres":
+    raise SystemExit("staging TLS database URL is invalid")
+if database.username != "asteria" or urllib.parse.unquote(database.password or "") != password:
+    raise SystemExit("staging TLS database credentials are inconsistent")
+expected = {
+    "sslmode": ["verify-full"],
+    "sslrootcert": ["/var/run/secrets/asteria/postgres-ca.crt"],
+    "application_name": ["asteria-drive-staging-api"],
+}
+if query != expected:
+    raise SystemExit("staging TLS database parameters are invalid")
 PY
 
 dispatcher_tmp="$(mktemp /tmp/asteria-staging-dispatch.XXXXXXXX)"
@@ -282,15 +431,18 @@ case "$action" in
       "$run_id" "$run_attempt" "$workflow_sha"
     ;;
   status)
-    [[ "${#fields[@]}" -eq 4 ]] || fail
+    [[ "${#fields[@]}" -eq 5 ]] || fail
     validate_run
     workflow_sha="${fields[3]}"
+    requested_monitor_sha="${fields[4]}"
     [[ "$workflow_sha" =~ ^[0-9a-f]{40}$ ]] || fail
+    [[ "$requested_monitor_sha" =~ ^[0-9a-f]{64}$ ]] || fail
+    [[ "$requested_monitor_sha" == "$monitor_script_sha256" ]] || fail
     [[ -f "$monitor_path" && ! -L "$monitor_path" ]] || fail
     [[ "$(stat -c '%u:%g:%a' "$monitor_path")" == "0:0:755" ]] || fail
     [[ "$(sha256sum "$monitor_path" | awk '{print $1}')" == "$monitor_script_sha256" ]] || fail
     exec env ASTERIA_DEPLOY_ROOT="$deploy_root" \
-      "$monitor_path" "$run_id" "$run_attempt" "$workflow_sha"
+      "$monitor_path" "$run_id" "$run_attempt" "$workflow_sha" "$requested_monitor_sha"
     ;;
   recovery)
     [[ "${#fields[@]}" -eq 5 ]] || fail

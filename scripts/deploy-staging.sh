@@ -16,11 +16,12 @@ deploy_root="${ASTERIA_DEPLOY_ROOT:-/opt/asteria-drive/staging}"
 active_compose_file="$deploy_root/compose.yaml"
 compose_file="$deploy_root/compose.${run_id}.${run_attempt}.candidate.yaml"
 project="asteria-drive-staging"
-release_tag="v0.1.0"
-source_commit="8878d9eaaf88973c522a4f4742ea960acd63d503"
-expected_image="ghcr.io/baicie/asteria-drive@sha256:f5da244cba2055764a8caae7b9e9a752cc8f07356c0d7ae6397a6a7992e0cccc"
+release_tag="v0.1.1"
+source_commit="e8d26ded6e9138bbfdeac60f2487c5f835ab61a5"
+expected_image="ghcr.io/baicie/asteria-drive@sha256:2b73f8a7a271c0d7d6c7f73e15987b5e29290437146f07a57b57b9aef031d842"
+postgres_image="postgres:17.5-alpine@sha256:6567bca8d7bc8c82c5922425a0baee57be8402df92bae5eacad5f01ae9544daa"
 helper_image="chrislusf/seaweedfs:3.85@sha256:49312939c00c01e5ee6afbd7d728b18027821d3764c35a797a72acd4fdf3296a"
-expected_compose_sha256="d7d39a2e965849f364ceb25ab4106efd575f9a6d924e8ebfd9d508a594adc5dc"
+expected_compose_sha256="aa4336dc8914faaccc304266cba715b8212d10722adb4afd7aeea5d40f4c9637"
 tenant_id="11111111-1111-4111-8111-111111111111"
 max_disk_used_percent=85
 min_disk_available_kib=$((5 * 1024 * 1024))
@@ -43,6 +44,29 @@ binary_version_verified="false"
 loopback_bindings_verified="false"
 capacity_guard_verified="false"
 data_volume_filesystems_verified="false"
+postgres_tls_verified="false"
+postgres_tls_dsn_verified="false"
+postgres_hba_verified="false"
+postgres_plaintext_rejected="false"
+postgres_plaintext_stderr_present="false"
+postgres_plaintext_stderr_sha256="none"
+postgres_scram_password_verified="false"
+postgres_tls_connections=0
+postgres_tls_version="none"
+postgres_tls_cipher="none"
+postgres_tls_bits=0
+postgres_tls_ca_sha256="none"
+postgres_tls_leaf_sha256="none"
+postgres_tls_leaf_san="none"
+postgres_tls_leaf_not_before="none"
+postgres_tls_leaf_not_after="none"
+previous_compose_available="false"
+runtime_changed="false"
+rollback_attempted="false"
+rollback_succeeded="false"
+candidate_cleanup_attempted="false"
+candidate_cleanup_succeeded="false"
+failed_phase="none"
 previous_image="none"
 deployed_image_ref="none"
 deployed_image_id="none"
@@ -207,6 +231,29 @@ write_evidence() {
   E_LOOPBACK="$loopback_bindings_verified" \
   E_CAPACITY_GUARD="$capacity_guard_verified" \
   E_DATA_VOLUME_FILESYSTEMS="$data_volume_filesystems_verified" \
+  E_POSTGRES_TLS_VERIFIED="$postgres_tls_verified" \
+  E_POSTGRES_TLS_DSN_VERIFIED="$postgres_tls_dsn_verified" \
+  E_POSTGRES_HBA_VERIFIED="$postgres_hba_verified" \
+  E_POSTGRES_PLAINTEXT_REJECTED="$postgres_plaintext_rejected" \
+  E_POSTGRES_PLAINTEXT_STDERR_PRESENT="$postgres_plaintext_stderr_present" \
+  E_POSTGRES_PLAINTEXT_STDERR_SHA256="$postgres_plaintext_stderr_sha256" \
+  E_POSTGRES_SCRAM_PASSWORD_VERIFIED="$postgres_scram_password_verified" \
+  E_POSTGRES_TLS_CONNECTIONS="$postgres_tls_connections" \
+  E_POSTGRES_TLS_VERSION="$postgres_tls_version" \
+  E_POSTGRES_TLS_CIPHER="$postgres_tls_cipher" \
+  E_POSTGRES_TLS_BITS="$postgres_tls_bits" \
+  E_POSTGRES_TLS_CA_SHA256="$postgres_tls_ca_sha256" \
+  E_POSTGRES_TLS_LEAF_SHA256="$postgres_tls_leaf_sha256" \
+  E_POSTGRES_TLS_LEAF_SAN="$postgres_tls_leaf_san" \
+  E_POSTGRES_TLS_LEAF_NOT_BEFORE="$postgres_tls_leaf_not_before" \
+  E_POSTGRES_TLS_LEAF_NOT_AFTER="$postgres_tls_leaf_not_after" \
+  E_PREVIOUS_COMPOSE_AVAILABLE="$previous_compose_available" \
+  E_RUNTIME_CHANGED="$runtime_changed" \
+  E_FAILED_PHASE="$failed_phase" \
+  E_ROLLBACK_ATTEMPTED="$rollback_attempted" \
+  E_ROLLBACK_SUCCEEDED="$rollback_succeeded" \
+  E_CANDIDATE_CLEANUP_ATTEMPTED="$candidate_cleanup_attempted" \
+  E_CANDIDATE_CLEANUP_SUCCEEDED="$candidate_cleanup_succeeded" \
   E_VERIFIER_CHECKED="$verifier_checked" \
   E_SCHEMA_BEFORE="$migration_schema_before" \
   E_SCHEMA_AFTER="$migration_schema_after" \
@@ -246,7 +293,7 @@ def boolean(name):
     return value == "true"
 
 payload = {
-    "schema": "asteria-drive-staging-deployment/v1",
+    "schema": "asteria-drive-staging-deployment/v2",
     "status": os.environ["E_STATUS"],
     "last_phase": os.environ["E_PHASE"],
     "release_tag": os.environ["E_RELEASE_TAG"],
@@ -272,6 +319,29 @@ payload = {
     "loopback_bindings_verified": boolean("E_LOOPBACK"),
     "capacity_guard_verified": boolean("E_CAPACITY_GUARD"),
     "data_volume_filesystems_verified": boolean("E_DATA_VOLUME_FILESYSTEMS"),
+    "postgres_tls_verified": boolean("E_POSTGRES_TLS_VERIFIED"),
+    "postgres_tls_dsn_verified": boolean("E_POSTGRES_TLS_DSN_VERIFIED"),
+    "postgres_hba_verified": boolean("E_POSTGRES_HBA_VERIFIED"),
+    "postgres_plaintext_rejected": boolean("E_POSTGRES_PLAINTEXT_REJECTED"),
+    "postgres_plaintext_stderr_present": boolean("E_POSTGRES_PLAINTEXT_STDERR_PRESENT"),
+    "postgres_plaintext_stderr_sha256": os.environ["E_POSTGRES_PLAINTEXT_STDERR_SHA256"],
+    "postgres_scram_password_verified": boolean("E_POSTGRES_SCRAM_PASSWORD_VERIFIED"),
+    "postgres_tls_connections": int(os.environ["E_POSTGRES_TLS_CONNECTIONS"]),
+    "postgres_tls_version": os.environ["E_POSTGRES_TLS_VERSION"],
+    "postgres_tls_cipher": os.environ["E_POSTGRES_TLS_CIPHER"],
+    "postgres_tls_bits": int(os.environ["E_POSTGRES_TLS_BITS"]),
+    "postgres_tls_ca_sha256": os.environ["E_POSTGRES_TLS_CA_SHA256"],
+    "postgres_tls_leaf_sha256": os.environ["E_POSTGRES_TLS_LEAF_SHA256"],
+    "postgres_tls_leaf_san": os.environ["E_POSTGRES_TLS_LEAF_SAN"],
+    "postgres_tls_leaf_not_before": os.environ["E_POSTGRES_TLS_LEAF_NOT_BEFORE"],
+    "postgres_tls_leaf_not_after": os.environ["E_POSTGRES_TLS_LEAF_NOT_AFTER"],
+    "previous_compose_available": boolean("E_PREVIOUS_COMPOSE_AVAILABLE"),
+    "runtime_changed": boolean("E_RUNTIME_CHANGED"),
+    "failed_phase": os.environ["E_FAILED_PHASE"],
+    "rollback_attempted": boolean("E_ROLLBACK_ATTEMPTED"),
+    "rollback_succeeded": boolean("E_ROLLBACK_SUCCEEDED"),
+    "candidate_cleanup_attempted": boolean("E_CANDIDATE_CLEANUP_ATTEMPTED"),
+    "candidate_cleanup_succeeded": boolean("E_CANDIDATE_CLEANUP_SUCCEEDED"),
     "storage_verifier_checked": int(os.environ["E_VERIFIER_CHECKED"]),
     "migration_schema_before": int(os.environ["E_SCHEMA_BEFORE"]),
     "migration_schema_after": int(os.environ["E_SCHEMA_AFTER"]),
@@ -331,10 +401,112 @@ cleanup_smoke() {
   smoke_dir=""
 }
 
+verify_image_identity() {
+  local container_id="$1" expected_ref="$2" actual_ref actual_id expected_id
+  actual_ref="$(docker inspect --format '{{.Config.Image}}' "$container_id")" || return 1
+  actual_id="$(docker inspect --format '{{.Image}}' "$container_id")" || return 1
+  expected_id="$(docker image inspect --format '{{.Id}}' "$expected_ref")" || return 1
+  [[ "$actual_ref" == "$expected_ref" && "$actual_id" == "$expected_id" ]]
+}
+
+rollback_runtime() {
+  local restored_id
+  [[ "$previous_compose_available" == "true" ]]
+  [[ -f "$active_compose_file" && ! -L "$active_compose_file" ]]
+  docker compose -p "$project" -f "$active_compose_file" --profile tools config --quiet
+  docker compose -p "$project" -f "$active_compose_file" up -d --pull never --wait --wait-timeout 180 postgres seaweedfs
+  docker compose -p "$project" -f "$active_compose_file" up -d --pull never --no-deps api
+  for _ in $(seq 1 60); do
+    if curl --fail --silent --show-error --max-time 3 http://127.0.0.1:18080/readyz >/dev/null; then
+      restored_id="$(docker compose -p "$project" -f "$active_compose_file" ps -q api)" || return 1
+      [[ -n "$restored_id" ]] || return 1
+      verify_image_identity "$restored_id" "$previous_image" || return 1
+      return 0
+    fi
+    sleep 2
+  done
+  return 1
+}
+
+cleanup_candidate_runtime() {
+  [[ "$runtime_changed" == "true" ]]
+  [[ -f "$compose_file" && ! -L "$compose_file" ]]
+  docker compose -p "$project" -f "$compose_file" down --remove-orphans --timeout 30
+}
+
+verify_postgres_tls() {
+  local ca_file="$smoke_dir/postgres-ca.crt"
+  local leaf_file="$smoke_dir/postgres-server.crt"
+  local settings hba_rules tls_row tls_all plaintext_stderr plaintext_exit
+  local not_before_raw not_after_raw
+
+  docker compose -p "$project" -f "$compose_file" exec -T postgres \
+    cat /var/run/secrets/asteria/postgres-ca.crt >"$ca_file"
+  docker compose -p "$project" -f "$compose_file" exec -T postgres \
+    cat /var/run/secrets/asteria/postgres-server.crt >"$leaf_file"
+  [[ -s "$ca_file" && -s "$leaf_file" ]]
+  [[ "$(stat -c '%s' "$ca_file")" -le 16384 && "$(stat -c '%s' "$leaf_file")" -le 16384 ]]
+  openssl verify -CAfile "$ca_file" -verify_hostname postgres "$leaf_file" >/dev/null
+  openssl x509 -in "$leaf_file" -checkend $((30 * 24 * 60 * 60)) -noout
+  postgres_tls_ca_sha256="$(openssl x509 -in "$ca_file" -outform DER | sha256sum | awk '{print $1}')"
+  postgres_tls_leaf_sha256="$(openssl x509 -in "$leaf_file" -outform DER | sha256sum | awk '{print $1}')"
+  [[ "$postgres_tls_ca_sha256" =~ ^[0-9a-f]{64}$ && "$postgres_tls_leaf_sha256" =~ ^[0-9a-f]{64}$ ]]
+  postgres_tls_leaf_san="$(openssl x509 -in "$leaf_file" -noout -ext subjectAltName |
+    awk 'NR > 1 { gsub(/[[:space:]]/, ""); printf "%s", $0 }')"
+  [[ "$postgres_tls_leaf_san" == "DNS:postgres" ]]
+  openssl x509 -in "$leaf_file" -noout -ext extendedKeyUsage |
+    grep -Fq 'TLS Web Server Authentication'
+  not_before_raw="$(openssl x509 -in "$leaf_file" -noout -startdate | cut -d= -f2-)"
+  not_after_raw="$(openssl x509 -in "$leaf_file" -noout -enddate | cut -d= -f2-)"
+  postgres_tls_leaf_not_before="$(date -u -d "$not_before_raw" +'%Y-%m-%dT%H:%M:%SZ')"
+  postgres_tls_leaf_not_after="$(date -u -d "$not_after_raw" +'%Y-%m-%dT%H:%M:%SZ')"
+
+  settings="$(docker compose -p "$project" -f "$compose_file" exec -T postgres \
+    psql -U asteria -d asteria -AtF $'\t' -c \
+      "SELECT current_setting('ssl'), current_setting('ssl_min_protocol_version'), current_setting('hba_file')")"
+  [[ "$settings" == $'on\tTLSv1.2\t/var/run/secrets/asteria/pg_hba.conf' ]]
+  hba_rules="$(docker compose -p "$project" -f "$compose_file" exec -T postgres \
+    psql -U asteria -d asteria -Atqc \
+      "SELECT COALESCE(string_agg(format('%s|%s|%s|%s|%s|%s|%s', type, array_to_string(database, ','), array_to_string(user_name, ','), COALESCE(address, ''), COALESCE(netmask, ''), auth_method, COALESCE(error, '')), E'\\n' ORDER BY line_number), '') FROM pg_hba_file_rules")"
+  [[ "$hba_rules" == $'local|all|all|||trust|\nhostnossl|all|all|0.0.0.0|0.0.0.0|reject|\nhostnossl|all|all|::|::|reject|\nhostssl|all|all|0.0.0.0|0.0.0.0|scram-sha-256|\nhostssl|all|all|::|::|scram-sha-256|' ]]
+  postgres_hba_verified="true"
+  tls_row="$(docker compose -p "$project" -f "$compose_file" exec -T postgres \
+    psql -U asteria -d asteria -AtF $'\t' -c \
+      "SELECT count(*)::text, COALESCE(bool_and(s.ssl), false)::text, COALESCE(min(s.version), ''), COALESCE(min(s.cipher), ''), COALESCE(min(s.bits), 0)::text FROM pg_stat_activity a JOIN pg_stat_ssl s USING (pid) WHERE a.application_name = 'asteria-drive-staging-api'")"
+  IFS=$'\t' read -r postgres_tls_connections tls_all postgres_tls_version postgres_tls_cipher postgres_tls_bits <<<"$tls_row"
+  [[ "$postgres_tls_connections" =~ ^[0-9]+$ && "$postgres_tls_connections" -ge 1 ]]
+  [[ "$tls_all" == "t" && "$postgres_tls_version" =~ ^TLSv1\.[23]$ ]]
+  [[ "$postgres_tls_cipher" =~ ^[A-Za-z0-9_-]+$ ]]
+  [[ "$postgres_tls_bits" =~ ^[0-9]+$ && "$postgres_tls_bits" -ge 128 ]]
+  [[ "$(docker compose -p "$project" -f "$compose_file" exec -T postgres \
+    psql -U asteria -d asteria -Atqc \
+      "SELECT COALESCE((SELECT rolpassword LIKE 'SCRAM-SHA-256$%' FROM pg_authid WHERE rolname = 'asteria'), false)")" == "t" ]]
+  postgres_scram_password_verified="true"
+
+  plaintext_stderr="$smoke_dir/postgres-plaintext.stderr"
+  set +e
+  docker compose -p "$project" -f "$compose_file" exec -T --user root postgres sh -ec '
+    export PGPASSWORD="$(cat /var/run/secrets/asteria/postgres-password)"
+    exec psql "host=postgres port=5432 dbname=asteria user=asteria sslmode=disable connect_timeout=5" -Atqc "SELECT 1"
+  ' >/dev/null 2>"$plaintext_stderr"
+  plaintext_exit="$?"
+  set -e
+  [[ "$plaintext_exit" -ne 0 && -s "$plaintext_stderr" ]]
+  postgres_plaintext_stderr_present="true"
+  postgres_plaintext_stderr_sha256="$(sha256sum "$plaintext_stderr" | awk '{print $1}')"
+  [[ "$postgres_plaintext_stderr_sha256" =~ ^[0-9a-f]{64}$ ]]
+  rm -f -- "$plaintext_stderr"
+  postgres_plaintext_rejected="true"
+  postgres_tls_verified="true"
+}
+
 finish() {
   local code="$?" evidence_code=0
   trap - EXIT
   set +e
+  if [[ "$code" -ne 0 ]]; then
+    failed_phase="$phase"
+  fi
   if ! snapshot_host after; then
     printf 'could not capture final staging host resource snapshot\n' >&2
     [[ "$code" -ne 0 ]] || phase="snapshot-after"
@@ -356,25 +528,63 @@ finish() {
     code=1
     phase="cleanup-smoke"
   fi
-  if [[ -f "$compose_file" && "$compose_file" != "$active_compose_file" ]]; then
-    rm -f -- "$compose_file" || code=1
-  fi
   if [[ "$code" -eq 0 ]]; then
     status="success"
     phase="complete"
+    if ! write_evidence; then
+      printf 'could not write deployment success evidence\n' >&2
+      code=1
+      failed_phase="write-evidence"
+      phase="write-evidence"
+    fi
   fi
-  write_evidence
-  evidence_code="$?"
-  if [[ "$evidence_code" -ne 0 ]]; then
-    printf 'could not write deployment evidence\n' >&2
-    code=1
+  if [[ "$code" -eq 0 ]]; then
+    phase="activate-compose"
+    if mv -f -- "$compose_file" "$active_compose_file"; then
+      compose_file="$active_compose_file"
+    else
+      printf 'could not activate the reviewed staging Compose file\n' >&2
+      code=1
+      failed_phase="activate-compose"
+    fi
+  fi
+  if [[ "$code" -ne 0 ]]; then
+    status="failed"
+    [[ "$failed_phase" != "none" ]] || failed_phase="$phase"
+    if [[ "$runtime_changed" == "true" && "$previous_compose_available" == "true" ]]; then
+      rollback_attempted="true"
+      phase="rollback"
+      if rollback_runtime; then
+        rollback_succeeded="true"
+      else
+        printf 'could not restore the previous staging runtime\n' >&2
+      fi
+    elif [[ "$runtime_changed" == "true" ]]; then
+      candidate_cleanup_attempted="true"
+      phase="candidate-cleanup"
+      if cleanup_candidate_runtime; then
+        candidate_cleanup_succeeded="true"
+      else
+        printf 'could not remove the first staging candidate runtime\n' >&2
+      fi
+    fi
+    if [[ -f "$compose_file" && "$compose_file" != "$active_compose_file" ]]; then
+      rm -f -- "$compose_file" || code=1
+    fi
+    phase="$failed_phase"
+    write_evidence
+    evidence_code="$?"
+    if [[ "$evidence_code" -ne 0 ]]; then
+      printf 'could not write deployment failure evidence\n' >&2
+      code=1
+    fi
   fi
   exit "$code"
 }
 trap finish EXIT
 
 phase="validate-prerequisites"
-for command in awk cmp curl df docker python3 sha256sum; do
+for command in awk cmp curl df docker openssl python3 sha256sum; do
   command -v "$command" >/dev/null || { printf '%s is required\n' "$command" >&2; exit 1; }
 done
 docker compose version >/dev/null
@@ -391,6 +601,20 @@ verify_capacity "root filesystem" "$disk_used_before" "$disk_available_kib_befor
 
 phase="validate-compose"
 install -d -m 0750 "$deploy_root"
+if [[ -e "$active_compose_file" ]]; then
+  [[ -f "$active_compose_file" && ! -L "$active_compose_file" ]] || {
+    printf 'active staging Compose path is unsafe\n' >&2
+    exit 1
+  }
+  docker compose -p "$project" -f "$active_compose_file" --profile tools config --quiet
+  previous_image="$(docker compose -p "$project" -f "$active_compose_file" \
+    config --format json | python3 -c 'import json, sys; print(json.load(sys.stdin)["services"]["api"]["image"])')"
+  [[ "$previous_image" =~ ^ghcr\.io/baicie/asteria-drive@sha256:[0-9a-f]{64}$ ]] || {
+    printf 'active staging Compose has an invalid API image reference\n' >&2
+    exit 1
+  }
+  previous_compose_available="true"
+fi
 install -m 0644 "$compose_source" "$compose_file"
 compose_sha256="$(sha256sum "$compose_file" | awk '{print $1}')"
 [[ "$compose_sha256" == "$expected_compose_sha256" ]] || { printf 'staging Compose digest is not approved\n' >&2; exit 1; }
@@ -398,16 +622,31 @@ grep -Fq "$expected_image" "$compose_file"
 grep -Fq '127.0.0.1:18080:8080' "$compose_file"
 grep -Fq '127.0.0.1:18333:8333' "$compose_file"
 grep -Fq '127.0.0.1:19090:9090' "$compose_file"
-if grep -Eq 'image:.*:latest|sha256:0{64}|ASTERIA_ENV:[[:space:]]*production' "$compose_file"; then
-  printf 'staging Compose contains a forbidden mutable, placeholder, or production value\n' >&2
+if grep -Eq 'image:.*:latest|sha256:0{64}' "$compose_file"; then
+  printf 'staging Compose contains a forbidden mutable or placeholder value\n' >&2
   exit 1
 fi
 docker compose -p "$project" -f "$compose_file" --profile tools config --quiet
+docker compose -p "$project" -f "$compose_file" --profile tools config --format json |
+  python3 -c '
+import json
+import sys
 
-api_id="$(docker compose -p "$project" -f "$compose_file" ps -q api 2>/dev/null || true)"
-if [[ -n "$api_id" ]]; then
-  previous_image="$(docker inspect --format '{{.Config.Image}}' "$api_id")"
-fi
+document = json.load(sys.stdin)
+services = document["services"]
+api = services["api"]["environment"]
+migrate = services["migrate"]["environment"]
+if api.get("ASTERIA_ENV") != "development" or migrate.get("ASTERIA_ENV") != "production":
+    raise SystemExit("staging API/migration environment boundary is invalid")
+expected_path = "/var/run/secrets/asteria/database-url-tls"
+if api.get("ASTERIA_DATABASE_URL_FILE") != expected_path or migrate.get("ASTERIA_DATABASE_URL_FILE") != expected_path:
+    raise SystemExit("staging TLS database URL path is invalid")
+postgres = services["postgres"]
+command = postgres.get("command", [])
+for required in ("ssl=on", "ssl_min_protocol_version=TLSv1.2", "hba_file=/var/run/secrets/asteria/pg_hba.conf"):
+    if required not in command:
+        raise SystemExit("staging PostgreSQL TLS command is incomplete")
+'
 
 phase="prepare-capacity-probe"
 docker pull --quiet "$helper_image" >/dev/null
@@ -421,12 +660,67 @@ grep -Fq "$release_tag" <<<"$version_output"
 grep -Fq "$source_commit" <<<"$version_output"
 binary_version_verified="true"
 
+phase="validate-postgres-tls-secrets"
+smoke_dir="$(mktemp -d "$(dirname "$evidence_path")/smoke.XXXXXXXX")"
+docker run --rm --pull never --network none --read-only --user root \
+  --cap-drop ALL --security-opt no-new-privileges:true --pids-limit 32 \
+  --memory 64m --cpus 0.25 --log-driver none \
+  --volume asteria-drive-staging-app-secrets:/app-secrets:ro \
+  --volume asteria-drive-staging-postgres-secrets:/postgres-secrets:ro \
+  --entrypoint /bin/sh "$postgres_image" -ec '
+    for specification in \
+      "/app-secrets/database-url-tls 65532:65532:400" \
+      "/app-secrets/postgres-ca.crt 65532:65532:400" \
+      "/postgres-secrets/postgres-password 0:0:400" \
+      "/postgres-secrets/postgres-ca.crt 0:70:640" \
+      "/postgres-secrets/postgres-server.crt 0:70:640" \
+      "/postgres-secrets/postgres-server.key 0:70:640" \
+      "/postgres-secrets/pg_hba.conf 0:70:640"; do
+      path="${specification% *}"
+      metadata="${specification##* }"
+      [ -s "$path" ] && [ ! -L "$path" ] && [ "$(stat -c "%u:%g:%a" "$path")" = "$metadata" ]
+    done
+    cmp -s /app-secrets/postgres-ca.crt /postgres-secrets/postgres-ca.crt
+    [ "$(grep -Ec "^(local|hostnossl|hostssl) " /postgres-secrets/pg_hba.conf)" -eq 5 ]
+    grep -Fxq "hostnossl all all 0.0.0.0/0 reject" /postgres-secrets/pg_hba.conf
+    grep -Fxq "hostnossl all all ::/0 reject" /postgres-secrets/pg_hba.conf
+    grep -Fxq "hostssl all all 0.0.0.0/0 scram-sha-256" /postgres-secrets/pg_hba.conf
+    grep -Fxq "hostssl all all ::/0 scram-sha-256" /postgres-secrets/pg_hba.conf
+    password="$(cat /postgres-secrets/postgres-password)"
+    [ "$password" != "" ]
+    expected="postgres://asteria:${password}@postgres:5432/asteria?sslmode=verify-full&sslrootcert=/var/run/secrets/asteria/postgres-ca.crt&application_name=asteria-drive-staging-api"
+    [ "$(cat /app-secrets/database-url-tls)" = "$expected" ]
+  '
+postgres_tls_dsn_verified="true"
+docker run --rm --pull never --network none --read-only --user root \
+  --cap-drop ALL --security-opt no-new-privileges:true --pids-limit 16 \
+  --memory 32m --cpus 0.25 --log-driver none \
+  --volume asteria-drive-staging-app-secrets:/app-secrets:ro \
+  --entrypoint /bin/cat "$postgres_image" /app-secrets/postgres-ca.crt \
+  >"$smoke_dir/preflight-postgres-ca.crt"
+docker run --rm --pull never --network none --read-only --user root \
+  --cap-drop ALL --security-opt no-new-privileges:true --pids-limit 16 \
+  --memory 32m --cpus 0.25 --log-driver none \
+  --volume asteria-drive-staging-postgres-secrets:/postgres-secrets:ro \
+  --entrypoint /bin/cat "$postgres_image" /postgres-secrets/postgres-server.crt \
+  >"$smoke_dir/preflight-postgres-server.crt"
+openssl verify -CAfile "$smoke_dir/preflight-postgres-ca.crt" -verify_hostname postgres \
+  "$smoke_dir/preflight-postgres-server.crt" >/dev/null
+openssl x509 -in "$smoke_dir/preflight-postgres-server.crt" -checkend $((30 * 24 * 60 * 60)) -noout >/dev/null
+if [[ "$previous_compose_available" == "true" ]]; then
+  previous_postgres_id="$(docker compose -p "$project" -f "$active_compose_file" ps -q postgres)"
+  [[ -n "$previous_postgres_id" ]]
+  [[ "$(docker exec --user postgres "$previous_postgres_id" psql -U asteria -d asteria -Atqc \
+    "SELECT COALESCE((SELECT rolpassword LIKE 'SCRAM-SHA-256$%' FROM pg_authid WHERE rolname = 'asteria'), false)")" == "t" ]]
+fi
+
 phase="capacity-prestart"
 capture_volume_filesystem "asteria-drive-staging-app-secrets"
 [[ "$captured_filesystem" == "$docker_filesystem_before" ]]
 verify_capacity "Docker data filesystem" "$captured_used_percent" "$captured_available_kib"
 
 phase="start-dependencies"
+runtime_changed="true"
 docker compose -p "$project" -f "$compose_file" up -d --wait --wait-timeout 180 postgres seaweedfs
 
 phase="migrate"
@@ -455,11 +749,17 @@ done
 curl --fail --silent --show-error --max-time 3 http://127.0.0.1:18080/healthz >/dev/null
 health="true"
 
+phase="verify-postgres-tls"
+verify_postgres_tls
+
 phase="verify-runtime-identity"
 api_id="$(docker compose -p "$project" -f "$compose_file" ps -q api)"
 deployed_image_ref="$(docker inspect --format '{{.Config.Image}}' "$api_id")"
 deployed_image_id="$(docker inspect --format '{{.Image}}' "$api_id")"
-[[ "$deployed_image_ref" == "$expected_image" ]] || { printf 'running API image does not match the approved digest\n' >&2; exit 1; }
+verify_image_identity "$api_id" "$expected_image" || {
+  printf 'running API image does not match the approved reference and local config ID\n' >&2
+  exit 1
+}
 [[ "$(docker compose -p "$project" -f "$compose_file" port api 8080)" == "127.0.0.1:18080" ]]
 [[ "$(docker compose -p "$project" -f "$compose_file" port api 9090)" == "127.0.0.1:19090" ]]
 [[ "$(docker compose -p "$project" -f "$compose_file" port seaweedfs 8333)" == "127.0.0.1:18333" ]]
@@ -472,8 +772,6 @@ token_json="$(docker run --rm --network none \
 trusted_token="$(python3 -c 'import json,sys; data=json.load(sys.stdin); assert len(data)==1; print(next(iter(data)))' <<<"$token_json")"
 [[ "${#trusted_token}" -ge 32 ]] || { printf 'trusted staging token could not be loaded\n' >&2; exit 1; }
 unset token_json
-
-smoke_dir="$(mktemp -d "$(dirname "$evidence_path")/smoke.XXXXXXXX")"
 
 authenticated_request() {
   local method="$1" url="$2" output="$3" data_file="${4:-}" idempotency_key="${5:-}"
@@ -688,7 +986,3 @@ verify_capacity "root filesystem" "$disk_used_after" "$disk_available_kib_after"
 verify_capacity "Docker data filesystem" "$docker_disk_used_after" "$docker_disk_available_kib_after"
 verify_data_volume_filesystems "$docker_filesystem_after"
 capacity_guard_verified="true"
-
-phase="activate-compose"
-mv -f -- "$compose_file" "$active_compose_file"
-compose_file="$active_compose_file"

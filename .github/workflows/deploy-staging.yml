@@ -4,11 +4,11 @@ on:
   workflow_dispatch:
     inputs:
       confirmation:
-        description: Confirm the immutable v0.1.0 staging deployment
+        description: Confirm the immutable v0.1.1 staging deployment
         required: true
         type: choice
         options:
-          - deploy-v0.1.0
+          - deploy-v0.1.1
 
 permissions:
   contents: read
@@ -20,15 +20,15 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  RELEASE_TAG: v0.1.0
-  RELEASE_COMMIT: 8878d9eaaf88973c522a4f4742ea960acd63d503
-  IMAGE: ghcr.io/baicie/asteria-drive@sha256:f5da244cba2055764a8caae7b9e9a752cc8f07356c0d7ae6397a6a7992e0cccc
-  COMPOSE_SHA256: d7d39a2e965849f364ceb25ab4106efd575f9a6d924e8ebfd9d508a594adc5dc
+  RELEASE_TAG: v0.1.1
+  RELEASE_COMMIT: e8d26ded6e9138bbfdeac60f2487c5f835ab61a5
+  IMAGE: ghcr.io/baicie/asteria-drive@sha256:2b73f8a7a271c0d7d6c7f73e15987b5e29290437146f07a57b57b9aef031d842
+  COMPOSE_SHA256: aa4336dc8914faaccc304266cba715b8212d10722adb4afd7aeea5d40f4c9637
 
 jobs:
   deploy:
     name: Deploy / staging
-    if: github.ref == 'refs/heads/main' && inputs.confirmation == 'deploy-v0.1.0'
+    if: github.ref == 'refs/heads/main' && inputs.confirmation == 'deploy-v0.1.1'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     environment: staging
@@ -166,13 +166,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          umask 077
+          remote_stdout="$RUNNER_TEMP/staging-deploy.remote-stdout.log"
+          remote_stderr="$RUNNER_TEMP/staging-deploy.remote-stderr.log"
           ssh \
             -F none -i "$RUNNER_TEMP/ssh/key" -p "$DEPLOY_PORT" \
             -o BatchMode=yes -o ConnectTimeout=15 -o GlobalKnownHostsFile=/dev/null \
             -o IdentitiesOnly=yes -o ProxyCommand=none -o StrictHostKeyChecking=yes \
             -o UserKnownHostsFile="$RUNNER_TEMP/ssh/known_hosts" \
             "$DEPLOY_USER@$DEPLOY_HOST" \
-            "deploy $GITHUB_RUN_ID $GITHUB_RUN_ATTEMPT $GITHUB_SHA"
+            "deploy $GITHUB_RUN_ID $GITHUB_RUN_ATTEMPT $GITHUB_SHA" \
+            >"$remote_stdout" 2>"$remote_stderr"
 
       - name: Collect sanitized deployment evidence
         if: ${{ always() }}
@@ -181,7 +185,17 @@ jobs:
           DEPLOY_OUTCOME: ${{ steps.deploy.outcome }}
         run: |
           set -euo pipefail
-          install -d -m 0700 "$RUNNER_TEMP/deployment-evidence"
+          umask 077
+          evidence_dir="$RUNNER_TEMP/deployment-evidence"
+          raw_deployment="$RUNNER_TEMP/staging-deployment.raw.json"
+          raw_verifier="$RUNNER_TEMP/staging-storage-verifier.raw.json"
+          raw_deployment_stderr="$RUNNER_TEMP/staging-deployment-fetch.stderr"
+          raw_verifier_stderr="$RUNNER_TEMP/staging-storage-verifier-fetch.stderr"
+          deploy_stdout="$RUNNER_TEMP/staging-deploy.remote-stdout.log"
+          deploy_stderr="$RUNNER_TEMP/staging-deploy.remote-stderr.log"
+          collection_status="$evidence_dir/collection-status.json"
+          install -d -m 0700 "$evidence_dir"
+          trap 'rm -f -- "$raw_deployment" "$raw_verifier" "$raw_deployment_stderr" "$raw_verifier_stderr" "$deploy_stdout" "$deploy_stderr"' EXIT
           if [[ "${DEPLOY_PREPARED:-}" != "true" || ! -s "$RUNNER_TEMP/ssh/key" || \
                 -z "${DEPLOY_HOST:-}" || -z "${DEPLOY_PORT:-}" || -z "${DEPLOY_USER:-}" ]]; then
             printf 'remote evidence is unavailable because SSH preparation did not complete\n'
@@ -194,43 +208,155 @@ jobs:
             -o UserKnownHostsFile="$RUNNER_TEMP/ssh/known_hosts"
           )
           target="$DEPLOY_USER@$DEPLOY_HOST"
-          for artifact in deployment-evidence storage-verifier; do
-            temporary="$RUNNER_TEMP/deployment-evidence/${artifact}.tmp"
-            destination="$RUNNER_TEMP/deployment-evidence/${artifact}.json"
+          fetch_remote_artifact() {
+            local artifact="$1" destination="$2" stderr_path="$3"
             if ssh "${ssh_options[@]}" "$target" \
-              "fetch $GITHUB_RUN_ID $GITHUB_RUN_ATTEMPT $artifact" >"$temporary"; then
-              mv "$temporary" "$destination"
-            else
-              rm -f "$temporary"
+              "fetch $GITHUB_RUN_ID $GITHUB_RUN_ATTEMPT $artifact" \
+              >"$destination" 2>"$stderr_path"; then
+              return 0
             fi
-          done
-          if [[ "$DEPLOY_OUTCOME" == "success" ]]; then
-            [[ -s "$RUNNER_TEMP/deployment-evidence/deployment-evidence.json" ]]
-            [[ -s "$RUNNER_TEMP/deployment-evidence/storage-verifier.json" ]]
-            python3 - \
-              "$RUNNER_TEMP/deployment-evidence/deployment-evidence.json" \
-              "$RUNNER_TEMP/deployment-evidence/storage-verifier.json" <<'PY'
+            rm -f -- "$destination"
+            return 1
+          }
+          fetch_remote_artifact deployment-evidence "$raw_deployment" "$raw_deployment_stderr" || true
+          fetch_remote_artifact storage-verifier "$raw_verifier" "$raw_verifier_stderr" || true
+          RAW_DEPLOYMENT="$raw_deployment" RAW_VERIFIER="$raw_verifier" \
+            RAW_DEPLOYMENT_STDERR="$raw_deployment_stderr" RAW_VERIFIER_STDERR="$raw_verifier_stderr" \
+            DEPLOY_STDOUT="$deploy_stdout" DEPLOY_STDERR="$deploy_stderr" \
+            python3 - "$collection_status" <<'PY'
+          import hashlib
           import json
           import os
           import sys
 
+          def describe(path):
+              if not os.path.isfile(path):
+                  return {"present": False, "size_bytes": 0, "sha256": None}
+              digest = hashlib.sha256()
+              size = 0
+              with open(path, "rb") as handle:
+                  for chunk in iter(lambda: handle.read(65536), b""):
+                      size += len(chunk)
+                      digest.update(chunk)
+              return {"present": True, "size_bytes": size, "sha256": digest.hexdigest()}
+
+          status = {
+              "schema": "asteria-drive-staging-deployment-collection/v1",
+              "deploy_outcome": os.environ.get("DEPLOY_OUTCOME", "unknown"),
+              "raw_deployment_evidence": describe(os.environ["RAW_DEPLOYMENT"]),
+              "raw_storage_verifier": describe(os.environ["RAW_VERIFIER"]),
+              "deployment_fetch_stderr": describe(os.environ["RAW_DEPLOYMENT_STDERR"]),
+              "verifier_fetch_stderr": describe(os.environ["RAW_VERIFIER_STDERR"]),
+              "deployment_command_stdout": describe(os.environ["DEPLOY_STDOUT"]),
+              "deployment_command_stderr": describe(os.environ["DEPLOY_STDERR"]),
+          }
+          with open(sys.argv[1], "x", encoding="utf-8") as handle:
+              json.dump(status, handle, indent=2, sort_keys=True)
+              handle.write("\n")
+          PY
+          [[ -s "$raw_deployment" ]]
+          if [[ "$DEPLOY_OUTCOME" == "success" ]]; then
+            [[ -s "$raw_verifier" ]]
+          fi
+          python3 - \
+            "$raw_deployment" "$raw_verifier" \
+            "$evidence_dir/deployment-evidence.json" \
+            "$evidence_dir/storage-verifier.json" <<'PY'
+          import json
+          import math
+          import os
+          import re
+          import sys
+          from datetime import datetime, timedelta, timezone
+
+          def reject_duplicates(pairs):
+              result = {}
+              for key, value in pairs:
+                  if key in result:
+                      raise ValueError("duplicate evidence key")
+                  result[key] = value
+              return result
+
+          def reject_constant(value):
+              raise ValueError(f"non-finite JSON number is forbidden: {value}")
+
+          if not os.path.isfile(sys.argv[1]) or os.path.getsize(sys.argv[1]) == 0:
+              raise SystemExit("remote deployment evidence is missing")
+          if os.path.getsize(sys.argv[1]) > 64 * 1024:
+              raise SystemExit("remote deployment evidence exceeds its size limit")
+          if os.path.isfile(sys.argv[2]) and os.path.getsize(sys.argv[2]) > 2 * 1024 * 1024:
+              raise SystemExit("storage verifier evidence exceeds its size limit")
           with open(sys.argv[1], encoding="utf-8") as handle:
-              deployment = json.load(handle)
-          with open(sys.argv[2], encoding="utf-8") as handle:
-              verifier = json.load(handle)
+              deployment = json.load(
+                  handle, object_pairs_hook=reject_duplicates, parse_constant=reject_constant
+              )
+          deploy_outcome = os.environ.get("DEPLOY_OUTCOME", "")
+          verifier = None
+          if deploy_outcome == "success" and os.path.isfile(sys.argv[2]) and os.path.getsize(sys.argv[2]) > 0:
+              with open(sys.argv[2], encoding="utf-8") as handle:
+                  verifier = json.load(
+                      handle, object_pairs_hook=reject_duplicates, parse_constant=reject_constant
+                  )
+
+          expected_deployment_keys = {
+              "schema", "status", "last_phase", "release_tag", "source_commit", "image",
+              "workflow_sha", "github_run_id", "github_run_attempt", "started_at", "completed_at",
+              "compose_sha256", "previous_image", "deployed_image_ref", "deployed_image_id",
+              "migration_succeeded", "health_succeeded", "readiness_succeeded",
+              "authenticated_smoke_succeeded", "upload_download_smoke_succeeded",
+              "metrics_scrape_succeeded", "storage_verifier_succeeded", "binary_version_verified",
+              "loopback_bindings_verified", "capacity_guard_verified", "data_volume_filesystems_verified",
+              "postgres_tls_verified", "postgres_plaintext_rejected",
+              "postgres_tls_dsn_verified", "postgres_hba_verified",
+              "postgres_plaintext_stderr_present", "postgres_plaintext_stderr_sha256",
+              "postgres_scram_password_verified", "postgres_tls_connections", "postgres_tls_version",
+              "postgres_tls_cipher", "postgres_tls_bits", "postgres_tls_ca_sha256",
+              "postgres_tls_leaf_sha256", "postgres_tls_leaf_san", "postgres_tls_leaf_not_before",
+              "postgres_tls_leaf_not_after", "previous_compose_available", "runtime_changed",
+              "failed_phase", "rollback_attempted", "rollback_succeeded",
+              "candidate_cleanup_attempted", "candidate_cleanup_succeeded",
+              "storage_verifier_checked", "migration_schema_before", "migration_schema_after",
+              "load1_before", "load1_after", "memory_used_percent_before", "memory_used_percent_after",
+              "disk_used_percent_before", "disk_used_percent_after", "disk_available_bytes_before",
+              "disk_available_bytes_after", "root_filesystem_before", "root_filesystem_after",
+              "docker_filesystem_before", "docker_filesystem_after", "docker_data_root_on_root_filesystem",
+              "docker_disk_used_percent_before", "docker_disk_used_percent_after",
+              "docker_disk_available_bytes_before", "docker_disk_available_bytes_after",
+              "postgres_data_filesystem", "postgres_data_disk_used_percent",
+              "postgres_data_disk_available_bytes", "seaweedfs_data_filesystem",
+              "seaweedfs_data_disk_used_percent", "seaweedfs_data_disk_available_bytes",
+              "capacity_max_disk_used_percent", "capacity_min_disk_available_bytes",
+              "exposure", "secret_source", "claim_boundary",
+          }
+          if set(deployment) != expected_deployment_keys:
+              missing = sorted(expected_deployment_keys - set(deployment))
+              extra = sorted(set(deployment) - expected_deployment_keys)
+              raise SystemExit(
+                  f"deployment evidence fields mismatch (missing_count={len(missing)}, extra_count={len(extra)})"
+              )
+
+          expected_verifier_keys = {
+              "started_at", "finished_at", "schema_version", "checked", "healthy",
+              "finding_counts", "findings", "findings_truncated", "verified",
+          }
+          if verifier is not None and set(verifier) != expected_verifier_keys:
+              missing = sorted(expected_verifier_keys - set(verifier))
+              extra = sorted(set(verifier) - expected_verifier_keys)
+              raise SystemExit(
+                  f"storage verifier fields mismatch (missing_count={len(missing)}, extra_count={len(extra)})"
+              )
+          if deploy_outcome == "success" and verifier is None:
+              raise SystemExit("successful deployment has no storage verifier evidence")
 
           expected_identity = {
-              "schema": "asteria-drive-staging-deployment/v1",
-              "status": "success",
-              "last_phase": "complete",
+              "schema": "asteria-drive-staging-deployment/v2",
+              "status": "success" if deploy_outcome == "success" else "failed",
               "release_tag": os.environ["RELEASE_TAG"],
               "source_commit": os.environ["RELEASE_COMMIT"],
               "image": os.environ["IMAGE"],
-              "deployed_image_ref": os.environ["IMAGE"],
               "workflow_sha": os.environ["GITHUB_SHA"],
               "github_run_id": os.environ["GITHUB_RUN_ID"],
               "github_run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
-              "compose_sha256": os.environ["COMPOSE_SHA256"],
               "claim_boundary": "staging-not-production",
               "exposure": "loopback-bindings-verified",
               "secret_source": "server-managed-docker-volumes",
@@ -240,6 +366,143 @@ jobs:
           for key, expected in expected_identity.items():
               if deployment.get(key) != expected:
                   raise SystemExit(f"deployment evidence has unexpected {key}")
+
+          if deploy_outcome == "success":
+              if deployment.get("last_phase") != "complete":
+                  raise SystemExit("successful deployment evidence is incomplete")
+              if deployment.get("compose_sha256") != os.environ["COMPOSE_SHA256"]:
+                  raise SystemExit("successful deployment evidence has an unexpected Compose digest")
+              if deployment.get("deployed_image_ref") != os.environ["IMAGE"]:
+                  raise SystemExit("successful deployment evidence has an unexpected image reference")
+          else:
+              if not isinstance(deployment.get("last_phase"), str) or not re.fullmatch(
+                  r"[a-z0-9-]+", deployment["last_phase"]
+              ):
+                  raise SystemExit("failed deployment evidence has an invalid last phase")
+
+          if deploy_outcome != "success":
+              boolean_keys = (
+                  "migration_succeeded", "health_succeeded", "readiness_succeeded",
+                  "authenticated_smoke_succeeded", "upload_download_smoke_succeeded",
+                  "metrics_scrape_succeeded", "storage_verifier_succeeded",
+                  "binary_version_verified", "loopback_bindings_verified",
+                  "capacity_guard_verified", "data_volume_filesystems_verified",
+                  "postgres_tls_verified", "postgres_tls_dsn_verified", "postgres_hba_verified",
+                  "postgres_plaintext_rejected",
+                  "postgres_plaintext_stderr_present", "postgres_scram_password_verified",
+                  "previous_compose_available", "runtime_changed", "rollback_attempted",
+                  "rollback_succeeded", "candidate_cleanup_attempted", "candidate_cleanup_succeeded",
+                  "docker_data_root_on_root_filesystem",
+              )
+              for key in boolean_keys:
+                  if type(deployment.get(key)) is not bool:
+                      raise SystemExit(f"failed deployment evidence has invalid boolean {key}")
+              if not deployment["runtime_changed"] and (
+                  deployment["rollback_attempted"] or deployment["candidate_cleanup_attempted"]
+              ):
+                  raise SystemExit("failed deployment evidence reports cleanup without a runtime change")
+              if deployment["previous_compose_available"] and deployment["runtime_changed"] and not deployment["rollback_attempted"]:
+                  raise SystemExit("failed deployment evidence omitted rollback attempt")
+              if not deployment["previous_compose_available"] and deployment["runtime_changed"] and not deployment["candidate_cleanup_attempted"]:
+                  raise SystemExit("failed first deployment omitted candidate cleanup")
+              if deployment["rollback_succeeded"] and not deployment["rollback_attempted"]:
+                  raise SystemExit("failed deployment evidence reports an unattempted rollback")
+              if deployment["candidate_cleanup_succeeded"] and not deployment["candidate_cleanup_attempted"]:
+                  raise SystemExit("failed deployment evidence reports unattempted candidate cleanup")
+              digest_or_none = re.compile(r"(?:none|[0-9a-f]{64})")
+              for key in (
+                  "compose_sha256", "postgres_tls_ca_sha256", "postgres_tls_leaf_sha256",
+                  "postgres_plaintext_stderr_sha256",
+              ):
+                  if not isinstance(deployment.get(key), str) or not digest_or_none.fullmatch(deployment[key]):
+                      raise SystemExit(f"failed deployment evidence has invalid {key}")
+              if deployment["compose_sha256"] not in {"none", os.environ["COMPOSE_SHA256"]}:
+                  raise SystemExit("failed deployment evidence has an unapproved Compose digest")
+              image_ref_or_none = re.compile(
+                  r"(?:none|ghcr\.io/baicie/asteria-drive@sha256:[0-9a-f]{64})"
+              )
+              for key in ("previous_image", "deployed_image_ref"):
+                  if not isinstance(deployment.get(key), str) or not image_ref_or_none.fullmatch(deployment[key]):
+                      raise SystemExit(f"failed deployment evidence has invalid {key}")
+              if deployment["deployed_image_ref"] not in {"none", os.environ["IMAGE"]}:
+                  raise SystemExit("failed deployment evidence has an unapproved image reference")
+              if not isinstance(deployment.get("deployed_image_id"), str) or not re.fullmatch(
+                  r"(?:none|sha256:[0-9a-f]{64})", deployment["deployed_image_id"]
+              ):
+                  raise SystemExit("failed deployment evidence has invalid deployed image ID")
+              filesystem_or_unknown = re.compile(r"(?:unknown|[A-Za-z0-9_./:+-]{1,255})")
+              for key in (
+                  "root_filesystem_before", "root_filesystem_after", "docker_filesystem_before",
+                  "docker_filesystem_after", "postgres_data_filesystem", "seaweedfs_data_filesystem",
+              ):
+                  if not isinstance(deployment.get(key), str) or not filesystem_or_unknown.fullmatch(deployment[key]):
+                      raise SystemExit(f"failed deployment evidence has invalid {key}")
+              if deployment["root_filesystem_before"] != "unknown" and deployment["root_filesystem_before"] != deployment["root_filesystem_after"]:
+                  raise SystemExit("failed deployment evidence has unstable root filesystem identity")
+              if deployment["docker_filesystem_before"] != "unknown" and deployment["docker_filesystem_before"] != deployment["docker_filesystem_after"]:
+                  raise SystemExit("failed deployment evidence has unstable Docker filesystem identity")
+              for key in ("postgres_tls_version",):
+                  if deployment[key] not in {"none", "TLSv1.2", "TLSv1.3"}:
+                      raise SystemExit(f"failed deployment evidence has invalid {key}")
+              for key in ("postgres_tls_cipher",):
+                  if not isinstance(deployment[key], str) or not re.fullmatch(r"(?:none|[A-Za-z0-9_-]+)", deployment[key]):
+                      raise SystemExit(f"failed deployment evidence has invalid {key}")
+              if deployment["postgres_tls_leaf_san"] not in {"none", "DNS:postgres"}:
+                  raise SystemExit("failed deployment evidence has invalid certificate SAN")
+              for key in ("postgres_tls_leaf_not_before", "postgres_tls_leaf_not_after"):
+                  if not isinstance(deployment[key], str) or not re.fullmatch(
+                      r"(?:none|[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z)", deployment[key]
+                  ):
+                      raise SystemExit(f"failed deployment evidence has invalid {key}")
+              if deployment["failed_phase"] == "none" or not re.fullmatch(r"[a-z0-9-]+", deployment["failed_phase"]):
+                  raise SystemExit("failed deployment evidence has no failed phase")
+              integer_keys = (
+                  "postgres_tls_connections", "postgres_tls_bits", "storage_verifier_checked",
+                  "migration_schema_before", "migration_schema_after", "disk_used_percent_before",
+                  "disk_used_percent_after", "disk_available_bytes_before", "disk_available_bytes_after",
+                  "docker_disk_used_percent_before", "docker_disk_used_percent_after",
+                  "docker_disk_available_bytes_before", "docker_disk_available_bytes_after",
+                  "postgres_data_disk_used_percent", "postgres_data_disk_available_bytes",
+                  "seaweedfs_data_disk_used_percent", "seaweedfs_data_disk_available_bytes",
+                  "capacity_max_disk_used_percent", "capacity_min_disk_available_bytes",
+              )
+              for key in integer_keys:
+                  if type(deployment.get(key)) is not int or deployment[key] < 0:
+                      raise SystemExit(f"failed deployment evidence has invalid integer {key}")
+              for key in ("load1_before", "load1_after", "memory_used_percent_before", "memory_used_percent_after"):
+                  value = deployment.get(key)
+                  if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+                      raise SystemExit(f"failed deployment evidence has invalid number {key}")
+              if any(deployment[key] > 100 for key in ("memory_used_percent_before", "memory_used_percent_after")):
+                  raise SystemExit("failed deployment evidence has invalid memory usage")
+              for key in ("started_at", "completed_at"):
+                  if not isinstance(deployment.get(key), str) or not re.fullmatch(
+                      r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z", deployment[key]
+                  ):
+                      raise SystemExit(f"failed deployment evidence has invalid {key}")
+              if verifier is not None:
+                  verifier_timestamp_pattern = re.compile(
+                      r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,9})?Z"
+                  )
+                  if verifier.get("schema_version") != 3 or type(verifier.get("checked")) is not int or type(verifier.get("healthy")) is not int:
+                      raise SystemExit("failed storage verifier evidence has invalid counts")
+                  if verifier.get("finding_counts") != {} or verifier.get("findings") not in (None, []):
+                      raise SystemExit("failed storage verifier evidence contains findings")
+                  if type(verifier.get("findings_truncated")) is not bool or type(verifier.get("verified")) is not bool:
+                      raise SystemExit("failed storage verifier evidence has invalid booleans")
+                  for key in ("started_at", "finished_at"):
+                      if not isinstance(verifier.get(key), str) or not verifier_timestamp_pattern.fullmatch(verifier[key]):
+                          raise SystemExit(f"failed storage verifier evidence has invalid {key}")
+              for source, destination in ((deployment, sys.argv[3]), (verifier, sys.argv[4])):
+                  if source is None:
+                      continue
+                  temporary = destination + ".tmp"
+                  with open(temporary, "x", encoding="utf-8") as handle:
+                      json.dump(source, handle, indent=2, sort_keys=True)
+                      handle.write("\n")
+                  os.chmod(temporary, 0o600)
+                  os.replace(temporary, destination)
+              raise SystemExit(0)
 
           for key in (
               "migration_succeeded",
@@ -253,6 +516,12 @@ jobs:
               "loopback_bindings_verified",
               "capacity_guard_verified",
               "data_volume_filesystems_verified",
+              "postgres_tls_verified",
+              "postgres_tls_dsn_verified",
+              "postgres_hba_verified",
+              "postgres_plaintext_rejected",
+              "postgres_plaintext_stderr_present",
+              "postgres_scram_password_verified",
           ):
               if deployment.get(key) is not True:
                   raise SystemExit(f"deployment evidence did not prove {key}")
@@ -260,6 +529,42 @@ jobs:
           checked = deployment.get("storage_verifier_checked")
           if deployment.get("migration_schema_after") != 3 or type(checked) is not int or checked < 1:
               raise SystemExit("deployment evidence has invalid schema or verifier counts")
+          schema_before = deployment.get("migration_schema_before")
+          if type(schema_before) is not int or schema_before < 0 or schema_before > 3:
+              raise SystemExit("deployment evidence has invalid prior schema version")
+          if deployment.get("failed_phase") != "none":
+              raise SystemExit("successful deployment evidence has a failed phase")
+          if deployment.get("rollback_attempted") is not False or deployment.get("rollback_succeeded") is not False:
+              raise SystemExit("successful deployment unexpectedly reports rollback")
+          if deployment.get("candidate_cleanup_attempted") is not False or deployment.get("candidate_cleanup_succeeded") is not False:
+              raise SystemExit("successful deployment unexpectedly reports candidate cleanup")
+          if type(deployment.get("previous_compose_available")) is not bool or type(deployment.get("runtime_changed")) is not bool:
+              raise SystemExit("successful deployment has invalid runtime transition fields")
+          if deployment["runtime_changed"] is not True:
+              raise SystemExit("successful deployment did not change the candidate runtime")
+          if type(deployment.get("postgres_tls_connections")) is not int or deployment["postgres_tls_connections"] < 1:
+              raise SystemExit("deployment evidence has no PostgreSQL TLS application connection")
+          if deployment.get("postgres_tls_version") not in {"TLSv1.2", "TLSv1.3"}:
+              raise SystemExit("deployment evidence has an unexpected PostgreSQL TLS version")
+          cipher = deployment.get("postgres_tls_cipher")
+          if not isinstance(cipher, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", cipher):
+              raise SystemExit("deployment evidence has an invalid PostgreSQL TLS cipher")
+          bits = deployment.get("postgres_tls_bits")
+          if type(bits) is not int or bits < 128:
+              raise SystemExit("deployment evidence has weak PostgreSQL TLS cipher bits")
+          for key in ("postgres_tls_ca_sha256", "postgres_tls_leaf_sha256", "postgres_plaintext_stderr_sha256"):
+              if not isinstance(deployment.get(key), str) or not re.fullmatch(r"[0-9a-f]{64}", deployment[key]):
+                  raise SystemExit(f"deployment evidence has an invalid {key}")
+          if deployment.get("postgres_tls_leaf_san") != "DNS:postgres":
+              raise SystemExit("deployment evidence has an unexpected PostgreSQL certificate SAN")
+          try:
+              not_before = datetime.fromisoformat(deployment["postgres_tls_leaf_not_before"].replace("Z", "+00:00"))
+              not_after = datetime.fromisoformat(deployment["postgres_tls_leaf_not_after"].replace("Z", "+00:00"))
+          except (KeyError, AttributeError, ValueError) as error:
+              raise SystemExit("deployment evidence has invalid PostgreSQL certificate dates") from error
+          now = datetime.now(timezone.utc)
+          if not_before > now + timedelta(minutes=5) or not_after < now + timedelta(days=30):
+              raise SystemExit("PostgreSQL certificate is not currently valid for at least 30 days")
           for prefix in ("", "docker_"):
               for suffix in ("before", "after"):
                   used = deployment.get(f"{prefix}disk_used_percent_{suffix}")
@@ -280,12 +585,47 @@ jobs:
               after = deployment.get(f"{prefix}after")
               if not isinstance(before, str) or not before or before == "unknown" or before != after:
                   raise SystemExit(f"deployment evidence has unstable {prefix}identity")
+          filesystem_pattern = re.compile(r"[A-Za-z0-9_./:+-]{1,255}")
+          for key in (
+              "root_filesystem_before", "root_filesystem_after",
+              "docker_filesystem_before", "docker_filesystem_after",
+              "postgres_data_filesystem", "seaweedfs_data_filesystem",
+          ):
+              if not filesystem_pattern.fullmatch(deployment[key]):
+                  raise SystemExit(f"deployment evidence has invalid {key}")
           docker_filesystem = deployment["docker_filesystem_after"]
           for key in ("postgres_data_filesystem", "seaweedfs_data_filesystem"):
               if deployment.get(key) != docker_filesystem:
                   raise SystemExit(f"deployment evidence has unexpected {key}")
           if type(deployment.get("docker_data_root_on_root_filesystem")) is not bool:
               raise SystemExit("deployment evidence has invalid Docker/root filesystem relationship")
+          previous_image = deployment.get("previous_image")
+          if previous_image != "none" and not (
+              isinstance(previous_image, str)
+              and re.fullmatch(r"ghcr\.io/baicie/asteria-drive@sha256:[0-9a-f]{64}", previous_image)
+          ):
+              raise SystemExit("deployment evidence has invalid previous image")
+          if not isinstance(deployment.get("deployed_image_id"), str) or not re.fullmatch(
+              r"sha256:[0-9a-f]{64}", deployment["deployed_image_id"]
+          ):
+              raise SystemExit("deployment evidence has invalid deployed image ID")
+          for key in ("started_at", "completed_at"):
+              if not isinstance(deployment.get(key), str) or not re.fullmatch(
+                  r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z", deployment[key]
+              ):
+                  raise SystemExit(f"deployment evidence has invalid {key}")
+          for key in ("load1_before", "load1_after", "memory_used_percent_before", "memory_used_percent_after"):
+              value = deployment.get(key)
+              if (
+                  isinstance(value, bool)
+                  or not isinstance(value, (int, float))
+                  or not math.isfinite(value)
+                  or value < 0
+              ):
+                  raise SystemExit(f"deployment evidence has invalid {key}")
+          for key in ("memory_used_percent_before", "memory_used_percent_after"):
+              if deployment[key] > 100:
+                  raise SystemExit(f"deployment evidence has invalid {key}")
           verifier_checked = verifier.get("checked")
           verifier_healthy = verifier.get("healthy")
           if (
@@ -300,8 +640,26 @@ jobs:
               raise SystemExit("storage verifier evidence contains findings")
           if verifier.get("findings_truncated") is not False:
               raise SystemExit("storage verifier evidence truncated findings")
+          verifier_timestamp_pattern = re.compile(
+              r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,9})?Z"
+          )
+          for key in ("started_at", "finished_at"):
+              if not isinstance(verifier.get(key), str) or not verifier_timestamp_pattern.fullmatch(verifier[key]):
+                  raise SystemExit(f"storage verifier evidence has invalid {key}")
+          for source, destination in (
+              (deployment, sys.argv[3]),
+              (verifier, sys.argv[4]),
+          ):
+              temporary = destination + ".tmp"
+              with open(temporary, "x", encoding="utf-8") as handle:
+                  json.dump(source, handle, indent=2, sort_keys=True)
+                  handle.write("\n")
+              os.chmod(temporary, 0o600)
+              os.replace(temporary, destination)
           PY
-          fi
+          rm -f -- "$raw_deployment" "$raw_verifier" "$raw_deployment_stderr" "$raw_verifier_stderr" \
+            "$deploy_stdout" "$deploy_stderr"
+          trap - EXIT
 
       - name: Upload deployment evidence
         if: ${{ always() }}

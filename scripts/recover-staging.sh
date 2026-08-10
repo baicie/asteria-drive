@@ -16,11 +16,11 @@ project="asteria-drive-staging"
 source_api="asteria-drive-staging-api-1"
 source_postgres="asteria-drive-staging-postgres-1"
 source_seaweedfs="asteria-drive-staging-seaweedfs-1"
-expected_compose_sha256="d7d39a2e965849f364ceb25ab4106efd575f9a6d924e8ebfd9d508a594adc5dc"
-expected_app_image="sha256:f5da244cba2055764a8caae7b9e9a752cc8f07356c0d7ae6397a6a7992e0cccc"
+expected_compose_sha256="aa4336dc8914faaccc304266cba715b8212d10722adb4afd7aeea5d40f4c9637"
+expected_app_image="sha256:2b73f8a7a271c0d7d6c7f73e15987b5e29290437146f07a57b57b9aef031d842"
 expected_postgres_image="sha256:6567bca8d7bc8c82c5922425a0baee57be8402df92bae5eacad5f01ae9544daa"
 expected_seaweedfs_image="sha256:49312939c00c01e5ee6afbd7d728b18027821d3764c35a797a72acd4fdf3296a"
-app_image="ghcr.io/baicie/asteria-drive@sha256:f5da244cba2055764a8caae7b9e9a752cc8f07356c0d7ae6397a6a7992e0cccc"
+app_image="ghcr.io/baicie/asteria-drive@sha256:2b73f8a7a271c0d7d6c7f73e15987b5e29290437146f07a57b57b9aef031d842"
 postgres_image="postgres:17.5-alpine@sha256:6567bca8d7bc8c82c5922425a0baee57be8402df92bae5eacad5f01ae9544daa"
 helper_image="chrislusf/seaweedfs:3.85@sha256:49312939c00c01e5ee6afbd7d728b18027821d3764c35a797a72acd4fdf3296a"
 resource_boundary="staging-recovery-ephemeral"
@@ -70,6 +70,13 @@ cleanup_verified="false"
 capacity_guard_verified="false"
 object_versions_restored="false"
 pitr_wal_replayed="false"
+source_postgres_tls_verified="false"
+source_postgres_tls_dsn_verified="false"
+source_postgres_hba_verified="false"
+source_postgres_tls_connections=0
+source_postgres_tls_version="none"
+source_postgres_tls_cipher="none"
+source_postgres_tls_bits=0
 archive_size_bytes=0
 archive_sha256="0000000000000000000000000000000000000000000000000000000000000000"
 source_schema_version=0
@@ -129,7 +136,7 @@ tables=(
   audit_event
 )
 
-for command in awk chmod cmp date docker df head install mv openssl python3 rm seq sha256sum sleep stat timeout; do
+for command in awk chmod cmp curl date docker df head install mv openssl python3 rm seq sha256sum sleep stat timeout; do
   command -v "$command" >/dev/null || { printf '%s is required\n' "$command" >&2; exit 1; }
 done
 
@@ -239,23 +246,43 @@ verify_app_secret_metadata() {
     --log-driver none \
     --mount type=volume,source=asteria-drive-staging-app-secrets,target=/secrets,readonly \
     --entrypoint /bin/sh "$helper_image" -ec '
-      for name in database-url cursor-hmac-key trusted-tokens.json s3-access-key-id s3-secret-access-key; do
+      for name in database-url database-url-tls postgres-ca.crt cursor-hmac-key trusted-tokens.json s3-access-key-id s3-secret-access-key; do
         path="/secrets/$name"
         [ -f "$path" ] && [ ! -L "$path" ] && [ -s "$path" ] || exit 1
         [ "$(stat -c "%u:%g:%a" "$path")" = "65532:65532:400" ] || exit 1
       done
     ' >/dev/null || return 1
   remove_capacity_probe
+  docker run --rm --pull never --network none --read-only --user root \
+    --cap-drop ALL --security-opt no-new-privileges:true --pids-limit 16 \
+    --memory 32m --cpus 0.25 --log-driver none \
+    --mount type=volume,source=asteria-drive-staging-app-secrets,target=/app-secrets,readonly \
+    --mount type=volume,source=asteria-drive-staging-postgres-secrets,target=/postgres-secrets,readonly \
+    --entrypoint /bin/sh "$helper_image" -ec '
+      password="$(cat /postgres-secrets/postgres-password)"
+      dsn="$(cat /app-secrets/database-url-tls)"
+      expected="postgres://asteria:${password}@postgres:5432/asteria?sslmode=verify-full&sslrootcert=/var/run/secrets/asteria/postgres-ca.crt&application_name=asteria-drive-staging-api"
+      [ "$dsn" = "$expected" ]
+    '
+  source_postgres_tls_dsn_verified="true"
+}
+
+verify_image_identity() {
+  local name="$1" expected_ref="$2" actual_image actual_ref expected_id
+  actual_image="$(docker inspect --format '{{.Image}}' "$name")" || return 1
+  actual_ref="$(docker inspect --format '{{.Config.Image}}' "$name")" || return 1
+  expected_id="$(docker image inspect --format '{{.Id}}' "$expected_ref")" || return 1
+  [[ "$actual_ref" == "$expected_ref" && "$actual_image" == "$expected_id" ]]
 }
 
 verify_container() {
-  local name="$1" service="$2" image="$3" expected_health="$4"
-  local running actual_image project_label service_label health
+  local name="$1" service="$2" image_ref="$3" expected_health="$4"
+  local running project_label service_label health
   running="$(docker inspect --format '{{.State.Running}}' "$name")" || return 1
-  actual_image="$(docker inspect --format '{{.Image}}' "$name")" || return 1
   project_label="$(docker inspect --format '{{ index .Config.Labels "com.docker.compose.project" }}' "$name")" || return 1
   service_label="$(docker inspect --format '{{ index .Config.Labels "com.docker.compose.service" }}' "$name")" || return 1
-  [[ "$running" == "true" && "$actual_image" == "$image" ]] || return 1
+  [[ "$running" == "true" ]] || return 1
+  verify_image_identity "$name" "$image_ref" || return 1
   [[ "$project_label" == "$project" && "$service_label" == "$service" ]] || return 1
   if [[ "$expected_health" != "none" ]]; then
     health="$(docker inspect --format '{{.State.Health.Status}}' "$name")" || return 1
@@ -421,6 +448,13 @@ write_evidence() {
   E_METRICS="$recovered_metrics_scrape_succeeded" E_CLEANUP="$cleanup_verified" \
   E_CAPACITY="$capacity_guard_verified" E_OBJECT_VERSIONS="$object_versions_restored" \
   E_PITR="$pitr_wal_replayed" E_ARCHIVE_SIZE="$archive_size_bytes" \
+  E_SOURCE_POSTGRES_TLS="$source_postgres_tls_verified" \
+  E_SOURCE_POSTGRES_TLS_DSN="$source_postgres_tls_dsn_verified" \
+  E_SOURCE_POSTGRES_HBA="$source_postgres_hba_verified" \
+  E_SOURCE_POSTGRES_TLS_CONNECTIONS="$source_postgres_tls_connections" \
+  E_SOURCE_POSTGRES_TLS_VERSION="$source_postgres_tls_version" \
+  E_SOURCE_POSTGRES_TLS_CIPHER="$source_postgres_tls_cipher" \
+  E_SOURCE_POSTGRES_TLS_BITS="$source_postgres_tls_bits" \
   E_ARCHIVE_SHA="$archive_sha256" E_SOURCE_SCHEMA="$source_schema_version" \
   E_RESTORED_SCHEMA="$restored_schema_version" E_TABLES="$tables_checked" \
   E_SOURCE_ROWS="$source_total_rows" E_RESTORED_ROWS="$restored_total_rows" \
@@ -448,7 +482,7 @@ def integer(name):
     return value
 
 report = {
-    "schema": "asteria-drive-staging-recovery/v1",
+    "schema": "asteria-drive-staging-recovery/v2",
     "status": os.environ["E_STATUS"],
     "last_phase": os.environ["E_PHASE"],
     "started_at": os.environ["E_STARTED_AT"],
@@ -474,6 +508,13 @@ report = {
     "capacity_guard_verified": boolean("E_CAPACITY"),
     "object_versions_restored": boolean("E_OBJECT_VERSIONS"),
     "pitr_wal_replayed": boolean("E_PITR"),
+    "source_postgres_tls_verified": boolean("E_SOURCE_POSTGRES_TLS"),
+    "source_postgres_tls_dsn_verified": boolean("E_SOURCE_POSTGRES_TLS_DSN"),
+    "source_postgres_hba_verified": boolean("E_SOURCE_POSTGRES_HBA"),
+    "source_postgres_tls_connections": integer("E_SOURCE_POSTGRES_TLS_CONNECTIONS"),
+    "source_postgres_tls_version": os.environ["E_SOURCE_POSTGRES_TLS_VERSION"],
+    "source_postgres_tls_cipher": os.environ["E_SOURCE_POSTGRES_TLS_CIPHER"],
+    "source_postgres_tls_bits": integer("E_SOURCE_POSTGRES_TLS_BITS"),
     "backup_archive_size_bytes": integer("E_ARCHIVE_SIZE"),
     "backup_archive_sha256": os.environ["E_ARCHIVE_SHA"],
     "source_schema_version": integer("E_SOURCE_SCHEMA"),
@@ -518,9 +559,9 @@ phase="source-identity"
 source_api_id="$(container_id "$source_api")"
 source_postgres_id="$(container_id "$source_postgres")"
 source_seaweedfs_id="$(container_id "$source_seaweedfs")"
-verify_container "$source_api_id" api "$expected_app_image" none
-verify_container "$source_postgres_id" postgres "$expected_postgres_image" healthy
-verify_container "$source_seaweedfs_id" seaweedfs "$expected_seaweedfs_image" healthy
+verify_container "$source_api_id" api "$app_image" none
+verify_container "$source_postgres_id" postgres "$postgres_image" healthy
+verify_container "$source_seaweedfs_id" seaweedfs "$helper_image" healthy
 verify_source_ids
 
 phase="capacity-before"
@@ -553,6 +594,31 @@ printf 'postgres://asteria:%s@postgres-recovery:5432/asteria?sslmode=disable\n' 
 unset target_password
 chmod 0400 "$password_file"
 chmod 0444 "$database_url_file"
+
+phase="verify-source-postgres-tls"
+curl --fail --silent --show-error --max-time 5 http://127.0.0.1:18080/readyz >/dev/null
+source_tls_settings="$(docker exec --user postgres "$source_postgres_id" \
+  psql -U asteria -d asteria -AtF $'\t' -c \
+    "SELECT current_setting('ssl'), current_setting('ssl_min_protocol_version'), current_setting('hba_file')" \
+  2>"$work_dir/source-tls-settings.stderr")"
+[[ "$source_tls_settings" == $'on\tTLSv1.2\t/var/run/secrets/asteria/pg_hba.conf' ]] || exit 1
+source_hba_rules="$(docker exec --user postgres "$source_postgres_id" \
+  psql -U asteria -d asteria -Atqc \
+    "SELECT COALESCE(string_agg(format('%s|%s|%s|%s|%s|%s|%s', type, array_to_string(database, ','), array_to_string(user_name, ','), COALESCE(address, ''), COALESCE(netmask, ''), auth_method, COALESCE(error, '')), E'\\n' ORDER BY line_number), '') FROM pg_hba_file_rules" \
+  2>"$work_dir/source-hba-rules.stderr")"
+[[ "$source_hba_rules" == $'local|all|all|||trust|\nhostnossl|all|all|0.0.0.0|0.0.0.0|reject|\nhostnossl|all|all|::|::|reject|\nhostssl|all|all|0.0.0.0|0.0.0.0|scram-sha-256|\nhostssl|all|all|::|::|scram-sha-256|' ]] || exit 1
+source_postgres_hba_verified="true"
+source_tls_row="$(docker exec --user postgres "$source_postgres_id" \
+  psql -U asteria -d asteria -AtF $'\t' -c \
+    "SELECT count(*)::text, COALESCE(bool_and(s.ssl), false)::text, COALESCE(min(s.version), ''), COALESCE(min(s.cipher), ''), COALESCE(min(s.bits), 0)::text FROM pg_stat_activity a JOIN pg_stat_ssl s USING (pid) WHERE a.application_name = 'asteria-drive-staging-api'" \
+  2>"$work_dir/source-tls-session.stderr")"
+IFS=$'\t' read -r source_postgres_tls_connections source_tls_all source_postgres_tls_version \
+  source_postgres_tls_cipher source_postgres_tls_bits <<<"$source_tls_row"
+[[ "$source_postgres_tls_connections" =~ ^[0-9]+$ && "$source_postgres_tls_connections" -ge 1 ]]
+[[ "$source_tls_all" == "t" && "$source_postgres_tls_version" =~ ^TLSv1\.[23]$ ]]
+[[ "$source_postgres_tls_cipher" =~ ^[A-Za-z0-9_-]+$ ]]
+[[ "$source_postgres_tls_bits" =~ ^[0-9]+$ && "$source_postgres_tls_bits" -ge 128 ]]
+source_postgres_tls_verified="true"
 
 phase="backup-source"
 verify_source_ids || exit 1
@@ -590,9 +656,9 @@ source_schema_version="$(query_schema_version "$source_postgres_id")"
 [[ "$source_schema_version" -eq "$source_schema_before" && "$source_schema_version" -eq 3 ]] || exit 1
 capture_counts "$source_postgres_id" "$source_counts_after_file"
 verify_source_ids || exit 1
-verify_container "$source_api_id" api "$expected_app_image" none || exit 1
-verify_container "$source_postgres_id" postgres "$expected_postgres_image" healthy || exit 1
-verify_container "$source_seaweedfs_id" seaweedfs "$expected_seaweedfs_image" healthy || exit 1
+verify_container "$source_api_id" api "$app_image" none || exit 1
+verify_container "$source_postgres_id" postgres "$postgres_image" healthy || exit 1
+verify_container "$source_seaweedfs_id" seaweedfs "$helper_image" healthy || exit 1
 cmp -s "$source_counts_before_file" "$source_counts_after_file" || {
   printf 'staging source changed during backup; retry the drill\n' >&2
   exit 1
@@ -643,7 +709,7 @@ docker run -d --pull never \
   "$postgres_image" >/dev/null
 target_created="true"
 resource_labels_match container "$target_container" || exit 1
-[[ "$(docker inspect --format '{{.Image}}' "$target_container")" == "$expected_postgres_image" ]] || exit 1
+verify_image_identity "$target_container" "$postgres_image" || exit 1
 target_ready="false"
 for _ in $(seq 1 60); do
   if docker exec --user postgres "$target_container" pg_isready -q --username asteria --dbname asteria; then
@@ -769,7 +835,7 @@ docker run -d --pull never --name "$api_container" \
   "$app_image" >/dev/null
 api_created="true"
 resource_labels_match container "$api_container" || exit 1
-[[ "$(docker inspect --format '{{.Image}}' "$api_container")" == "$expected_app_image" ]] || exit 1
+verify_image_identity "$api_container" "$app_image" || exit 1
 api_ready="false"
 for _ in $(seq 1 60); do
   if docker exec "$source_seaweedfs_id" wget -q -T 2 -O /dev/null http://api-recovery:8080/healthz; then

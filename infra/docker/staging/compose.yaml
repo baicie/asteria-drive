@@ -1,13 +1,13 @@
 name: asteria-drive-staging
 
-x-asteria-image: &asteria-image ghcr.io/baicie/asteria-drive@sha256:f5da244cba2055764a8caae7b9e9a752cc8f07356c0d7ae6397a6a7992e0cccc
+x-asteria-image: &asteria-image ghcr.io/baicie/asteria-drive@sha256:2b73f8a7a271c0d7d6c7f73e15987b5e29290437146f07a57b57b9aef031d842
 x-asteria-environment: &asteria-environment
   ASTERIA_ENV: development
   ASTERIA_AUTH_MODE: trusted-dev
   ASTERIA_TRUSTED_TOKENS_JSON_FILE: /var/run/secrets/asteria/trusted-tokens.json
   ASTERIA_CURSOR_HMAC_KEY_FILE: /var/run/secrets/asteria/cursor-hmac-key
   ASTERIA_METADATA_DRIVER: postgres
-  ASTERIA_DATABASE_URL_FILE: /var/run/secrets/asteria/database-url
+  ASTERIA_DATABASE_URL_FILE: /var/run/secrets/asteria/database-url-tls
   ASTERIA_AUTO_MIGRATE: "false"
   ASTERIA_STORAGE_DRIVER: s3
   ASTERIA_S3_ENDPOINT: http://seaweedfs:8333
@@ -51,8 +51,24 @@ services:
       POSTGRES_DB: asteria
       POSTGRES_USER: asteria
       POSTGRES_PASSWORD_FILE: /var/run/secrets/asteria/postgres-password
+    command:
+      - postgres
+      - -c
+      - ssl=on
+      - -c
+      - ssl_cert_file=/var/run/secrets/asteria/postgres-server.crt
+      - -c
+      - ssl_key_file=/var/run/secrets/asteria/postgres-server.key
+      - -c
+      - ssl_min_protocol_version=TLSv1.2
+      - -c
+      - hba_file=/var/run/secrets/asteria/pg_hba.conf
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U asteria -d asteria"]
+      test:
+        - CMD-SHELL
+        - >-
+          pg_isready -d 'host=postgres port=5432 dbname=asteria user=asteria
+          sslmode=verify-full sslrootcert=/var/run/secrets/asteria/postgres-ca.crt'
       interval: 3s
       timeout: 3s
       retries: 40
@@ -127,8 +143,8 @@ services:
     profiles: [tools]
     entrypoint: ["/usr/local/bin/asteria-migrate"]
     environment:
-      ASTERIA_ENV: development
-      ASTERIA_DATABASE_URL_FILE: /var/run/secrets/asteria/database-url
+      ASTERIA_ENV: production
+      ASTERIA_DATABASE_URL_FILE: /var/run/secrets/asteria/database-url-tls
     depends_on:
       postgres:
         condition: service_healthy
@@ -159,8 +175,8 @@ services:
     mem_limit: 512m
     labels:
       com.baicie.asteria.boundary: staging-not-production
-      com.baicie.asteria.release: v0.1.0
-      com.baicie.asteria.source: 8878d9eaaf88973c522a4f4742ea960acd63d503
+      com.baicie.asteria.release: v0.1.1
+      com.baicie.asteria.source: e8d26ded6e9138bbfdeac60f2487c5f835ab61a5
     logging:
       driver: json-file
       options:
