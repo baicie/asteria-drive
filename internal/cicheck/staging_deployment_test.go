@@ -737,6 +737,38 @@ func TestStagingRecoveryWorkflowAndScriptTrustBoundary(t *testing.T) {
 	}
 }
 
+func TestStagingPostgresTLSBooleanTextContract(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		path     string
+		variable string
+	}{
+		{name: "deploy", path: "../../scripts/deploy-staging.sh", variable: "tls_all"},
+		{name: "monitor", path: "../../scripts/monitor-staging.sh", variable: "tls_all"},
+		{name: "recovery", path: "../../scripts/recover-staging.sh", variable: "source_tls_all"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			contents, err := os.ReadFile(test.path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			text := string(contents)
+			if !strings.Contains(text, "COALESCE(bool_and(s.ssl), false)::text") {
+				t.Fatal("PostgreSQL TLS aggregate must be returned as text")
+			}
+			if !strings.Contains(text, fmt.Sprintf(`[[ "$%s" == "true"`, test.variable)) {
+				t.Fatalf("PostgreSQL boolean text variable %s is not compared with true", test.variable)
+			}
+			if strings.Contains(text, fmt.Sprintf(`[[ "$%s" == "t"`, test.variable)) {
+				t.Fatalf("PostgreSQL boolean text variable %s is compared with psql's non-cast display value", test.variable)
+			}
+		})
+	}
+}
+
 func TestStagingDeploymentFilesUseStableLineEndings(t *testing.T) {
 	t.Parallel()
 
