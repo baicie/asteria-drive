@@ -615,7 +615,7 @@ source_tls_row="$(docker exec --user postgres "$source_postgres_id" \
 IFS=$'\t' read -r source_postgres_tls_connections source_tls_all source_postgres_tls_version \
   source_postgres_tls_cipher source_postgres_tls_bits <<<"$source_tls_row"
 [[ "$source_postgres_tls_connections" =~ ^[0-9]+$ && "$source_postgres_tls_connections" -ge 1 ]]
-[[ "$source_tls_all" == "t" && "$source_postgres_tls_version" =~ ^TLSv1\.[23]$ ]]
+[[ "$source_tls_all" == "true" && "$source_postgres_tls_version" =~ ^TLSv1\.[23]$ ]]
 [[ "$source_postgres_tls_cipher" =~ ^[A-Za-z0-9_-]+$ ]]
 [[ "$source_postgres_tls_bits" =~ ^[0-9]+$ && "$source_postgres_tls_bits" -ge 128 ]]
 source_postgres_tls_verified="true"

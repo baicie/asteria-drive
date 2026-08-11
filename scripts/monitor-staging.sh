@@ -237,7 +237,7 @@ verify_postgres_tls() {
       "SELECT count(*)::text, COALESCE(bool_and(s.ssl), false)::text, COALESCE(min(s.version), ''), COALESCE(min(s.cipher), ''), COALESCE(min(s.bits), 0)::text FROM pg_stat_activity a JOIN pg_stat_ssl s USING (pid) WHERE a.application_name = 'asteria-drive-staging-api'")" || return 1
   IFS=$'\t' read -r postgres_tls_connections tls_all postgres_tls_version postgres_tls_cipher postgres_tls_bits <<<"$tls_row"
   [[ "$postgres_tls_connections" =~ ^[0-9]+$ && "$postgres_tls_connections" -ge 1 ]] || return 1
-  [[ "$tls_all" == "t" && "$postgres_tls_version" =~ ^TLSv1\.[23]$ ]] || return 1
+  [[ "$tls_all" == "true" && "$postgres_tls_version" =~ ^TLSv1\.[23]$ ]] || return 1
   [[ "$postgres_tls_cipher" =~ ^[A-Za-z0-9_-]+$ ]] || return 1
   [[ "$postgres_tls_bits" =~ ^[0-9]+$ && "$postgres_tls_bits" -ge 128 ]] || return 1
   [[ "$(docker compose -p "$project" -f "$active_compose_file" exec -T postgres \

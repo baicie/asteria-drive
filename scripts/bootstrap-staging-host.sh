@@ -11,9 +11,9 @@ dispatcher_config="/etc/asteria-drive/staging-dispatch.conf"
 monitor_path="/usr/local/libexec/asteria-staging-monitor"
 recovery_path="/usr/local/libexec/asteria-staging-recovery"
 expected_compose_sha256="aa4336dc8914faaccc304266cba715b8212d10722adb4afd7aeea5d40f4c9637"
-expected_deploy_script_sha256="fe980432f1b66328b4c06c5fb7319898e9e14f4c64ce7d648eb2ec18c2e6d355"
-expected_monitor_script_sha256="f32ef84387be1c1453f96be2fa466b46ba1b3a521dca72b74c67ad59b2be3682"
-expected_recovery_script_sha256="07b50b419b882873e75adf0b70ac3b960016c0b90634a159d0183fd85f93aad0"
+expected_deploy_script_sha256="cd200fa32fdc2314817308479c99fe6425a481ff3bcd7384a60e145b2ad45044"
+expected_monitor_script_sha256="228ef0a34f0b9b4994779cb873bf4e80725a6a14dc900b10a7d81c6166eec50d"
+expected_recovery_script_sha256="9c8b10ce8e8fda6d83dd35801405ce4b944507cb5b469f233b3e5fc543790cbf"
 
 if [[ "$(id -u)" -ne 0 ]]; then
   printf 'bootstrap-staging-host.sh must run as root\n' >&2
