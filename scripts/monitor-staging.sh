@@ -151,17 +151,42 @@ verify_container() {
 }
 
 verify_postgres_dsn() {
-  docker run --rm --pull never --network none --read-only --user root \
+  local app_summary postgres_summary app_password_sha256 app_ca_sha256 app_extra
+  local postgres_password_sha256 postgres_ca_sha256 postgres_extra
+  app_summary="$(docker run --rm --pull never --network none --read-only --user 65532:65532 \
     --cap-drop ALL --security-opt no-new-privileges:true --pids-limit 16 \
     --memory 32m --cpus 0.25 --log-driver none \
     --mount type=volume,source=asteria-drive-staging-app-secrets,target=/app-secrets,readonly \
+    --entrypoint /bin/sh "$helper_image" -ec '
+      dsn="$(cat /app-secrets/database-url-tls)"
+      password="${dsn#postgres://asteria:}"
+      password="${password%%@*}"
+      printf "%s" "$password" | grep -Eq "^[0-9a-f]{48}$"
+      expected="postgres://asteria:${password}@postgres:5432/asteria?sslmode=verify-full&sslrootcert=/var/run/secrets/asteria/postgres-ca.crt&application_name=asteria-drive-staging-api"
+      [ "$dsn" = "$expected" ]
+      printf "%s %s\n" \
+        "$(printf "%s" "$password" | sha256sum | awk "{print \$1}")" \
+        "$(sha256sum /app-secrets/postgres-ca.crt | awk "{print \$1}")"
+    ')" || return 1
+  IFS=' ' read -r app_password_sha256 app_ca_sha256 app_extra <<<"$app_summary"
+  [[ "$app_password_sha256" =~ ^[0-9a-f]{64}$ && "$app_ca_sha256" =~ ^[0-9a-f]{64}$ && -z "$app_extra" ]] || return 1
+
+  postgres_summary="$(docker run --rm --pull never --network none --read-only --user 0:70 \
+    --cap-drop ALL --security-opt no-new-privileges:true --pids-limit 16 \
+    --memory 32m --cpus 0.25 --log-driver none \
     --mount type=volume,source=asteria-drive-staging-postgres-secrets,target=/postgres-secrets,readonly \
     --entrypoint /bin/sh "$helper_image" -ec '
       password="$(cat /postgres-secrets/postgres-password)"
-      dsn="$(cat /app-secrets/database-url-tls)"
-      expected="postgres://asteria:${password}@postgres:5432/asteria?sslmode=verify-full&sslrootcert=/var/run/secrets/asteria/postgres-ca.crt&application_name=asteria-drive-staging-api"
-      [ "$dsn" = "$expected" ]
-    '
+      printf "%s" "$password" | grep -Eq "^[0-9a-f]{48}$"
+      printf "%s %s\n" \
+        "$(printf "%s" "$password" | sha256sum | awk "{print \$1}")" \
+        "$(sha256sum /postgres-secrets/postgres-ca.crt | awk "{print \$1}")"
+    ')" || return 1
+  IFS=' ' read -r postgres_password_sha256 postgres_ca_sha256 postgres_extra <<<"$postgres_summary"
+  [[ "$postgres_password_sha256" =~ ^[0-9a-f]{64}$ && "$postgres_ca_sha256" =~ ^[0-9a-f]{64}$ && -z "$postgres_extra" ]] || return 1
+  [[ "$app_password_sha256" == "$postgres_password_sha256" && "$app_ca_sha256" == "$postgres_ca_sha256" ]] || return 1
+  unset app_summary app_password_sha256 app_ca_sha256 app_extra
+  unset postgres_summary postgres_password_sha256 postgres_ca_sha256 postgres_extra
   postgres_tls_dsn_verified="true"
 }
 
@@ -222,7 +247,7 @@ verify_postgres_tls() {
   not_after_raw="$(openssl x509 -in "$leaf_file" -noout -enddate | cut -d= -f2-)"
   postgres_tls_leaf_not_after="$(date -u -d "$not_after_raw" +'%Y-%m-%dT%H:%M:%SZ')" || return 1
 
-  verify_postgres_dsn
+  verify_postgres_dsn || return 1
   settings="$(docker compose -p "$project" -f "$active_compose_file" exec -T postgres \
     psql -U asteria -d asteria -AtF $'\t' -c \
       "SELECT current_setting('ssl'), current_setting('ssl_min_protocol_version'), current_setting('hba_file')")" || return 1

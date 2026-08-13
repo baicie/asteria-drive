@@ -236,6 +236,8 @@ verify_source_ids() {
 }
 
 verify_app_secret_metadata() {
+  local app_summary postgres_summary app_password_sha256 app_ca_sha256 app_extra
+  local postgres_password_sha256 postgres_ca_sha256 postgres_extra
   capacity_created="true"
   timeout 30 docker run --pull never --name "$capacity_container" --network none \
     --label "com.baicie.asteria.boundary=$resource_boundary" \
@@ -252,18 +254,41 @@ verify_app_secret_metadata() {
         [ "$(stat -c "%u:%g:%a" "$path")" = "65532:65532:400" ] || exit 1
       done
     ' >/dev/null || return 1
-  remove_capacity_probe
-  docker run --rm --pull never --network none --read-only --user root \
+  remove_capacity_probe || return 1
+  app_summary="$(docker run --rm --pull never --network none --read-only --user 65532:65532 \
     --cap-drop ALL --security-opt no-new-privileges:true --pids-limit 16 \
     --memory 32m --cpus 0.25 --log-driver none \
     --mount type=volume,source=asteria-drive-staging-app-secrets,target=/app-secrets,readonly \
+    --entrypoint /bin/sh "$helper_image" -ec '
+      dsn="$(cat /app-secrets/database-url-tls)"
+      password="${dsn#postgres://asteria:}"
+      password="${password%%@*}"
+      printf "%s" "$password" | grep -Eq "^[0-9a-f]{48}$"
+      expected="postgres://asteria:${password}@postgres:5432/asteria?sslmode=verify-full&sslrootcert=/var/run/secrets/asteria/postgres-ca.crt&application_name=asteria-drive-staging-api"
+      [ "$dsn" = "$expected" ]
+      printf "%s %s\n" \
+        "$(printf "%s" "$password" | sha256sum | awk "{print \$1}")" \
+        "$(sha256sum /app-secrets/postgres-ca.crt | awk "{print \$1}")"
+    ')" || return 1
+  IFS=' ' read -r app_password_sha256 app_ca_sha256 app_extra <<<"$app_summary"
+  [[ "$app_password_sha256" =~ ^[0-9a-f]{64}$ && "$app_ca_sha256" =~ ^[0-9a-f]{64}$ && -z "$app_extra" ]] || return 1
+
+  postgres_summary="$(docker run --rm --pull never --network none --read-only --user 0:70 \
+    --cap-drop ALL --security-opt no-new-privileges:true --pids-limit 16 \
+    --memory 32m --cpus 0.25 --log-driver none \
     --mount type=volume,source=asteria-drive-staging-postgres-secrets,target=/postgres-secrets,readonly \
     --entrypoint /bin/sh "$helper_image" -ec '
       password="$(cat /postgres-secrets/postgres-password)"
-      dsn="$(cat /app-secrets/database-url-tls)"
-      expected="postgres://asteria:${password}@postgres:5432/asteria?sslmode=verify-full&sslrootcert=/var/run/secrets/asteria/postgres-ca.crt&application_name=asteria-drive-staging-api"
-      [ "$dsn" = "$expected" ]
-    '
+      printf "%s" "$password" | grep -Eq "^[0-9a-f]{48}$"
+      printf "%s %s\n" \
+        "$(printf "%s" "$password" | sha256sum | awk "{print \$1}")" \
+        "$(sha256sum /postgres-secrets/postgres-ca.crt | awk "{print \$1}")"
+    ')" || return 1
+  IFS=' ' read -r postgres_password_sha256 postgres_ca_sha256 postgres_extra <<<"$postgres_summary"
+  [[ "$postgres_password_sha256" =~ ^[0-9a-f]{64}$ && "$postgres_ca_sha256" =~ ^[0-9a-f]{64}$ && -z "$postgres_extra" ]] || return 1
+  [[ "$app_password_sha256" == "$postgres_password_sha256" && "$app_ca_sha256" == "$postgres_ca_sha256" ]] || return 1
+  unset app_summary app_password_sha256 app_ca_sha256 app_extra
+  unset postgres_summary postgres_password_sha256 postgres_ca_sha256 postgres_extra
   source_postgres_tls_dsn_verified="true"
 }
 

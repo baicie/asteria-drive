@@ -544,6 +544,7 @@ func TestStagingMonitorWorkflowAndScriptTrustBoundary(t *testing.T) {
 	if strings.Contains(monitorText, "set -x") || regexp.MustCompile(`ASTERIA_(DATABASE|CURSOR|S3|TRUSTED).*FILE`).MatchString(monitorText) {
 		t.Fatal("staging monitor must not trace or read application secret files")
 	}
+	assertStagingSecretOwnershipBoundary(t, monitorText, "monitor")
 
 	bootstrap, err := os.ReadFile("../../scripts/bootstrap-staging-host.sh")
 	if err != nil {
@@ -665,6 +666,7 @@ func TestStagingRecoveryWorkflowAndScriptTrustBoundary(t *testing.T) {
 		t.Fatal(err)
 	}
 	recoveryText := string(recovery)
+	assertStagingSecretOwnershipBoundary(t, recoveryText, "recovery")
 	for _, required := range []string{
 		"set -Eeuo pipefail",
 		"max_archive_bytes=$((512 * 1024 * 1024))",
@@ -734,6 +736,27 @@ func TestStagingRecoveryWorkflowAndScriptTrustBoundary(t *testing.T) {
 		if !strings.Contains(bootstrapText, required) {
 			t.Errorf("staging bootstrap recovery contract is missing %q", required)
 		}
+	}
+}
+
+func assertStagingSecretOwnershipBoundary(t *testing.T, script, name string) {
+	t.Helper()
+
+	for _, required := range []string{
+		"--user 65532:65532",
+		"--user 0:70",
+		"app_password_sha256",
+		"postgres_password_sha256",
+		"app_ca_sha256",
+		"postgres_ca_sha256",
+		`[[ "$app_password_sha256" == "$postgres_password_sha256" && "$app_ca_sha256" == "$postgres_ca_sha256" ]]`,
+	} {
+		if !strings.Contains(script, required) {
+			t.Errorf("staging %s secret verification is missing %q", name, required)
+		}
+	}
+	if regexp.MustCompile(`(?s)docker run[^\n]*--user root.*?asteria-drive-staging-app-secrets.*?asteria-drive-staging-postgres-secrets`).MatchString(script) {
+		t.Fatalf("staging %s must not mount application- and PostgreSQL-owned secrets in one root probe", name)
 	}
 }
 
