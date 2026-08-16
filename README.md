@@ -28,7 +28,7 @@ M2-1 已加入 OIDC/OAuth2 Resource Server、内部主体、租户成员和基�
 
 ### 依赖
 
-- Go 1.25.12 或更高版本
+- Go 1.25.13 或更高版本
 - Docker Engine 与 Docker Compose v2
 - PowerShell 7 或 Windows PowerShell 5.1（以下命令使用 PowerShell）
 - Node.js 24.16.0 与 npm 11（Actions schema 与 OpenAPI 契约校验需要）

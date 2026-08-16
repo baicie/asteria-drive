@@ -13,7 +13,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  RECOVERY_SCRIPT_SHA256: 9c8b10ce8e8fda6d83dd35801405ce4b944507cb5b469f233b3e5fc543790cbf
+  RECOVERY_SCRIPT_SHA256: 3b2bb836852893548f1f1d64602745c67b02a307f0c8ad5fcf17c9c5a41f459a
 
 jobs:
   recovery:

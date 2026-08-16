@@ -22,7 +22,7 @@ expected_postgres_image="sha256:6567bca8d7bc8c82c5922425a0baee57be8402df92bae5ea
 expected_seaweedfs_image="sha256:49312939c00c01e5ee6afbd7d728b18027821d3764c35a797a72acd4fdf3296a"
 app_image="ghcr.io/baicie/asteria-drive@sha256:2b73f8a7a271c0d7d6c7f73e15987b5e29290437146f07a57b57b9aef031d842"
 postgres_image="postgres:17.5-alpine@sha256:6567bca8d7bc8c82c5922425a0baee57be8402df92bae5eacad5f01ae9544daa"
-helper_image="chrislusf/seaweedfs:3.85@sha256:49312939c00c01e5ee6afbd7d728b18027821d3764c35a797a72acd4fdf3296a"
+readonly helper_image="chrislusf/seaweedfs:3.85@sha256:49312939c00c01e5ee6afbd7d728b18027821d3764c35a797a72acd4fdf3296a"
 resource_boundary="staging-recovery-ephemeral"
 max_disk_used_percent=85
 min_disk_available_kib=$((5 * 1024 * 1024))
@@ -236,6 +236,8 @@ verify_source_ids() {
 }
 
 verify_app_secret_metadata() {
+  local app_summary postgres_summary app_password_sha256 app_ca_sha256 app_extra
+  local postgres_password_sha256 postgres_ca_sha256 postgres_extra
   capacity_created="true"
   timeout 30 docker run --pull never --name "$capacity_container" --network none \
     --label "com.baicie.asteria.boundary=$resource_boundary" \
@@ -252,18 +254,60 @@ verify_app_secret_metadata() {
         [ "$(stat -c "%u:%g:%a" "$path")" = "65532:65532:400" ] || exit 1
       done
     ' >/dev/null || return 1
-  remove_capacity_probe
-  docker run --rm --pull never --network none --read-only --user root \
+  remove_capacity_probe || return 1
+  app_summary="$(docker run --rm --pull never --network none --read-only --user 65532:65532 \
     --cap-drop ALL --security-opt no-new-privileges:true --pids-limit 16 \
     --memory 32m --cpus 0.25 --log-driver none \
     --mount type=volume,source=asteria-drive-staging-app-secrets,target=/app-secrets,readonly \
-    --mount type=volume,source=asteria-drive-staging-postgres-secrets,target=/postgres-secrets,readonly \
     --entrypoint /bin/sh "$helper_image" -ec '
-      password="$(cat /postgres-secrets/postgres-password)"
+      for specification in \
+        "/app-secrets/database-url-tls 65532:65532:400" \
+        "/app-secrets/postgres-ca.crt 65532:65532:400"; do
+        path="${specification% *}"
+        metadata="${specification##* }"
+        [ -s "$path" ] && [ ! -L "$path" ] && [ "$(stat -c "%u:%g:%a" "$path")" = "$metadata" ]
+      done
       dsn="$(cat /app-secrets/database-url-tls)"
+      password="${dsn#postgres://asteria:}"
+      password="${password%%@*}"
+      printf "%s" "$password" | grep -Eq "^[0-9a-f]{48}$"
       expected="postgres://asteria:${password}@postgres:5432/asteria?sslmode=verify-full&sslrootcert=/var/run/secrets/asteria/postgres-ca.crt&application_name=asteria-drive-staging-api"
       [ "$dsn" = "$expected" ]
-    '
+      printf "%s %s\n" \
+        "$(printf "%s" "$password" | sha256sum | awk "{print \$1}")" \
+        "$(sha256sum /app-secrets/postgres-ca.crt | awk "{print \$1}")"
+    ')" || return 1
+  IFS=' ' read -r app_password_sha256 app_ca_sha256 app_extra <<<"$app_summary"
+  [[ "$app_summary" == "$app_password_sha256 $app_ca_sha256" ]] || return 1
+  [[ "$app_password_sha256" =~ ^[0-9a-f]{64}$ && "$app_ca_sha256" =~ ^[0-9a-f]{64}$ && -z "$app_extra" ]] || return 1
+
+  postgres_summary="$(docker run --rm --pull never --network none --read-only --user 0:70 \
+    --cap-drop ALL --security-opt no-new-privileges:true --pids-limit 16 \
+    --memory 32m --cpus 0.25 --log-driver none \
+    --mount type=volume,source=asteria-drive-staging-postgres-secrets,target=/postgres-secrets,readonly \
+    --entrypoint /bin/sh "$helper_image" -ec '
+      for specification in \
+        "/postgres-secrets/postgres-password 0:0:400" \
+        "/postgres-secrets/postgres-ca.crt 0:70:640" \
+        "/postgres-secrets/postgres-server.crt 0:70:640" \
+        "/postgres-secrets/postgres-server.key 0:70:640" \
+        "/postgres-secrets/pg_hba.conf 0:70:640"; do
+        path="${specification% *}"
+        metadata="${specification##* }"
+        [ -s "$path" ] && [ ! -L "$path" ] && [ "$(stat -c "%u:%g:%a" "$path")" = "$metadata" ]
+      done
+      password="$(cat /postgres-secrets/postgres-password)"
+      printf "%s" "$password" | grep -Eq "^[0-9a-f]{48}$"
+      printf "%s %s\n" \
+        "$(printf "%s" "$password" | sha256sum | awk "{print \$1}")" \
+        "$(sha256sum /postgres-secrets/postgres-ca.crt | awk "{print \$1}")"
+    ')" || return 1
+  IFS=' ' read -r postgres_password_sha256 postgres_ca_sha256 postgres_extra <<<"$postgres_summary"
+  [[ "$postgres_summary" == "$postgres_password_sha256 $postgres_ca_sha256" ]] || return 1
+  [[ "$postgres_password_sha256" =~ ^[0-9a-f]{64}$ && "$postgres_ca_sha256" =~ ^[0-9a-f]{64}$ && -z "$postgres_extra" ]] || return 1
+  [[ "$app_password_sha256" == "$postgres_password_sha256" && "$app_ca_sha256" == "$postgres_ca_sha256" ]] || return 1
+  unset app_summary app_password_sha256 app_ca_sha256 app_extra
+  unset postgres_summary postgres_password_sha256 postgres_ca_sha256 postgres_extra
   source_postgres_tls_dsn_verified="true"
 }
 

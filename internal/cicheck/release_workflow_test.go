@@ -55,6 +55,9 @@ func TestReleaseWorkflowTrustBoundaryAndArtifactContract(t *testing.T) {
 	if strings.Contains(text, "secrets.") {
 		t.Fatal("release workflow must not read repository secrets")
 	}
+	if !strings.Contains(text, "GO_VERSION: 1.26.6") {
+		t.Fatal("release workflow must use the reviewed patched Go toolchain")
+	}
 
 	var workflow releaseWorkflowDocument
 	if err := yaml.Unmarshal(contents, &workflow); err != nil {

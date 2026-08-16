@@ -12,8 +12,8 @@ monitor_path="/usr/local/libexec/asteria-staging-monitor"
 recovery_path="/usr/local/libexec/asteria-staging-recovery"
 expected_compose_sha256="aa4336dc8914faaccc304266cba715b8212d10722adb4afd7aeea5d40f4c9637"
 expected_deploy_script_sha256="cd200fa32fdc2314817308479c99fe6425a481ff3bcd7384a60e145b2ad45044"
-expected_monitor_script_sha256="228ef0a34f0b9b4994779cb873bf4e80725a6a14dc900b10a7d81c6166eec50d"
-expected_recovery_script_sha256="9c8b10ce8e8fda6d83dd35801405ce4b944507cb5b469f233b3e5fc543790cbf"
+expected_monitor_script_sha256="3ef39670c2a5a90b9aee4bf926c7dd6b40938038d861457b0ed92ba48765c279"
+expected_recovery_script_sha256="3b2bb836852893548f1f1d64602745c67b02a307f0c8ad5fcf17c9c5a41f459a"
 
 if [[ "$(id -u)" -ne 0 ]]; then
   printf 'bootstrap-staging-host.sh must run as root\n' >&2
