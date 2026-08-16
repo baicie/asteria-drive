@@ -21,7 +21,7 @@ expected_seaweedfs_image="sha256:49312939c00c01e5ee6afbd7d728b18027821d3764c35a7
 app_image="ghcr.io/baicie/asteria-drive@$expected_app_image"
 postgres_image="postgres:17.5-alpine@$expected_postgres_image"
 seaweedfs_image="chrislusf/seaweedfs:3.85@$expected_seaweedfs_image"
-helper_image="chrislusf/seaweedfs:3.85@sha256:49312939c00c01e5ee6afbd7d728b18027821d3764c35a797a72acd4fdf3296a"
+readonly helper_image="chrislusf/seaweedfs:3.85@sha256:49312939c00c01e5ee6afbd7d728b18027821d3764c35a797a72acd4fdf3296a"
 max_disk_used_percent=85
 min_disk_available_kib=$((5 * 1024 * 1024))
 

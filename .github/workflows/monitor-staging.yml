@@ -13,7 +13,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  MONITOR_SCRIPT_SHA256: 786ffec187be346961e61202c6145a2ed09c5eec32efe05d03b7ae1e24269e01
+  MONITOR_SCRIPT_SHA256: 3ef39670c2a5a90b9aee4bf926c7dd6b40938038d861457b0ed92ba48765c279
 
 jobs:
   monitor:

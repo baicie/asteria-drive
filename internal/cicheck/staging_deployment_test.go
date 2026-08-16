@@ -828,8 +828,9 @@ func stagingSecretOwnershipBoundaryErrors(script, name string) []string {
 	}
 
 	var issues []string
-	helperAssignment := `helper_image="` + stagingSecretHelperImage + `"`
-	if count := strings.Count(stripShellComments(script), helperAssignment); count != 1 || strings.Index(script, helperAssignment) > strings.Index(script, functionName+"() {") {
+	cleanScript := stripShellComments(script)
+	helperAssignment := `readonly helper_image="` + stagingSecretHelperImage + `"`
+	if count := strings.Count(cleanScript, "helper_image="); count != 1 || strings.Count(cleanScript, helperAssignment) != 1 || strings.Index(script, helperAssignment) > strings.Index(script, functionName+"() {") || strings.Contains(body, "helper_image=") {
 		issues = append(issues, fmt.Sprintf("staging %s must bind one reviewed helper image before the secret probes", name))
 	}
 	expectedDockerRuns := 2
@@ -856,6 +857,24 @@ func stagingSecretOwnershipBoundaryErrors(script, name string) []string {
 		}
 		probe := body[start:end]
 		issues = append(issues, stagingSecretProbeErrors(probe, name, contract)...)
+	}
+	appBoundary := `')" || return 1
+  ` + appParse + `
+  ` + appCanonical + `
+  ` + appValidation + `
+
+  ` + contracts[1].assignment
+	postgresBoundary := `')" || return 1
+  ` + postgresParse + `
+  ` + postgresCanonical + `
+  ` + postgresValidation + `
+  ` + comparison + `
+  unset app_summary app_password_sha256 app_ca_sha256 app_extra
+  unset postgres_summary postgres_password_sha256 postgres_ca_sha256 postgres_extra`
+	for label, boundary := range map[string]string{"application": appBoundary, "PostgreSQL": postgresBoundary} {
+		if count := strings.Count(body, boundary); count != 1 {
+			issues = append(issues, fmt.Sprintf("staging %s has %d exact continuous %s summary boundaries, want one", name, count, label))
+		}
 	}
 
 	ordered := []string{
@@ -1087,7 +1106,7 @@ func TestStagingSecretOwnershipBoundaryRejectsRegressions(t *testing.T) {
 	postgresParse := `IFS=' ' read -r postgres_password_sha256 postgres_ca_sha256 postgres_extra <<<"$postgres_summary"`
 	appPasswordHash := `"$(printf "%s" "$password" | sha256sum | awk "{print \$1}")"`
 	appCAHash := `"$(sha256sum /app-secrets/postgres-ca.crt | awk "{print \$1}")"`
-	helperAssignment := `helper_image="` + stagingSecretHelperImage + `"`
+	helperAssignment := `readonly helper_image="` + stagingSecretHelperImage + `"`
 	helperTail := `--entrypoint /bin/sh "$helper_image" -ec '`
 	for _, test := range []struct {
 		name string
@@ -1119,6 +1138,7 @@ func TestStagingSecretOwnershipBoundaryRejectsRegressions(t *testing.T) {
 				"pull policy changed":                 replaceShellFunctionOnce(script, functionName, "--pull never", "--pull always"),
 				"log driver changed":                  replaceShellFunctionOnce(script, functionName, "--log-driver none", "--log-driver json-file"),
 				"helper image variable changed":       strings.Replace(script, helperAssignment, `helper_image="$postgres_image"`, 1),
+				"helper image reassigned in function": replaceShellFunctionOnce(script, functionName, "local app_summary", `helper_image="local/unreviewed"`+"\n  local app_summary"),
 				"helper command tail changed":         replaceShellFunctionOnce(script, functionName, helperTail, `--entrypoint /bin/sh "$postgres_image" -ec '`),
 				"PG-before-app combined mounts":       strings.Replace(script, appMount, postgresMount+" "+appMount, 1),
 				"read-write secret mount":             strings.Replace(script, appMount, strings.TrimSuffix(appMount, "readonly")+"rw", 1),
@@ -1140,6 +1160,8 @@ func TestStagingSecretOwnershipBoundaryRejectsRegressions(t *testing.T) {
 				"summary parse only in comment":       strings.Replace(script, appParse, "# "+appParse, 1),
 				"multiline summary guard removed":     strings.Replace(script, appCanonical, "[[ -n \"$app_summary\" ]] # "+appCanonical, 1),
 				"cross-boundary comparison reordered": reordered,
+				"summary overwritten before parse":    strings.Replace(script, appParse, `app_summary="forged"`+"\n  "+appParse, 1),
+				"hashes overwritten before compare":   strings.Replace(script, comparison, `postgres_password_sha256="$app_password_sha256"`+"\n  "+`postgres_ca_sha256="$app_ca_sha256"`+"\n  "+comparison, 1),
 			}
 			if test.name == "recovery" {
 				mutations["capacity docker alias"] = replaceShellFunctionOnce(script, "verify_app_secret_metadata", "timeout 30 docker run", "timeout 30 docker container run")
