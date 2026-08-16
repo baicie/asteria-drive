@@ -71,8 +71,8 @@ func TestSecurityWorkflowTrustBoundaryAndJobs(t *testing.T) {
 	}
 	if !reflect.DeepEqual(workflow.Env, map[string]string{
 		"GOTOOLCHAIN":        "local",
-		"GO_MIN_VERSION":     "1.25.12",
-		"GO_CURRENT_VERSION": "1.26.5",
+		"GO_MIN_VERSION":     "1.25.13",
+		"GO_CURRENT_VERSION": "1.26.6",
 	}) {
 		t.Errorf("security env = %#v, want fixed Go policy", workflow.Env)
 	}

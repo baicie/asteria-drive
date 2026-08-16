@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted on 2026-08-04.
+Accepted on 2026-08-04; minimum patch level amended on 2026-08-16.
 
 ## Context
 
@@ -23,10 +23,16 @@ previous nominal minimum, Go 1.25.0, also exposed reachable standard-library
 advisory GO-2026-4341 in `net/url`; its fix is included in the Go 1.25.6
 patch line.
 
+On 2026-08-16 both supported lanes exposed six newly published, reachable
+standard library advisories in Go 1.25.12 and Go 1.26.5 (GO-2026-6218,
+GO-2026-6090, GO-2026-6089, GO-2026-6088, GO-2026-5972, and GO-2026-5026).
+All six are fixed in Go 1.25.13 and Go 1.26.6, so both CI lanes and the pinned
+build image move together.
+
 ## Decision
 
 Keep the module directive at Go 1.25.0, raise the supported and minimum CI
-compiler to patched Go 1.25.12, and retain Go 1.26.5 as the current-toolchain
+compiler to patched Go 1.25.13, and retain Go 1.26.6 as the current-toolchain
 lane. Upgrade the vulnerable dependencies to at least these fixed versions:
 
 - `golang.org/x/text` v0.39.0;
@@ -46,7 +52,7 @@ secrets.
 
 ## Consequences
 
-Developers and clean CI runners now require patched Go 1.25.12 or newer. The
+Developers and clean CI runners now require patched Go 1.25.13 or newer. The
 dependency and toolchain upgrades remove the reachable vulnerability baseline
 and allow govulncheck to be a meaningful pass/fail signal instead of an
 informational exception list.

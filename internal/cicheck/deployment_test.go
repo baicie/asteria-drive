@@ -18,7 +18,8 @@ func TestContainerBuildUsesPinnedBuilderAndNonRootScratchRuntime(t *testing.T) {
 	}
 	text := string(contents)
 	for _, required := range []string{
-		"FROM golang:1.25.12@sha256:", "FROM scratch", "USER 65532:65532",
+		"FROM golang:1.25.13@sha256:14e75143c833c7398ea3a5e4c673aeaae35f40e781e6b060e2f97b72c475c975 AS build",
+		"FROM scratch", "USER 65532:65532",
 		"/usr/local/bin/asteria-server", "/usr/local/bin/asteria-migrate",
 	} {
 		if !strings.Contains(text, required) {
