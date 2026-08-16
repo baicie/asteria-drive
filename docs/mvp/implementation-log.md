@@ -822,3 +822,53 @@ re-bootstrapped without replacing data or credentials, `v0.1.1` is deployed, and
 deployment/monitor/recovery v2 artifacts are independently verified. The private CA
 does not close public TLS, managed database PKI/rotation, encrypted production
 PITR/WAL, object immutability, KMS, HA, SIEM/alerts, or independent approval.
+
+## 2026-08-16 - staging TLS runtime and recovery closeout
+
+The rollout sequence completed through PRs #38, #39, #52, and #53. The final Secret
+owner probe fix merged into protected `main` as
+`7c6565bfb16d63c8a9ef7fad54df7e91276a504b` after all seven required checks and the
+additional CodeQL check passed. Its contract tests bind one global `readonly` helper
+image, exact application and PostgreSQL runtime users, separate read-only Secret
+mounts, and continuous summary parse/validation/comparison blocks; negative mutations
+cover helper reassignment and summary or digest overwrites.
+
+The two CSV inventory records were parsed without emitting credentials, and the
+lower-load target was selected behind a fixed ED25519 host fingerprint. GitHub's
+`staging` Environment host, port, user, and known-host values were aligned to that
+target without replacing the existing private deploy key. A SHA-256-checked on-disk
+launcher then ran the merged root bootstrap without deleting or rotating any data or
+Secret volume. Independent host checks proved the reviewed monitor and recovery
+digests, root ownership and modes, dispatcher configuration, single forced-command
+key, removal of upload files, and absence of diagnostic wrappers.
+
+Deployment run
+[31713181762](https://github.com/baicie/asteria-drive/actions/runs/31713181762)
+had already installed the immutable `v0.1.1` OCI digest. Its artifact `9186277164`
+has digest
+`sha256:443a1f734809e6d616558d45eb874e689ac444838dbaf285799d61fd20076a49`
+and proves migration `3 -> 3`, storage verifier `2/2`, TLS 1.3, SCRAM/HBA/plaintext
+rejection, application smoke checks, capacity, loopback exposure, and no rollback.
+
+After final bootstrap, protected-main monitor run
+[31953366435](https://github.com/baicie/asteria-drive/actions/runs/31953366435)
+and recovery run
+[31953850132](https://github.com/baicie/asteria-drive/actions/runs/31953850132)
+both succeeded from `7c6565bfb16d63c8a9ef7fad54df7e91276a504b`. Their artifact
+digests are respectively
+`sha256:65cc421a86b5fee858b1141b98cacaaaf9eab13e32f3f0b045e6f3d5166685bb`
+and
+`sha256:a5944afd9514755a2469e1c26eacb8836ebdec70549c0bcab5278c5c2477f619`.
+Independent duplicate-key and exact-allowlist checks bound both v2 reports to their
+run IDs, attempt, workflow SHA, script digests, Compose digest, and OCI digest. The
+monitor observed root-disk use at 65% with more than 13 GiB free and all runtime/TLS
+proofs true. Recovery matched schema `3 -> 3`, all 15 tables, 17 source and restored
+rows, storage verifier `2/2`, recovered application checks, and zero drill residue.
+
+The checked-in evidence detail is
+`docs/operations/evidence/staging-tls-rollout-20260816.md`. This closes the staging
+TLS deployment, monitoring, and logical-recovery evidence gap. It does not close
+public DNS/TLS ingress, production OIDC lifecycle, managed database trust or
+PITR/WAL, object versioning/Object Lock, KMS-backed rotation, HA, production
+monitoring/SIEM and external alerts, capacity planning, external presign transfer
+evidence, or independent security/platform approval.
