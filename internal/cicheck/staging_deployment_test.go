@@ -13,7 +13,10 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const stagingImage = "ghcr.io/baicie/asteria-drive@sha256:2b73f8a7a271c0d7d6c7f73e15987b5e29290437146f07a57b57b9aef031d842"
+const (
+	stagingImage             = "ghcr.io/baicie/asteria-drive@sha256:2b73f8a7a271c0d7d6c7f73e15987b5e29290437146f07a57b57b9aef031d842"
+	stagingSecretHelperImage = "chrislusf/seaweedfs:3.85@sha256:49312939c00c01e5ee6afbd7d728b18027821d3764c35a797a72acd4fdf3296a"
+)
 
 func TestStagingDeploymentWorkflowTrustBoundary(t *testing.T) {
 	t.Parallel()
@@ -825,6 +828,22 @@ func stagingSecretOwnershipBoundaryErrors(script, name string) []string {
 	}
 
 	var issues []string
+	helperAssignment := `helper_image="` + stagingSecretHelperImage + `"`
+	if count := strings.Count(stripShellComments(script), helperAssignment); count != 1 || strings.Index(script, helperAssignment) > strings.Index(script, functionName+"() {") {
+		issues = append(issues, fmt.Sprintf("staging %s must bind one reviewed helper image before the secret probes", name))
+	}
+	expectedDockerRuns := 2
+	if name == "recovery" {
+		expectedDockerRuns = 3
+	}
+	if count := strings.Count(body, "docker run"); count != expectedDockerRuns {
+		issues = append(issues, fmt.Sprintf("staging %s audits %d literal docker run commands, want %d", name, count, expectedDockerRuns))
+	}
+	normalizedBody := strings.ReplaceAll(body, "\\\r\n", " ")
+	normalizedBody = strings.ReplaceAll(normalizedBody, "\\\n", " ")
+	if strings.Contains(normalizedBody, "docker container run") {
+		issues = append(issues, fmt.Sprintf("staging %s must not use an unaudited docker container run alias", name))
+	}
 	for _, contract := range contracts {
 		start := strings.Index(body, contract.assignment)
 		end := strings.Index(body, contract.parse)
@@ -888,11 +907,16 @@ func stagingSecretOwnershipBoundaryErrors(script, name string) []string {
 			expected = contracts[1]
 		}
 		expectedMount := expected.mount
+		lifecycle := []string{"--rm"}
 		if appMounted && strings.Contains(header, `$capacity_container`) {
 			expectedMount = "type=volume,source=asteria-drive-staging-app-secrets,target=/secrets,readonly"
+			lifecycle = []string{"--name", `"$capacity_container"`}
 		}
 		context := fmt.Sprintf("staging %s secret Docker command %d", name, index+1)
-		issues = append(issues, stagingSecretDockerHeaderErrors(tokens, expected.user, expectedMount, context)...)
+		issues = append(issues, stagingSecretDockerHeaderErrors(tokens, expected.user, expectedMount, lifecycle, context)...)
+		if count := strings.Count(command, `--entrypoint /bin/sh "$helper_image" -ec '`); count != 1 {
+			issues = append(issues, fmt.Sprintf("%s has %d reviewed helper command tails, want one", context, count))
+		}
 	}
 	return issues
 }
@@ -904,7 +928,10 @@ func stagingSecretProbeErrors(probe, name string, contract stagingSecretProbeCon
 		return []string{fmt.Sprintf("staging %s %s-owned probe has no bounded Docker invocation header", name, contract.label)}
 	}
 	context := fmt.Sprintf("staging %s %s-owned probe", name, contract.label)
-	issues = append(issues, stagingSecretDockerHeaderErrors(tokens, contract.user, contract.mount, context)...)
+	issues = append(issues, stagingSecretDockerHeaderErrors(tokens, contract.user, contract.mount, []string{"--rm"}, context)...)
+	if count := strings.Count(probe, `--entrypoint /bin/sh "$helper_image" -ec '`); count != 1 {
+		issues = append(issues, fmt.Sprintf("%s has %d reviewed helper command tails, want one", context, count))
+	}
 	if count := strings.Count(probe, contract.manifestBlock); count != 1 {
 		issues = append(issues, fmt.Sprintf("staging %s %s-owned probe has %d exact metadata manifest blocks, want one", name, contract.label, count))
 	}
@@ -917,17 +944,25 @@ func stagingSecretProbeErrors(probe, name string, contract stagingSecretProbeCon
 	return issues
 }
 
-func stagingSecretDockerHeaderErrors(tokens []string, user, mount, context string) []string {
+func stagingSecretDockerHeaderErrors(tokens []string, user, mount string, lifecycle []string, context string) []string {
 	var issues []string
-	for _, required := range [][]string{{"--network", "none"}, {"--user", user}, {"--cap-drop", "ALL"}, {"--mount", mount}, {"--security-opt", "no-new-privileges:true"}} {
+	requiredSequences := [][]string{{"--pull", "never"}, {"--network", "none"}, {"--user", user}, {"--cap-drop", "ALL"}, {"--mount", mount}, {"--security-opt", "no-new-privileges:true"}, {"--log-driver", "none"}, lifecycle}
+	for _, required := range requiredSequences {
 		if count := countTokenSequence(tokens, required...); count != 1 {
 			issues = append(issues, fmt.Sprintf("%s has %d exact %q sequences, want one", context, count, required))
 		}
 	}
-	for _, required := range []string{"--read-only", "--user", "--network", "--cap-drop", "--mount", "--security-opt"} {
+	for _, required := range []string{"--pull", "--read-only", "--user", "--network", "--cap-drop", "--mount", "--security-opt", "--log-driver", lifecycle[0]} {
 		if count := countToken(tokens, required); count != 1 {
 			issues = append(issues, fmt.Sprintf("%s has %d exact %q tokens, want one", context, count, required))
 		}
+	}
+	oppositeLifecycle := "--name"
+	if lifecycle[0] == "--name" {
+		oppositeLifecycle = "--rm"
+	}
+	if countToken(tokens, oppositeLifecycle) != 0 {
+		issues = append(issues, fmt.Sprintf("%s contains conflicting lifecycle option %q", context, oppositeLifecycle))
 	}
 	for _, forbidden := range []string{"--privileged", "--cap-add", "--network=host", "--volume", "--volumes-from", "--use-api-socket"} {
 		if countToken(tokens, forbidden) != 0 {
@@ -938,7 +973,7 @@ func stagingSecretDockerHeaderErrors(tokens []string, user, mount, context strin
 		if strings.HasPrefix(token, "-") && !strings.HasPrefix(token, "--") {
 			issues = append(issues, fmt.Sprintf("%s contains forbidden short Docker option %q", context, token))
 		}
-		if strings.HasPrefix(token, "--read-only=") || strings.HasPrefix(token, "--user=") || strings.HasPrefix(token, "--network=") || strings.HasPrefix(token, "--cap-drop=") || strings.HasPrefix(token, "--mount=") || strings.HasPrefix(token, "--volume=") || strings.HasPrefix(token, "--privileged=") || strings.HasPrefix(token, "--cap-add=") || strings.HasPrefix(token, "--volumes-from=") || strings.HasPrefix(token, "--use-api-socket=") || strings.HasPrefix(token, "--security-opt=") {
+		if strings.HasPrefix(token, "--pull=") || strings.HasPrefix(token, "--rm=") || strings.HasPrefix(token, "--name=") || strings.HasPrefix(token, "--read-only=") || strings.HasPrefix(token, "--user=") || strings.HasPrefix(token, "--network=") || strings.HasPrefix(token, "--cap-drop=") || strings.HasPrefix(token, "--mount=") || strings.HasPrefix(token, "--volume=") || strings.HasPrefix(token, "--privileged=") || strings.HasPrefix(token, "--cap-add=") || strings.HasPrefix(token, "--volumes-from=") || strings.HasPrefix(token, "--use-api-socket=") || strings.HasPrefix(token, "--security-opt=") || strings.HasPrefix(token, "--log-driver=") {
 			issues = append(issues, fmt.Sprintf("%s contains forbidden or non-canonical Docker option %q", context, token))
 		}
 	}
@@ -1052,6 +1087,8 @@ func TestStagingSecretOwnershipBoundaryRejectsRegressions(t *testing.T) {
 	postgresParse := `IFS=' ' read -r postgres_password_sha256 postgres_ca_sha256 postgres_extra <<<"$postgres_summary"`
 	appPasswordHash := `"$(printf "%s" "$password" | sha256sum | awk "{print \$1}")"`
 	appCAHash := `"$(sha256sum /app-secrets/postgres-ca.crt | awk "{print \$1}")"`
+	helperAssignment := `helper_image="` + stagingSecretHelperImage + `"`
+	helperTail := `--entrypoint /bin/sh "$helper_image" -ec '`
 	for _, test := range []struct {
 		name string
 		path string
@@ -1078,6 +1115,11 @@ func TestStagingSecretOwnershipBoundaryRejectsRegressions(t *testing.T) {
 				"true UID swap":                       swappedUsers,
 				"default user":                        strings.Replace(script, appInvocation, `app_summary="$(docker run --rm --pull never --network none --read-only`, 1),
 				"root user":                           strings.Replace(script, appInvocation, `app_summary="$(docker run --rm --pull never --network none --read-only --user root`, 1),
+				"summary rm removed":                  strings.Replace(script, appInvocation, strings.Replace(appInvocation, "--rm ", "", 1), 1),
+				"pull policy changed":                 replaceShellFunctionOnce(script, functionName, "--pull never", "--pull always"),
+				"log driver changed":                  replaceShellFunctionOnce(script, functionName, "--log-driver none", "--log-driver json-file"),
+				"helper image variable changed":       strings.Replace(script, helperAssignment, `helper_image="$postgres_image"`, 1),
+				"helper command tail changed":         replaceShellFunctionOnce(script, functionName, helperTail, `--entrypoint /bin/sh "$postgres_image" -ec '`),
 				"PG-before-app combined mounts":       strings.Replace(script, appMount, postgresMount+" "+appMount, 1),
 				"read-write secret mount":             strings.Replace(script, appMount, strings.TrimSuffix(appMount, "readonly")+"rw", 1),
 				"unrelated extra mount":               strings.Replace(script, appMount, appMount+" --mount type=bind,source=/tmp,target=/extra,readonly", 1),
@@ -1100,6 +1142,9 @@ func TestStagingSecretOwnershipBoundaryRejectsRegressions(t *testing.T) {
 				"cross-boundary comparison reordered": reordered,
 			}
 			if test.name == "recovery" {
+				mutations["capacity docker alias"] = replaceShellFunctionOnce(script, "verify_app_secret_metadata", "timeout 30 docker run", "timeout 30 docker container run")
+				mutations["capacity split docker command"] = replaceShellFunctionOnce(script, "verify_app_secret_metadata", "timeout 30 docker run", "timeout 30 docker \\\n    run")
+				mutations["capacity lifecycle removed"] = replaceShellFunctionOnce(script, "verify_app_secret_metadata", `--name "$capacity_container"`, "")
 				mutations["capacity probe extra mount"] = strings.Replace(script, capacityMount, capacityMount+" --mount type=bind,source=/tmp,target=/extra,readonly", 1)
 				mutations["capacity probe cap-drop removed"] = replaceShellFunctionOnce(script, "verify_app_secret_metadata", "--user 65532:65532 --read-only --cap-drop ALL", "--user 65532:65532 --read-only")
 				mutations["capacity probe read-write secret"] = strings.Replace(script, capacityMount, strings.TrimSuffix(capacityMount, "readonly")+"rw", 1)
