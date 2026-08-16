@@ -742,21 +742,379 @@ func TestStagingRecoveryWorkflowAndScriptTrustBoundary(t *testing.T) {
 func assertStagingSecretOwnershipBoundary(t *testing.T, script, name string) {
 	t.Helper()
 
-	for _, required := range []string{
-		"--user 65532:65532",
-		"--user 0:70",
-		"app_password_sha256",
-		"postgres_password_sha256",
-		"app_ca_sha256",
-		"postgres_ca_sha256",
-		`[[ "$app_password_sha256" == "$postgres_password_sha256" && "$app_ca_sha256" == "$postgres_ca_sha256" ]]`,
-	} {
-		if !strings.Contains(script, required) {
-			t.Errorf("staging %s secret verification is missing %q", name, required)
+	for _, issue := range stagingSecretOwnershipBoundaryErrors(script, name) {
+		t.Error(issue)
+	}
+}
+
+type stagingSecretProbeContract struct {
+	label         string
+	assignment    string
+	parse         string
+	user          string
+	volume        string
+	mount         string
+	manifestBlock string
+	secretRead    string
+	summaryBlock  string
+}
+
+func stagingSecretOwnershipBoundaryErrors(script, name string) []string {
+	functionName := map[string]string{
+		"monitor":  "verify_postgres_dsn",
+		"recovery": "verify_app_secret_metadata",
+	}[name]
+	if functionName == "" {
+		return []string{fmt.Sprintf("unknown staging secret verification contract %q", name)}
+	}
+
+	body, ok := shellFunctionBody(script, functionName)
+	if !ok {
+		return []string{fmt.Sprintf("staging %s secret verification function %s is missing", name, functionName)}
+	}
+	body = stripShellComments(body)
+	appParse := `IFS=' ' read -r app_password_sha256 app_ca_sha256 app_extra <<<"$app_summary"`
+	postgresParse := `IFS=' ' read -r postgres_password_sha256 postgres_ca_sha256 postgres_extra <<<"$postgres_summary"`
+	appCanonical := `[[ "$app_summary" == "$app_password_sha256 $app_ca_sha256" ]] || return 1`
+	postgresCanonical := `[[ "$postgres_summary" == "$postgres_password_sha256 $postgres_ca_sha256" ]] || return 1`
+	appValidation := `[[ "$app_password_sha256" =~ ^[0-9a-f]{64}$ && "$app_ca_sha256" =~ ^[0-9a-f]{64}$ && -z "$app_extra" ]] || return 1`
+	postgresValidation := `[[ "$postgres_password_sha256" =~ ^[0-9a-f]{64}$ && "$postgres_ca_sha256" =~ ^[0-9a-f]{64}$ && -z "$postgres_extra" ]] || return 1`
+	comparison := `[[ "$app_password_sha256" == "$postgres_password_sha256" && "$app_ca_sha256" == "$postgres_ca_sha256" ]] || return 1`
+	contracts := []stagingSecretProbeContract{
+		{
+			label:      "application",
+			assignment: `app_summary="$(docker run`,
+			parse:      appParse,
+			user:       "65532:65532",
+			volume:     "asteria-drive-staging-app-secrets",
+			mount:      "type=volume,source=asteria-drive-staging-app-secrets,target=/app-secrets,readonly",
+			manifestBlock: `for specification in \
+        "/app-secrets/database-url-tls 65532:65532:400" \
+        "/app-secrets/postgres-ca.crt 65532:65532:400"; do
+        path="${specification% *}"
+        metadata="${specification##* }"
+        [ -s "$path" ] && [ ! -L "$path" ] && [ "$(stat -c "%u:%g:%a" "$path")" = "$metadata" ]
+      done`,
+			secretRead: `dsn="$(cat /app-secrets/database-url-tls)"`,
+			summaryBlock: `printf "%s %s\n" \
+        "$(printf "%s" "$password" | sha256sum | awk "{print \$1}")" \
+        "$(sha256sum /app-secrets/postgres-ca.crt | awk "{print \$1}")"`,
+		},
+		{
+			label:      "PostgreSQL",
+			assignment: `postgres_summary="$(docker run`,
+			parse:      postgresParse,
+			user:       "0:70",
+			volume:     "asteria-drive-staging-postgres-secrets",
+			mount:      "type=volume,source=asteria-drive-staging-postgres-secrets,target=/postgres-secrets,readonly",
+			manifestBlock: `for specification in \
+        "/postgres-secrets/postgres-password 0:0:400" \
+        "/postgres-secrets/postgres-ca.crt 0:70:640" \
+        "/postgres-secrets/postgres-server.crt 0:70:640" \
+        "/postgres-secrets/postgres-server.key 0:70:640" \
+        "/postgres-secrets/pg_hba.conf 0:70:640"; do
+        path="${specification% *}"
+        metadata="${specification##* }"
+        [ -s "$path" ] && [ ! -L "$path" ] && [ "$(stat -c "%u:%g:%a" "$path")" = "$metadata" ]
+      done`,
+			secretRead: `password="$(cat /postgres-secrets/postgres-password)"`,
+			summaryBlock: `printf "%s %s\n" \
+        "$(printf "%s" "$password" | sha256sum | awk "{print \$1}")" \
+        "$(sha256sum /postgres-secrets/postgres-ca.crt | awk "{print \$1}")"`,
+		},
+	}
+
+	var issues []string
+	for _, contract := range contracts {
+		start := strings.Index(body, contract.assignment)
+		end := strings.Index(body, contract.parse)
+		if start < 0 || end < 0 || end <= start {
+			issues = append(issues, fmt.Sprintf("staging %s %s-owned secret probe or summary parse is missing", name, contract.label))
+			continue
+		}
+		if count := strings.Count(body, contract.assignment); count != 1 {
+			issues = append(issues, fmt.Sprintf("staging %s has %d %s-owned summary probes, want one", name, count, contract.label))
+		}
+		probe := body[start:end]
+		issues = append(issues, stagingSecretProbeErrors(probe, name, contract)...)
+	}
+
+	ordered := []string{
+		contracts[0].assignment,
+		appParse,
+		appCanonical,
+		appValidation,
+		contracts[1].assignment,
+		postgresParse,
+		postgresCanonical,
+		postgresValidation,
+		comparison,
+	}
+	cursor := 0
+	for _, marker := range ordered {
+		index := strings.Index(body[cursor:], marker)
+		if index < 0 {
+			issues = append(issues, fmt.Sprintf("staging %s secret summary contract is missing or out of order: %q", name, marker))
+			break
+		}
+		cursor += index + len(marker)
+	}
+
+	// Audit every secret-volume Docker command, including recovery's capacity probe.
+	for index, command := range strings.Split(body, "docker run")[1:] {
+		secretLiteral := strings.Contains(command, "asteria-drive-staging-") && strings.Contains(command, "-secrets")
+		tokens, ok := dockerInvocationTokens(command)
+		if !ok {
+			if secretLiteral {
+				issues = append(issues, fmt.Sprintf("staging %s secret Docker command %d has no bounded invocation header", name, index+1))
+			}
+			continue
+		}
+		header := strings.Join(tokens, " ")
+		appMounted := strings.Contains(header, contracts[0].volume)
+		postgresMounted := strings.Contains(header, contracts[1].volume)
+		if !appMounted && !postgresMounted {
+			if secretLiteral {
+				issues = append(issues, fmt.Sprintf("staging %s secret Docker command %d uses an unexpected secret volume", name, index+1))
+			}
+			continue
+		}
+		if appMounted && postgresMounted {
+			issues = append(issues, fmt.Sprintf("staging %s secret Docker command %d combines application and PostgreSQL volumes", name, index+1))
+			continue
+		}
+		expected := contracts[0]
+		if postgresMounted {
+			expected = contracts[1]
+		}
+		expectedMount := expected.mount
+		if appMounted && strings.Contains(header, `$capacity_container`) {
+			expectedMount = "type=volume,source=asteria-drive-staging-app-secrets,target=/secrets,readonly"
+		}
+		context := fmt.Sprintf("staging %s secret Docker command %d", name, index+1)
+		issues = append(issues, stagingSecretDockerHeaderErrors(tokens, expected.user, expectedMount, context)...)
+	}
+	return issues
+}
+
+func stagingSecretProbeErrors(probe, name string, contract stagingSecretProbeContract) []string {
+	var issues []string
+	tokens, ok := dockerInvocationTokens(probe)
+	if !ok {
+		return []string{fmt.Sprintf("staging %s %s-owned probe has no bounded Docker invocation header", name, contract.label)}
+	}
+	context := fmt.Sprintf("staging %s %s-owned probe", name, contract.label)
+	issues = append(issues, stagingSecretDockerHeaderErrors(tokens, contract.user, contract.mount, context)...)
+	if count := strings.Count(probe, contract.manifestBlock); count != 1 {
+		issues = append(issues, fmt.Sprintf("staging %s %s-owned probe has %d exact metadata manifest blocks, want one", name, contract.label, count))
+	}
+	manifestIndex := strings.Index(probe, contract.manifestBlock)
+	readIndex := strings.Index(probe, contract.secretRead)
+	summaryIndex := strings.Index(probe, contract.summaryBlock)
+	if manifestIndex < 0 || readIndex < 0 || summaryIndex < 0 || !(manifestIndex < readIndex && readIndex < summaryIndex) {
+		issues = append(issues, fmt.Sprintf("staging %s %s-owned manifest, secret read, and bound hash summary are missing or out of order", name, contract.label))
+	}
+	return issues
+}
+
+func stagingSecretDockerHeaderErrors(tokens []string, user, mount, context string) []string {
+	var issues []string
+	for _, required := range [][]string{{"--network", "none"}, {"--user", user}, {"--cap-drop", "ALL"}, {"--mount", mount}, {"--security-opt", "no-new-privileges:true"}} {
+		if count := countTokenSequence(tokens, required...); count != 1 {
+			issues = append(issues, fmt.Sprintf("%s has %d exact %q sequences, want one", context, count, required))
 		}
 	}
-	if regexp.MustCompile(`(?s)docker run[^\n]*--user root.*?asteria-drive-staging-app-secrets.*?asteria-drive-staging-postgres-secrets`).MatchString(script) {
-		t.Fatalf("staging %s must not mount application- and PostgreSQL-owned secrets in one root probe", name)
+	for _, required := range []string{"--read-only", "--user", "--network", "--cap-drop", "--mount", "--security-opt"} {
+		if count := countToken(tokens, required); count != 1 {
+			issues = append(issues, fmt.Sprintf("%s has %d exact %q tokens, want one", context, count, required))
+		}
+	}
+	for _, forbidden := range []string{"--privileged", "--cap-add", "--network=host", "--volume", "--volumes-from", "--use-api-socket"} {
+		if countToken(tokens, forbidden) != 0 {
+			issues = append(issues, fmt.Sprintf("%s contains forbidden token %q", context, forbidden))
+		}
+	}
+	for _, token := range tokens {
+		if strings.HasPrefix(token, "-") && !strings.HasPrefix(token, "--") {
+			issues = append(issues, fmt.Sprintf("%s contains forbidden short Docker option %q", context, token))
+		}
+		if strings.HasPrefix(token, "--read-only=") || strings.HasPrefix(token, "--user=") || strings.HasPrefix(token, "--network=") || strings.HasPrefix(token, "--cap-drop=") || strings.HasPrefix(token, "--mount=") || strings.HasPrefix(token, "--volume=") || strings.HasPrefix(token, "--privileged=") || strings.HasPrefix(token, "--cap-add=") || strings.HasPrefix(token, "--volumes-from=") || strings.HasPrefix(token, "--use-api-socket=") || strings.HasPrefix(token, "--security-opt=") {
+			issues = append(issues, fmt.Sprintf("%s contains forbidden or non-canonical Docker option %q", context, token))
+		}
+	}
+	return issues
+}
+
+func dockerInvocationTokens(command string) ([]string, bool) {
+	end := strings.Index(command, "--entrypoint")
+	if end < 0 {
+		return nil, false
+	}
+	header := strings.ReplaceAll(command[:end], "\\\r\n", " ")
+	header = strings.ReplaceAll(header, "\\\n", " ")
+	return strings.Fields(header), true
+}
+
+func countToken(tokens []string, token string) int {
+	count := 0
+	for _, candidate := range tokens {
+		if candidate == token {
+			count++
+		}
+	}
+	return count
+}
+
+func countTokenSequence(tokens []string, sequence ...string) int {
+	count := 0
+	for index := 0; index+len(sequence) <= len(tokens); index++ {
+		if slices.Equal(tokens[index:index+len(sequence)], sequence) {
+			count++
+		}
+	}
+	return count
+}
+
+func shellFunctionBody(script, name string) (string, bool) {
+	marker := name + "() {"
+	start := strings.Index(script, marker)
+	if start < 0 {
+		return "", false
+	}
+	remainder := script[start+len(marker):]
+	end := regexp.MustCompile(`(?m)^}\r?$`).FindStringIndex(remainder)
+	if end == nil {
+		return "", false
+	}
+	return remainder[:end[0]], true
+}
+
+func replaceShellFunctionOnce(script, name, old, replacement string) string {
+	marker := name + "() {"
+	start := strings.Index(script, marker)
+	if start < 0 {
+		return script
+	}
+	bodyStart := start + len(marker)
+	body, ok := shellFunctionBody(script, name)
+	if !ok {
+		return script
+	}
+	mutated := strings.Replace(body, old, replacement, 1)
+	return script[:bodyStart] + mutated + script[bodyStart+len(body):]
+}
+
+func stripShellComments(script string) string {
+	lines := strings.Split(script, "\n")
+	for lineIndex, line := range lines {
+		var quote byte
+		escaped := false
+		for index := 0; index < len(line); index++ {
+			character := line[index]
+			if escaped {
+				escaped = false
+				continue
+			}
+			if character == '\\' && quote != '\'' {
+				escaped = true
+				continue
+			}
+			if quote != 0 {
+				if character == quote {
+					quote = 0
+				}
+				continue
+			}
+			if character == '\'' || character == '"' {
+				quote = character
+				continue
+			}
+			if character == '#' && (index == 0 || strings.ContainsRune(" \t;|&()", rune(line[index-1]))) {
+				line = line[:index]
+				break
+			}
+		}
+		lines[lineIndex] = line
+	}
+	return strings.Join(lines, "\n")
+}
+
+func TestStagingSecretOwnershipBoundaryRejectsRegressions(t *testing.T) {
+	t.Parallel()
+
+	appMount := "--mount type=volume,source=asteria-drive-staging-app-secrets,target=/app-secrets,readonly"
+	postgresMount := "--mount type=volume,source=asteria-drive-staging-postgres-secrets,target=/postgres-secrets,readonly"
+	capacityMount := "--mount type=volume,source=asteria-drive-staging-app-secrets,target=/secrets,readonly"
+	appInvocation := `app_summary="$(docker run --rm --pull never --network none --read-only --user 65532:65532`
+	appParse := `IFS=' ' read -r app_password_sha256 app_ca_sha256 app_extra <<<"$app_summary"`
+	appCanonical := `[[ "$app_summary" == "$app_password_sha256 $app_ca_sha256" ]] || return 1`
+	comparison := `[[ "$app_password_sha256" == "$postgres_password_sha256" && "$app_ca_sha256" == "$postgres_ca_sha256" ]] || return 1`
+	postgresParse := `IFS=' ' read -r postgres_password_sha256 postgres_ca_sha256 postgres_extra <<<"$postgres_summary"`
+	appPasswordHash := `"$(printf "%s" "$password" | sha256sum | awk "{print \$1}")"`
+	appCAHash := `"$(sha256sum /app-secrets/postgres-ca.crt | awk "{print \$1}")"`
+	for _, test := range []struct {
+		name string
+		path string
+	}{
+		{name: "monitor", path: "../../scripts/monitor-staging.sh"},
+		{name: "recovery", path: "../../scripts/recover-staging.sh"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			contents, err := os.ReadFile(test.path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			script := string(contents)
+			functionName := map[string]string{"monitor": "verify_postgres_dsn", "recovery": "verify_app_secret_metadata"}[test.name]
+			if issues := stagingSecretOwnershipBoundaryErrors(script, test.name); len(issues) != 0 {
+				t.Fatalf("valid %s contract rejected: %v", test.name, issues)
+			}
+			swappedUsers := strings.ReplaceAll(script, "--user 65532:65532", "--user __APP_OWNER__")
+			swappedUsers = strings.ReplaceAll(swappedUsers, "--user 0:70", "--user 65532:65532")
+			swappedUsers = strings.ReplaceAll(swappedUsers, "--user __APP_OWNER__", "--user 0:70")
+			reordered := strings.Replace(script, comparison, "", 1)
+			reordered = strings.Replace(reordered, postgresParse, comparison+"\n  "+postgresParse, 1)
+			mutations := map[string]string{
+				"true UID swap":                       swappedUsers,
+				"default user":                        strings.Replace(script, appInvocation, `app_summary="$(docker run --rm --pull never --network none --read-only`, 1),
+				"root user":                           strings.Replace(script, appInvocation, `app_summary="$(docker run --rm --pull never --network none --read-only --user root`, 1),
+				"PG-before-app combined mounts":       strings.Replace(script, appMount, postgresMount+" "+appMount, 1),
+				"read-write secret mount":             strings.Replace(script, appMount, strings.TrimSuffix(appMount, "readonly")+"rw", 1),
+				"unrelated extra mount":               strings.Replace(script, appMount, appMount+" --mount type=bind,source=/tmp,target=/extra,readonly", 1),
+				"privileged equals option":            strings.Replace(script, appMount, appMount+" --privileged=true", 1),
+				"cap-add equals option":               strings.Replace(script, appMount, appMount+" --cap-add=ALL", 1),
+				"short volume equals option":          strings.Replace(script, appMount, appMount+" -v=/tmp:/extra", 1),
+				"short user override":                 strings.Replace(script, appMount, appMount+" -u root", 1),
+				"compact short user override":         strings.Replace(script, appMount, appMount+" -uroot", 1),
+				"short user equals override":          strings.Replace(script, appMount, appMount+" -u=root", 1),
+				"volumes-from override":               strings.Replace(script, appMount, appMount+" --volumes-from asteria-drive-staging-postgres-1:ro", 1),
+				"API socket mount":                    strings.Replace(script, appMount, appMount+" --use-api-socket", 1),
+				"security option replaced":            replaceShellFunctionOnce(script, functionName, "--security-opt no-new-privileges:true", "--security-opt seccomp=unconfined"),
+				"secret volume prefix collision":      strings.Replace(script, "source=asteria-drive-staging-app-secrets,target=/app-secrets", "source=asteria-drive-staging-app-secrets-copy,target=/app-secrets", 1),
+				"read-only false":                     strings.Replace(script, "--read-only --user 65532:65532", "--read-only=false --user 65532:65532", 1),
+				"flag only in comment":                strings.Replace(script, `app_summary="$(docker run --rm --pull never --network none`, "# --network none\n  "+`app_summary="$(docker run --rm --pull never --network bridge`, 1),
+				"metadata only in comment":            strings.Replace(script, `"/app-secrets/database-url-tls 65532:65532:400"`, `"/app-secrets/database-url-tls 65532:65532:401" # "/app-secrets/database-url-tls 65532:65532:400"`, 1),
+				"password summary replaced by CA":     strings.Replace(script, appPasswordHash, appCAHash, 1),
+				"summary parse only in comment":       strings.Replace(script, appParse, "# "+appParse, 1),
+				"multiline summary guard removed":     strings.Replace(script, appCanonical, "[[ -n \"$app_summary\" ]] # "+appCanonical, 1),
+				"cross-boundary comparison reordered": reordered,
+			}
+			if test.name == "recovery" {
+				mutations["capacity probe extra mount"] = strings.Replace(script, capacityMount, capacityMount+" --mount type=bind,source=/tmp,target=/extra,readonly", 1)
+				mutations["capacity probe cap-drop removed"] = replaceShellFunctionOnce(script, "verify_app_secret_metadata", "--user 65532:65532 --read-only --cap-drop ALL", "--user 65532:65532 --read-only")
+				mutations["capacity probe read-write secret"] = strings.Replace(script, capacityMount, strings.TrimSuffix(capacityMount, "readonly")+"rw", 1)
+			}
+			for name, mutated := range mutations {
+				t.Run(name, func(t *testing.T) {
+					if mutated == script {
+						t.Fatal("test mutation did not change the script")
+					}
+					if issues := stagingSecretOwnershipBoundaryErrors(mutated, test.name); len(issues) == 0 {
+						t.Fatalf("mutated %s secret boundary was accepted", test.name)
+					}
+				})
+			}
+		})
 	}
 }
 

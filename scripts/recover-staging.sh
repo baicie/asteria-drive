@@ -260,6 +260,13 @@ verify_app_secret_metadata() {
     --memory 32m --cpus 0.25 --log-driver none \
     --mount type=volume,source=asteria-drive-staging-app-secrets,target=/app-secrets,readonly \
     --entrypoint /bin/sh "$helper_image" -ec '
+      for specification in \
+        "/app-secrets/database-url-tls 65532:65532:400" \
+        "/app-secrets/postgres-ca.crt 65532:65532:400"; do
+        path="${specification% *}"
+        metadata="${specification##* }"
+        [ -s "$path" ] && [ ! -L "$path" ] && [ "$(stat -c "%u:%g:%a" "$path")" = "$metadata" ]
+      done
       dsn="$(cat /app-secrets/database-url-tls)"
       password="${dsn#postgres://asteria:}"
       password="${password%%@*}"
@@ -271,6 +278,7 @@ verify_app_secret_metadata() {
         "$(sha256sum /app-secrets/postgres-ca.crt | awk "{print \$1}")"
     ')" || return 1
   IFS=' ' read -r app_password_sha256 app_ca_sha256 app_extra <<<"$app_summary"
+  [[ "$app_summary" == "$app_password_sha256 $app_ca_sha256" ]] || return 1
   [[ "$app_password_sha256" =~ ^[0-9a-f]{64}$ && "$app_ca_sha256" =~ ^[0-9a-f]{64}$ && -z "$app_extra" ]] || return 1
 
   postgres_summary="$(docker run --rm --pull never --network none --read-only --user 0:70 \
@@ -278,6 +286,16 @@ verify_app_secret_metadata() {
     --memory 32m --cpus 0.25 --log-driver none \
     --mount type=volume,source=asteria-drive-staging-postgres-secrets,target=/postgres-secrets,readonly \
     --entrypoint /bin/sh "$helper_image" -ec '
+      for specification in \
+        "/postgres-secrets/postgres-password 0:0:400" \
+        "/postgres-secrets/postgres-ca.crt 0:70:640" \
+        "/postgres-secrets/postgres-server.crt 0:70:640" \
+        "/postgres-secrets/postgres-server.key 0:70:640" \
+        "/postgres-secrets/pg_hba.conf 0:70:640"; do
+        path="${specification% *}"
+        metadata="${specification##* }"
+        [ -s "$path" ] && [ ! -L "$path" ] && [ "$(stat -c "%u:%g:%a" "$path")" = "$metadata" ]
+      done
       password="$(cat /postgres-secrets/postgres-password)"
       printf "%s" "$password" | grep -Eq "^[0-9a-f]{48}$"
       printf "%s %s\n" \
@@ -285,6 +303,7 @@ verify_app_secret_metadata() {
         "$(sha256sum /postgres-secrets/postgres-ca.crt | awk "{print \$1}")"
     ')" || return 1
   IFS=' ' read -r postgres_password_sha256 postgres_ca_sha256 postgres_extra <<<"$postgres_summary"
+  [[ "$postgres_summary" == "$postgres_password_sha256 $postgres_ca_sha256" ]] || return 1
   [[ "$postgres_password_sha256" =~ ^[0-9a-f]{64}$ && "$postgres_ca_sha256" =~ ^[0-9a-f]{64}$ && -z "$postgres_extra" ]] || return 1
   [[ "$app_password_sha256" == "$postgres_password_sha256" && "$app_ca_sha256" == "$postgres_ca_sha256" ]] || return 1
   unset app_summary app_password_sha256 app_ca_sha256 app_extra
