@@ -8,7 +8,7 @@
   "devDependencies": {
     "@action-validator/cli": "0.6.0",
     "@action-validator/core": "0.6.0",
-    "@redocly/cli": "2.43.3"
+    "@redocly/cli": "2.46.1"
   },
   "engines": {
     "node": "24.16.0"
