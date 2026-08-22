@@ -155,11 +155,22 @@ jobs:
             printf 'GitHub Release %s already exists; refusing to republish it\n' "$RELEASE_TAG" >&2
             exit 1
           fi
-          immutable_releases="$(gh api "repos/$GITHUB_REPOSITORY/immutable-releases" --jq '.enabled')"
-          if [[ "$immutable_releases" != 'true' ]]; then
-            printf 'GitHub immutable releases must be enabled before publishing %s\n' "$RELEASE_TAG" >&2
+          immutable_error="$(mktemp)"
+          if immutable_releases="$(gh api "repos/$GITHUB_REPOSITORY/immutable-releases" --jq '.enabled' 2>"$immutable_error")"; then
+            if [[ "$immutable_releases" != 'true' ]]; then
+              printf 'GitHub immutable releases must be enabled before publishing %s\n' "$RELEASE_TAG" >&2
+              rm -f "$immutable_error"
+              exit 1
+            fi
+          elif grep -Fq 'Resource not accessible by integration' "$immutable_error"; then
+            printf 'Actions GITHUB_TOKEN cannot read the immutable-releases administration endpoint; post-publish isImmutable verification remains mandatory\n'
+          else
+            cat "$immutable_error" >&2
+            rm -f "$immutable_error"
+            printf 'Could not verify GitHub immutable releases before publishing %s\n' "$RELEASE_TAG" >&2
             exit 1
           fi
+          rm -f "$immutable_error"
       - name: Download release bundle
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
