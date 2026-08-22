@@ -3,15 +3,16 @@
 This document turns ADR-0016 and ADR-0017 into an implementation contract. Both
 are accepted. Rollout steps 1 through 6 are implemented in the repository: it has
 pinned quality, race, API-contract, Compose-backed integration, security, and
-tagged release workflows, plus a Dependabot update path and protected main-branch
-merge gates. Release publication remains gated by the configured `release`
-environment.
+tagged release workflows, plus a Dependabot update path and repository contracts
+for protected-main merge gates. GitHub platform settings remain an independently
+verified prerequisite; release publication is additionally gated by the configured
+`release` environment and immutable-release setting.
 
 ## 1. Current state
 
 - The repository is public and main is the default branch.
-- `.github/workflows/ci.yml` runs four secret-free PR gates, all required for
-  pull requests targeting protected `main`.
+- `.github/workflows/ci.yml` runs four secret-free PR gates. Their required-check
+  status is a GitHub platform setting and must be verified for the target branch.
 - `.github/workflows/security.yml` runs govulncheck, dependency review, and
   CodeQL without repository secrets; `.github/dependabot.yml` covers Go, npm,
   GitHub Actions, and Compose/Docker dependencies.
@@ -51,8 +52,9 @@ repository-owned helper that emits structured output.
 ## 3. Required CI PR graph
 
 The four implemented CI jobs run independently. Together with the three security
-jobs in section 4, branch protection blocks a pull request targeting `main` unless
-all seven required checks succeed and the required review policy is satisfied.
+jobs in section 4, the repository expects seven required checks. GitHub branch
+protection must be checked separately because workflow presence alone does not
+prove that the checks or review policy are required.
 
 ### CI / quality
 
@@ -66,13 +68,19 @@ Steps:
 4. run go test ./... -count=1;
 5. run go vet ./...;
 6. run go build ./...;
-7. run an event-aware `git diff --check` against the pull-request base, push
+7. execute the real release packager for Linux `amd64` and `arm64` into a
+   temporary directory, write and verify its checksums, and require both archives
+   plus the release manifest;
+8. run an event-aware `git diff --check` against the pull-request base, push
    predecessor, or manual run predecessor; checking the empty working tree is
    insufficient on a clean runner.
 
-The job uploads a coverage profile and go test -json output for seven days.
-No global coverage percentage is enforced until a baseline is recorded and a
-ratcheting threshold is approved.
+The job uploads a coverage profile and `go test -json` output for seven days.
+The first repository-wide floor is `39.0%`, based on the 2026-08-19 deterministic
+suite baseline of `39.9%`. CI parses the generated profile with `go tool cover`
+and fails below that floor. Raise the floor with coverage improvements; lowering
+it requires an explicit review decision and matching update to the workflow
+contract test. Real PostgreSQL/S3 coverage is recorded separately by integration.
 
 ### CI / race
 
@@ -103,12 +111,15 @@ disposable values scoped to the isolated Compose project.
    go test -json -p=1 -count=1 -timeout=15m ./internal/postgres ./internal/s3store ./internal/server
    ```
 
-   The committed manifest names 19 required tests: 16 PostgreSQL, one
+   The committed manifest names 21 required tests: 18 PostgreSQL, one
    SeaweedFS, and two live HTTP tests.
 4. Parse the JSON report structurally. Every required package and test must end
    in `pass`; any observed `skip`, missing test, package failure, or malformed
    report fails the job.
-5. Under `always()`, sanitize the JSON report and Compose logs, remove the raw
+5. Retain the integration coverage profile separately from the deterministic
+   quality profile so PostgreSQL/S3 adapter execution is visible without making
+   external-service availability part of the fast-suite threshold.
+6. Under `always()`, sanitize the JSON report and Compose logs, remove the raw
    report, run `docker compose down -v --remove-orphans`, and upload only the
    sanitized evidence with seven-day retention.
 
@@ -182,7 +193,7 @@ receive id-token: write, attestations: write, or contents: write.
 
 ## 6. Branch protection and repository settings
 
-The rollout step 5 policy is applied to `main`:
+The rollout step 5 policy is the required target state for `main`:
 
 - require pull requests with at least one approving review;
 - dismiss stale approvals and require approval after the last push;
@@ -196,6 +207,13 @@ and infrastructure paths explicitly. Linear-history enforcement remains a
 separate follow-up decision. Do not allow an administrator bypass for
 security-sensitive workflow or migration changes without an explicitly recorded
 exception.
+
+The last repository-side review on 2026-08-19 found platform drift: CODEOWNERS
+review, stale-approval dismissal, last-push approval, repository rulesets, and a
+required reviewer on the `release` Environment were not all enabled. Until a new
+GitHub API/settings capture proves the target state, these controls remain open in
+the production closure checklist and the project must not claim protected-main or
+production release approval.
 
 ## 7. Artifacts and failure handling
 
@@ -229,9 +247,10 @@ and a release manifest. The tag must be reachable from protected `main`.
 
 The publish job is separated from the build job, requires the `release`
 environment, attaches GitHub OIDC provenance to checksum subjects and the
-published OCI digest, and publishes an immutable GitHub Release plus a
-multi-architecture GHCR image. Pull requests never publish or attest release
-artifacts. Deployment automation remains outside this rollout.
+published OCI digest, and refuses to publish unless GitHub Immutable Releases is
+enabled. It also refuses existing GitHub Release/OCI tags and verifies immutability
+after publication. Pull requests never publish or attest release artifacts.
+Deployment automation remains outside this rollout.
 
 ## 9. Rollout sequence
 
@@ -241,7 +260,9 @@ artifacts. Deployment automation remains outside this rollout.
 3. Completed: add Compose-backed integration, structured pass/skip detection,
    sanitized evidence retention, and unconditional resource cleanup.
 4. Completed: enable security scanning and Dependabot; review the first baseline.
-5. Completed: apply main branch protection using the stable check names.
+5. Repository contract completed; GitHub main-branch review/ruleset settings remain
+   an external prerequisite and require current API evidence before being called
+   applied.
 6. Completed in repository: define the artifact format and add deterministic
    binaries, checksums, SBOM, OIDC provenance, and protected publication.
 
@@ -249,7 +270,8 @@ artifacts. Deployment automation remains outside this rollout.
 
 - Pull requests, pushes to main, and manual runs create stable `CI / quality`,
   `CI / race`, `CI / api-contract`, and `CI / integration` checks without
-  repository secrets; all four are required for pull requests targeting `main`.
+  repository secrets; GitHub settings must independently require them for
+  pull requests targeting `main`.
 - Quality verifies modules and formatting, runs tests, vet and build, checks the
   diff, and retains test/coverage evidence for seven days.
 - Race runs the deterministic suite with the Linux race detector.
@@ -261,14 +283,15 @@ artifacts. Deployment automation remains outside this rollout.
 - Integration uses disposable repository-owned values rather than GitHub Secrets
   and starts the digest-pinned PostgreSQL and SeaweedFS services with health
   checks.
-- Its manifest requires 19 tests: 16 PostgreSQL, one SeaweedFS, and two live
+- Its manifest requires 21 tests: 18 PostgreSQL, one SeaweedFS, and two live
   HTTP tests. Structured report verification requires package and test `pass`
   actions and rejects every `skip`.
 - Sanitized test and Compose evidence is retained for seven days. Sanitization,
   raw-report removal, `docker compose down -v --remove-orphans`, and artifact
   upload all run through `always()` paths.
-- The seven stable CI/security checks are required for pull requests targeting
-  protected `main`; the protection policy uses strict up-to-date checks.
+- The seven stable CI/security checks are the required target for pull requests
+  targeting `main`; API/settings evidence must prove strict up-to-date checks,
+  review rules, CODEOWNERS review, and administrator enforcement.
 - Security checks run without repository secrets, use pinned Action/tool versions,
   and keep CodeQL's write permission scoped to its job.
 - Dependabot proposes weekly updates for Go, npm, Actions, and Compose/Docker

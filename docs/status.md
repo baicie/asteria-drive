@@ -1,6 +1,6 @@
 # Asteria Drive 当前交付状态
 
-> 最后核对：2026-08-16。本页是当前交付范围和状态的权威摘要；完成声明仍须由
+> 最后核对：2026-08-22。本页是当前交付范围和状态的权威摘要；完成声明仍须由
 > [实施与验收记录](mvp/implementation-log.md) 中的代码、命令或远端设置证据支持。
 > MVP 文档保留其历史范围和验收语义，产品 Phase 2-4 另立目标。
 
@@ -8,16 +8,16 @@
 | --- | --- | --- |
 | 后端 MVP P0-P4 | 已完成并合入 `main` | Namespace、直传上传、下载、回收、PostgreSQL/SeaweedFS 真实依赖验收 |
 | M2-1 身份与基础权限 | 已完成并合入 `main` | OIDC Resource Server、内部主体、租户成员和 owner/admin/editor/viewer 基础 RBAC |
-| M2-2 成员生命周期 | 已完成并合入 `main` | 成员列表、角色/状态更新、最后活动 owner 保护；不含邀请和成员删除 |
-| CI、安全门禁与分支保护 | 已启用并完成远端复核 | 七项 required checks、CODEOWNERS、Dependabot、secret scanning 和 push protection；PR #53 的七项保护检查与额外 CodeQL 全部通过 |
-| Release 与 API 加固 | 已实现并合入 `main`，`v0.1.0` 与 `v0.1.1` 已发布 | `v0.1.1` 从 PR #37 合并提交发布；run `31298871230` 的归档、checksums、SPDX SBOM、Release subject provenance 与 OCI provenance 已独立验证，OCI digest 为 `sha256:2b73f8a7a271c0d7d6c7f73e15987b5e29290437146f07a57b57b9aef031d842` |
+| M2-2 成员生命周期 | 已完成 | 成员列表、角色/状态更新、最后 active owner 保护、邀请、成员删除、组、ACL 和审计契约；本页所称完成指仓库代码和测试，不表示生产平台准入 |
+| CI、安全门禁与分支保护 | 仓库工作流与门禁合同已完成；远端策略存在漂移 | CI/security workflow、覆盖率门槛、真实 release packager dry-run 和集成清单已纳入仓库；当前远端仍需恢复 CODEOWNERS review、旧审批失效、最后推送后审批、ruleset 和 release Environment reviewer，详见生产收口清单 |
+| Release 与 API 加固 | 仓库门禁已实现；现有历史 Release 不是不可变证据 | `v0.1.1` 的归档、checksums、SPDX SBOM、Release subject provenance 与 OCI provenance 已验证；新的发布会在 GitHub Immutable Releases、tag 保护和复核环境未满足时主动失败 |
 | staging 当前部署 | `v0.1.1` 已通过 GitHub Actions 部署并验证 | run `31713181762` 从受保护 `main` 部署固定 OCI digest，artifact `9186277164` 证明迁移 `3 -> 3`、server-managed secrets、鉴权读写、storage verifier `2/2`、loopback、容量门禁、PostgreSQL TLS 1.3/SCRAM/HBA/明文拒绝且未回滚；最终 root bootstrap 已更新到 merge commit `7c6565b` 的只读运维脚本 |
 | staging 周期监测 | 已通过受保护 `main` 启用并完成 TLS v2 实跑 | 每小时及手工 workflow 仅执行 root-owned、摘要固定的只读探针；run `31953366435` 的 artifact `9265267564` 证明 Compose/镜像/容器、loopback、健康、metrics、TLS 1.3、明文拒绝、Secret 属主边界与 85%/5 GiB 容量门禁；这不是生产监控、SIEM、外部告警或容量规划 |
 | staging 恢复演练 | 已通过受保护 `main` 自动化并完成 TLS v2 实跑 | run `31953850132` 的 artifact `9265397749` 证明 schema `3 -> 3`、15 表、`17 -> 17` 行、storage verifier `2/2`、恢复应用 smoke、TLS 1.3、容量和零残留；边界仍为 `staging-recovery-not-production`，且明确未证明 PITR/WAL 或对象版本恢复 |
 | 外部预签名端点 | 仓库能力已实现，平台证据待补 | S3 控制调用与客户端签名端点已解耦，production 对两者都强制 HTTPS；仍需用户自有 DNS/TLS、同一对象命名空间路由、CORS 和真实公网客户端上传下载证据 |
 | PostgreSQL TLS 门禁 | production 配置门禁、`v0.1.1` release 与 staging v2 运行证据已完成 | production 整个 DSN 必须来自文件且只允许一个 `sslmode=verify-full`；staging deployment/monitor/recovery 已证明主机私有 CA、`DNS:postgres`、TLS 1.2 下限、实际 TLS 1.3、明文拒绝、SCRAM、`pg_stat_ssl` 和 Secret 属主边界；该私有 CA 不证明生产 CA/DNS/轮换 |
 | 可靠性与可观测性 | 代码与仓库证据已完成 | `Idempotency-Key`、自动维护、Prometheus、fuzz/property、百万节点完整性和 10 分钟控制面 SLO 证据已归档；写路径与平台告警仍需独立测量 |
-| Phase 1 生产化 | 代码、迁移、Release 与 staging TLS v2 平台证据已完成；公网生产门待闭环 | 邀请、成员删除、正式 ACL、审计、Secret 读取、备份恢复演练、部署加固、`v0.1.1` provenance 与 staging 部署均有证据；生产 PITR、对象不可变性、公网 TLS/HA/监控、密钥托管及独立审批仍为硬门槛 |
+| Phase 1 生产化 | 仓库代码、迁移、Release 合同与 staging TLS v2 平台证据已完成；公网生产门待闭环 | 邀请、成员删除、组、正式 ACL、审计、Secret 读取、备份恢复演练、部署加固、`v0.1.1` provenance 与 staging 部署均有证据；生产 PITR、对象不可变性、公网 TLS/HA/监控、密钥托管、远端保护策略及独立审批仍为硬门槛 |
 | Phase 2-4 愿景 | 不在当前交付目标 | 同步、预览、搜索、分块、多地域等另立产品目标 |
 
 在 HTTPS OIDC/IdP 生命周期、平台托管 PostgreSQL `verify-full` 与 PITR/WAL、对象锁/版本控制、

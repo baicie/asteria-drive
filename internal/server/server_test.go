@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -936,5 +937,383 @@ func TestHTTPACLElevationIsInheritedAndDoesNotGrantTenantAdministration(t *testi
 	}
 	if audit := base.request(t, http.MethodGet, "/api/v1/tenant/audit-events", ownerToken, nil, nil); audit.Code != http.StatusOK {
 		t.Fatalf("owner audit access: %d %s", audit.Code, audit.Body.String())
+	}
+}
+
+func TestInvitationLifecycleAPIUsesVerifiedExternalOIDCIdentity(t *testing.T) {
+	base := newTestAPI(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	const (
+		issuer       = "https://issuer.invitation-api.test"
+		ownerToken   = "invitation-owner-token"
+		inviteeToken = "invitation-invitee-token"
+		wrongToken   = "invitation-wrong-token"
+		revokedToken = "invitation-revoked-token"
+	)
+	if _, err := base.repository.EnsureOIDCMember(ctx, drive.OIDCMemberSeed{
+		PrincipalID: testPrincipalA, TenantID: testTenantA, Issuer: issuer, Subject: "owner-subject",
+		DisplayName: "Owner", Role: drive.RoleOwner, Now: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	verifier := testOIDCVerifier{
+		ownerToken: {
+			Issuer: issuer, Subject: "owner-subject", Audience: []string{"asteria-api"}, ExpiresAt: now.Add(time.Hour),
+		},
+		inviteeToken: {
+			Issuer: issuer, Subject: "invitee-subject", Audience: []string{"asteria-api"}, ExpiresAt: now.Add(time.Hour),
+		},
+		wrongToken: {
+			Issuer: issuer, Subject: "wrong-subject", Audience: []string{"asteria-api"}, ExpiresAt: now.Add(time.Hour),
+		},
+		revokedToken: {
+			Issuer: issuer, Subject: "revoked-subject", Audience: []string{"asteria-api"}, ExpiresAt: now.Add(time.Hour),
+		},
+	}
+	resolver := func(ctx context.Context, issuer, subject, tenantID string) (auth.Principal, error) {
+		record, err := base.repository.ResolveOIDCPrincipal(ctx, issuer, subject, tenantID)
+		if err != nil {
+			return auth.Principal{}, err
+		}
+		return auth.Principal{Identity: record.Identity, TenantDisplayName: record.TenantDisplayName, Role: record.Role}, nil
+	}
+	authenticator, err := auth.NewOIDCWithVerifier(issuer, "asteria-api", verifier, resolver)
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpServer, err := New(Options{
+		Address: ":0", Service: base.service, Authenticator: authenticator,
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), ReadHeaderTimeout: time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	base.handler = httpServer.Handler()
+	ownerHeaders := map[string]string{auth.TenantHeader: testTenantA}
+
+	type invitationOutput struct {
+		Invitation invitationResponse `json:"invitation"`
+		Token      string             `json:"token"`
+	}
+	createInvitation := func(subject, displayName string) invitationOutput {
+		t.Helper()
+		response := base.request(t, http.MethodPost, "/api/v1/tenant/invitations", ownerToken, map[string]any{
+			"issuer": issuer, "subject": subject, "display_name": displayName,
+			"role": drive.RoleViewer, "expires_at": now.Add(30 * time.Minute),
+		}, ownerHeaders)
+		if response.Code != http.StatusCreated {
+			t.Fatalf("create invitation for %s: %d %s", subject, response.Code, response.Body.String())
+		}
+		output := decodeData[invitationOutput](t, response)
+		if output.Invitation.ID == "" || output.Token == "" || output.Invitation.Status != drive.InvitationPending {
+			t.Fatalf("unexpected invitation output: %+v", output)
+		}
+		return output
+	}
+
+	revoked := createInvitation("revoked-subject", "Revoked User")
+	pending := base.request(t, http.MethodGet, "/api/v1/tenant/invitations?status=pending", ownerToken, nil, ownerHeaders)
+	if pending.Code != http.StatusOK || !strings.Contains(pending.Body.String(), revoked.Invitation.ID) || strings.Contains(pending.Body.String(), revoked.Token) {
+		t.Fatalf("list pending invitations: %d %s", pending.Code, pending.Body.String())
+	}
+	revoke := base.request(t, http.MethodPost, "/api/v1/tenant/invitations/"+revoked.Invitation.ID+"/revoke", ownerToken, nil, ownerHeaders)
+	if revoke.Code != http.StatusOK || decodeData[invitationResponse](t, revoke).Status != drive.InvitationRevoked {
+		t.Fatalf("revoke invitation: %d %s", revoke.Code, revoke.Body.String())
+	}
+	revokedList := base.request(t, http.MethodGet, "/api/v1/tenant/invitations?status=revoked", ownerToken, nil, ownerHeaders)
+	if revokedList.Code != http.StatusOK || !strings.Contains(revokedList.Body.String(), revoked.Invitation.ID) {
+		t.Fatalf("list revoked invitations: %d %s", revokedList.Code, revokedList.Body.String())
+	}
+	revokedAccept := base.request(t, http.MethodPost, "/api/v1/invitations/accept", revokedToken, map[string]any{"token": revoked.Token}, nil)
+	if revokedAccept.Code != http.StatusConflict || !strings.Contains(revokedAccept.Body.String(), `"code":"invalid_state"`) {
+		t.Fatalf("accept revoked invitation: %d %s", revokedAccept.Code, revokedAccept.Body.String())
+	}
+
+	accepted := createInvitation("invitee-subject", "Invited User")
+	unauthenticated := base.request(t, http.MethodPost, "/api/v1/invitations/accept", "", map[string]any{"token": accepted.Token}, nil)
+	if unauthenticated.Code != http.StatusUnauthorized {
+		t.Fatalf("accept invitation without external authentication: %d %s", unauthenticated.Code, unauthenticated.Body.String())
+	}
+	wrongIdentity := base.request(t, http.MethodPost, "/api/v1/invitations/accept", wrongToken, map[string]any{"token": accepted.Token}, nil)
+	if wrongIdentity.Code != http.StatusForbidden {
+		t.Fatalf("accept invitation with wrong external identity: %d %s", wrongIdentity.Code, wrongIdentity.Body.String())
+	}
+	accept := base.request(t, http.MethodPost, "/api/v1/invitations/accept", inviteeToken, map[string]any{"token": accepted.Token}, nil)
+	if accept.Code != http.StatusOK {
+		t.Fatalf("accept invitation: %d %s", accept.Code, accept.Body.String())
+	}
+	var acceptedData struct {
+		TenantID string         `json:"tenant_id"`
+		Member   memberResponse `json:"member"`
+	}
+	acceptedData = decodeData[struct {
+		TenantID string         `json:"tenant_id"`
+		Member   memberResponse `json:"member"`
+	}](t, accept)
+	if acceptedData.TenantID != testTenantA || acceptedData.Member.DisplayName != "Invited User" ||
+		acceptedData.Member.Role != drive.RoleViewer || acceptedData.Member.Status != drive.MemberStatusActive {
+		t.Fatalf("unexpected accepted membership: %+v", acceptedData)
+	}
+	memberRequest := base.request(t, http.MethodGet, "/api/v1/directories/"+base.tenantA.RootNodeID, inviteeToken, nil, map[string]string{auth.TenantHeader: testTenantA})
+	if memberRequest.Code != http.StatusOK {
+		t.Fatalf("accepted invitee should authenticate and read tenant files: %d %s", memberRequest.Code, memberRequest.Body.String())
+	}
+	acceptedList := base.request(t, http.MethodGet, "/api/v1/tenant/invitations?status=accepted", ownerToken, nil, ownerHeaders)
+	if acceptedList.Code != http.StatusOK || !strings.Contains(acceptedList.Body.String(), accepted.Invitation.ID) {
+		t.Fatalf("list accepted invitations: %d %s", acceptedList.Code, acceptedList.Body.String())
+	}
+}
+
+func TestMemberGroupAndACLManagementAPIs(t *testing.T) {
+	base := newTestAPI(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	const (
+		ownerToken  = "governance-owner-token-000000000000000000"
+		adminToken  = "governance-admin-token-000000000000000000"
+		viewerToken = "governance-viewer-token-00000000000000000"
+	)
+	for _, member := range []struct {
+		principalID string
+		subject     string
+		role        drive.AccessRole
+	}{
+		{testPrincipalA, "governance-owner", drive.RoleOwner},
+		{testPrincipalB, "governance-admin", drive.RoleAdmin},
+		{testPrincipalC, "governance-viewer", drive.RoleViewer},
+		{testPrincipalD, "governance-removable", drive.RoleViewer},
+	} {
+		if _, err := base.repository.EnsureOIDCMember(ctx, drive.OIDCMemberSeed{
+			PrincipalID: member.principalID, TenantID: testTenantA, Issuer: "https://issuer.governance-api.test",
+			Subject: member.subject, DisplayName: member.subject, Role: member.role, Now: now,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	authenticator, err := auth.NewTrusted(map[string]auth.Principal{
+		ownerToken:  {Identity: drive.Identity{TenantID: testTenantA, PrincipalID: testPrincipalA}, Role: drive.RoleOwner},
+		adminToken:  {Identity: drive.Identity{TenantID: testTenantA, PrincipalID: testPrincipalB}, Role: drive.RoleAdmin},
+		viewerToken: {Identity: drive.Identity{TenantID: testTenantA, PrincipalID: testPrincipalC}, Role: drive.RoleViewer},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpServer, err := New(Options{
+		Address: ":0", Service: base.service, Authenticator: authenticator,
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), ReadHeaderTimeout: time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	base.handler = httpServer.Handler()
+
+	viewerCreate := base.request(t, http.MethodPost, "/api/v1/tenant/groups", viewerToken, map[string]any{"name": "Denied"}, nil)
+	if viewerCreate.Code != http.StatusForbidden {
+		t.Fatalf("viewer group creation should be forbidden: %d %s", viewerCreate.Code, viewerCreate.Body.String())
+	}
+	create := base.request(t, http.MethodPost, "/api/v1/tenant/groups", adminToken, map[string]any{"name": "Engineering"}, nil)
+	if create.Code != http.StatusCreated {
+		t.Fatalf("create group: %d %s", create.Code, create.Body.String())
+	}
+	group := decodeData[groupResponse](t, create)
+	if group.ID == "" || create.Header().Get("Location") != "/api/v1/tenant/groups/"+group.ID {
+		t.Fatalf("unexpected created group: group=%+v location=%q", group, create.Header().Get("Location"))
+	}
+	for _, principalID := range []string{testPrincipalC, testPrincipalD} {
+		add := base.request(t, http.MethodPut, "/api/v1/tenant/groups/"+group.ID+"/members/"+principalID, adminToken, nil, nil)
+		if add.Code != http.StatusNoContent {
+			t.Fatalf("add group member %s: %d %s", principalID, add.Code, add.Body.String())
+		}
+	}
+	members := base.request(t, http.MethodGet, "/api/v1/tenant/groups/"+group.ID+"/members", adminToken, nil, nil)
+	if members.Code != http.StatusOK {
+		t.Fatalf("list group members: %d %s", members.Code, members.Body.String())
+	}
+	var memberEnvelope struct {
+		Data []memberResponse `json:"data"`
+	}
+	if err := json.NewDecoder(members.Body).Decode(&memberEnvelope); err != nil {
+		t.Fatal(err)
+	}
+	if len(memberEnvelope.Data) != 2 {
+		t.Fatalf("group members=%+v, want two members", memberEnvelope.Data)
+	}
+
+	adminDeleteOwner := base.request(t, http.MethodDelete, "/api/v1/tenant/members/"+testPrincipalA, adminToken, nil, nil)
+	if adminDeleteOwner.Code != http.StatusForbidden {
+		t.Fatalf("admin deleting owner should be forbidden: %d %s", adminDeleteOwner.Code, adminDeleteOwner.Body.String())
+	}
+	deleteMember := base.request(t, http.MethodDelete, "/api/v1/tenant/members/"+testPrincipalD, adminToken, nil, nil)
+	if deleteMember.Code != http.StatusNoContent {
+		t.Fatalf("delete member: %d %s", deleteMember.Code, deleteMember.Body.String())
+	}
+	members = base.request(t, http.MethodGet, "/api/v1/tenant/groups/"+group.ID+"/members", adminToken, nil, nil)
+	memberEnvelope.Data = nil
+	if err := json.NewDecoder(members.Body).Decode(&memberEnvelope); err != nil {
+		t.Fatal(err)
+	}
+	if members.Code != http.StatusOK || len(memberEnvelope.Data) != 1 || memberEnvelope.Data[0].PrincipalID != testPrincipalC {
+		t.Fatalf("deleted member should be removed from groups: %d %+v", members.Code, memberEnvelope.Data)
+	}
+	lastOwner := base.request(t, http.MethodDelete, "/api/v1/tenant/members/"+testPrincipalA, ownerToken, nil, nil)
+	if lastOwner.Code != http.StatusConflict || !strings.Contains(lastOwner.Body.String(), `"code":"invalid_state"`) {
+		t.Fatalf("last owner deletion should conflict: %d %s", lastOwner.Code, lastOwner.Body.String())
+	}
+
+	remove := base.request(t, http.MethodDelete, "/api/v1/tenant/groups/"+group.ID+"/members/"+testPrincipalC, adminToken, nil, nil)
+	if remove.Code != http.StatusNoContent {
+		t.Fatalf("remove group member: %d %s", remove.Code, remove.Body.String())
+	}
+	update := base.request(t, http.MethodPatch, "/api/v1/tenant/groups/"+group.ID, adminToken, map[string]any{"name": "Platform"}, nil)
+	if update.Code != http.StatusOK || decodeData[groupResponse](t, update).Name != "Platform" {
+		t.Fatalf("update group: %d %s", update.Code, update.Body.String())
+	}
+	groups := base.request(t, http.MethodGet, "/api/v1/tenant/groups", adminToken, nil, nil)
+	if groups.Code != http.StatusOK || !strings.Contains(groups.Body.String(), `"name":"Platform"`) {
+		t.Fatalf("list groups: %d %s", groups.Code, groups.Body.String())
+	}
+
+	directoryResponse := base.request(t, http.MethodPost, "/api/v1/directories", ownerToken, map[string]any{
+		"parent_id": base.tenantA.RootNodeID, "name": "Governed",
+	}, nil)
+	if directoryResponse.Code != http.StatusCreated {
+		t.Fatalf("create governed directory: %d %s", directoryResponse.Code, directoryResponse.Body.String())
+	}
+	directory := decodeData[nodeResponse](t, directoryResponse)
+	setACL := base.request(t, http.MethodPut, "/api/v1/nodes/"+directory.ID+"/acl", adminToken, map[string]any{
+		"subject_type": drive.ACLSubjectPrincipal, "subject_id": testPrincipalC, "role": drive.ACLReader,
+	}, nil)
+	if setACL.Code != http.StatusOK {
+		t.Fatalf("set node ACL: %d %s", setACL.Code, setACL.Body.String())
+	}
+	acl := decodeData[aclResponse](t, setACL)
+	listACL := base.request(t, http.MethodGet, "/api/v1/nodes/"+directory.ID+"/acl", adminToken, nil, nil)
+	if listACL.Code != http.StatusOK || !strings.Contains(listACL.Body.String(), acl.ID) {
+		t.Fatalf("list node ACL: %d %s", listACL.Code, listACL.Body.String())
+	}
+	deleteACL := base.request(t, http.MethodDelete, "/api/v1/nodes/"+directory.ID+"/acl/"+acl.ID, adminToken, nil, nil)
+	if deleteACL.Code != http.StatusNoContent {
+		t.Fatalf("delete node ACL: %d %s", deleteACL.Code, deleteACL.Body.String())
+	}
+	listACL = base.request(t, http.MethodGet, "/api/v1/nodes/"+directory.ID+"/acl", adminToken, nil, nil)
+	var aclEnvelope struct {
+		Data []aclResponse `json:"data"`
+	}
+	if err := json.NewDecoder(listACL.Body).Decode(&aclEnvelope); err != nil {
+		t.Fatal(err)
+	}
+	if listACL.Code != http.StatusOK || len(aclEnvelope.Data) != 0 {
+		t.Fatalf("ACL should be empty after deletion: %d %+v", listACL.Code, aclEnvelope.Data)
+	}
+
+	deleteGroup := base.request(t, http.MethodDelete, "/api/v1/tenant/groups/"+group.ID, adminToken, nil, nil)
+	if deleteGroup.Code != http.StatusNoContent {
+		t.Fatalf("delete group: %d %s", deleteGroup.Code, deleteGroup.Body.String())
+	}
+	groups = base.request(t, http.MethodGet, "/api/v1/tenant/groups", adminToken, nil, nil)
+	if groups.Code != http.StatusOK || strings.Contains(groups.Body.String(), group.ID) {
+		t.Fatalf("deleted group should not be listed: %d %s", groups.Code, groups.Body.String())
+	}
+}
+
+func TestAuditPaginationAndNDJSONExportAPI(t *testing.T) {
+	api := newTestAPI(t)
+	ctx := context.Background()
+	baseTime := time.Now().UTC().Add(-time.Minute).Truncate(time.Second)
+	actions := []string{"test.audit.one", "test.audit.two", "test.audit.three", "test.audit.four", "test.audit.five"}
+	for index, action := range actions {
+		if err := api.repository.AppendAudit(ctx, drive.AuditEvent{
+			TenantID: testTenantA, ActorPrincipalID: testPrincipalA, Action: action,
+			TargetType: "test", TargetID: testPrincipalC, RequestID: "audit-request-" + strconv.Itoa(index+1),
+			Metadata: map[string]string{"index": strconv.Itoa(index + 1)}, OccurredAt: baseTime.Add(time.Duration(index) * time.Second),
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if index == 1 {
+			if err := api.repository.AppendAudit(ctx, drive.AuditEvent{
+				TenantID: testTenantB, ActorPrincipalID: testPrincipalB, Action: "other.tenant.event",
+				TargetType: "test", OccurredAt: baseTime.Add(2 * time.Second),
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	type auditEnvelope struct {
+		Data []auditResponse `json:"data"`
+		Page struct {
+			NextSequence *int64 `json:"next_sequence"`
+		} `json:"page"`
+	}
+	listed := make([]auditResponse, 0, len(actions))
+	after := int64(0)
+	for {
+		path := "/api/v1/tenant/audit-events?limit=2"
+		if after != 0 {
+			path += "&after_sequence=" + strconv.FormatInt(after, 10)
+		}
+		response := api.request(t, http.MethodGet, path, testTokenA, nil, nil)
+		if response.Code != http.StatusOK {
+			t.Fatalf("list audit page after %d: %d %s", after, response.Code, response.Body.String())
+		}
+		var envelope auditEnvelope
+		if err := json.NewDecoder(response.Body).Decode(&envelope); err != nil {
+			t.Fatal(err)
+		}
+		if len(envelope.Data) == 0 {
+			t.Fatal("audit pagination returned an empty intermediate page")
+		}
+		listed = append(listed, envelope.Data...)
+		if envelope.Page.NextSequence == nil {
+			break
+		}
+		if *envelope.Page.NextSequence <= after {
+			t.Fatalf("audit cursor did not advance: before=%d after=%d", after, *envelope.Page.NextSequence)
+		}
+		after = *envelope.Page.NextSequence
+	}
+	if len(listed) != len(actions) {
+		t.Fatalf("listed %d audit events, want %d: %+v", len(listed), len(actions), listed)
+	}
+	for index, event := range listed {
+		if event.Action != actions[index] || event.RequestID != "audit-request-"+strconv.Itoa(index+1) || event.Metadata["index"] != strconv.Itoa(index+1) {
+			t.Fatalf("audit event %d=%+v, want action %q", index, event, actions[index])
+		}
+		if index > 0 && event.Sequence <= listed[index-1].Sequence {
+			t.Fatalf("audit sequence is not increasing: %+v", listed)
+		}
+	}
+
+	missingRange := api.request(t, http.MethodGet, "/api/v1/tenant/audit-events/export", testTokenA, nil, nil)
+	if missingRange.Code != http.StatusBadRequest {
+		t.Fatalf("audit export without a bounded range: %d %s", missingRange.Code, missingRange.Body.String())
+	}
+	query := url.Values{}
+	query.Set("from", baseTime.Add(-time.Second).Format(time.RFC3339))
+	query.Set("until", baseTime.Add(time.Minute).Format(time.RFC3339))
+	exported := api.request(t, http.MethodGet, "/api/v1/tenant/audit-events/export?"+query.Encode(), testTokenA, nil, nil)
+	if exported.Code != http.StatusOK || exported.Header().Get("Content-Type") != "application/x-ndjson" ||
+		exported.Header().Get("Content-Disposition") != `attachment; filename="asteria-audit.ndjson"` {
+		t.Fatalf("export audit events: %d headers=%v body=%s", exported.Code, exported.Header(), exported.Body.String())
+	}
+	decoder := json.NewDecoder(exported.Body)
+	var exportEvents []auditResponse
+	for {
+		var event auditResponse
+		if err := decoder.Decode(&event); errors.Is(err, io.EOF) {
+			break
+		} else if err != nil {
+			t.Fatalf("decode NDJSON export: %v", err)
+		}
+		exportEvents = append(exportEvents, event)
+	}
+	if len(exportEvents) != len(actions) {
+		t.Fatalf("exported %d audit events, want %d: %+v", len(exportEvents), len(actions), exportEvents)
+	}
+	for index, event := range exportEvents {
+		if event.Action != actions[index] {
+			t.Fatalf("export event %d=%+v, want action %q", index, event, actions[index])
+		}
 	}
 }

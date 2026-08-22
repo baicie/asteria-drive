@@ -20,7 +20,7 @@ func TestRepositoryIntegrationManifestCoverage(t *testing.T) {
 	}
 
 	expectedCounts := map[string]int{
-		"github.com/baicie/asteria-drive/internal/postgres": 16,
+		"github.com/baicie/asteria-drive/internal/postgres": 18,
 		"github.com/baicie/asteria-drive/internal/s3store":  1,
 		"github.com/baicie/asteria-drive/internal/server":   2,
 	}

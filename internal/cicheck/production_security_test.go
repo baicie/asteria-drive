@@ -42,15 +42,18 @@ func TestProductionSecurityEvidenceContract(t *testing.T) {
 
 	review := readContractFile(t, "../../docs/security/review-record.md")
 	for _, required := range []string{
-		"Candidate commit", "Pending immutable release tag / pending OCI manifest digest",
-		"Pending independent approval", "high-severity finding blocks approval", "two\nauthorized reviewers",
+		"Historical candidate commit", "Current published reference", "STALE TEMPLATE - NOT APPROVED",
+		"Pending candidate rebind", "open high-severity finding blocks approval", "authorized security and platform reviewers",
 	} {
 		if !strings.Contains(review, required) {
 			t.Errorf("security review record is missing %q", required)
 		}
 	}
-	if !regexp.MustCompile("Candidate commit \\| \\x60?[a-f0-9]{40}\\x60?").MatchString(review) {
-		t.Error("security review record must bind a 40-character immutable candidate commit")
+	if regexp.MustCompile("Candidate commit \\| \\x60?[a-f0-9]{40}\\x60?").MatchString(review) {
+		t.Error("stale security review template must not look like an approved candidate binding")
+	}
+	if !strings.Contains(review, "Current published reference") || !strings.Contains(review, "Not bound to this security review") {
+		t.Error("security review record must make the stale candidate binding explicit")
 	}
 }
 

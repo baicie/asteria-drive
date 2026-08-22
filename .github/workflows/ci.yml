@@ -19,6 +19,7 @@ env:
   GO_MIN_VERSION: 1.25.13
   GO_CURRENT_VERSION: 1.26.6
   NODE_VERSION: 24.16.0
+  MIN_TOTAL_COVERAGE: "39.0"
 
 jobs:
   quality:
@@ -51,10 +52,44 @@ jobs:
         run: |
           set -o pipefail
           go test -json -coverprofile=coverage.out -count=1 ./... | tee unit-test.json
+      - name: Enforce coverage floor
+        shell: bash
+        run: |
+          set -euo pipefail
+          total_coverage="$(go tool cover -func=coverage.out | awk '$1 == "total:" {gsub(/%/, "", $3); print $3}')"
+          if [[ -z "$total_coverage" ]]; then
+            printf 'Could not read total coverage from coverage.out\n' >&2
+            exit 1
+          fi
+          awk -v actual="$total_coverage" -v minimum="$MIN_TOTAL_COVERAGE" 'BEGIN {
+            if (actual + 0 < minimum + 0) {
+              printf "Total coverage %.1f%% is below the %.1f%% floor\n", actual, minimum > "/dev/stderr"
+              exit 1
+            }
+          }'
+          printf 'Total coverage %s%% meets the %s%% floor\n' "$total_coverage" "$MIN_TOTAL_COVERAGE"
       - name: Run vet
         run: go vet ./...
       - name: Build
         run: go build ./...
+      - name: Exercise release packaging
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_output="$(mktemp -d "$RUNNER_TEMP/asteria-release-dry-run.XXXXXXXX")"
+          trap 'rm -rf "$release_output"' EXIT
+          release_commit="$(git rev-parse HEAD)"
+          source_epoch="$(git show -s --format=%ct HEAD)"
+          go run ./tools/package-release \
+            -version v0.0.0-ci \
+            -commit "$release_commit" \
+            -source-date-epoch "$source_epoch" \
+            -output "$release_output"
+          go run ./tools/release-checksums -dir "$release_output"
+          (cd "$release_output" && sha256sum --check checksums.txt)
+          test -s "$release_output/asteria-drive_0.0.0-ci_linux_amd64.tar.gz"
+          test -s "$release_output/asteria-drive_0.0.0-ci_linux_arm64.tar.gz"
+          test -s "$release_output/release-manifest.json"
       - name: Check whitespace
         shell: bash
         run: |
@@ -150,6 +185,7 @@ jobs:
         run: |
           set -euo pipefail
           go test -json -p=1 -count=1 -timeout=15m \
+            -coverprofile=integration-coverage.out \
             ./internal/postgres ./internal/s3store ./internal/server \
             > integration-test.raw.json
           go run ./tools/verify-integration-report \
@@ -179,6 +215,7 @@ jobs:
           name: integration-evidence
           path: |
             integration-test.json
+            integration-coverage.out
             compose.log
           if-no-files-found: ignore
           retention-days: 7

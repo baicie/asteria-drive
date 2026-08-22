@@ -137,10 +137,23 @@ func TestReleaseWorkflowTrustBoundaryAndArtifactContract(t *testing.T) {
 		t.Errorf("publish actions = %#v", publishActions)
 	}
 	publishCommands := workflowCommands(publish.Steps)
-	for _, required := range []string{"sha256sum --check checksums.txt", "gh release create"} {
+	for _, required := range []string{
+		"git ls-remote --tags origin",
+		"gh api --paginate",
+		"immutable-releases",
+		"sha256sum --check checksums.txt",
+		"manifest_commit=\"$(jq -er '.commit' release-manifest.json)\"",
+		"docker buildx imagetools inspect",
+		"gh release create",
+		"--json isImmutable",
+	} {
 		if !strings.Contains(publishCommands, required) {
 			t.Errorf("publish job is missing %q", required)
 		}
+	}
+	checkout := findWorkflowStepNamed(publish.Steps, "Check out resolved release commit")
+	if checkout == nil || checkout.Uses != checkoutAction || fmtString(checkout.With["ref"]) != "${{ needs.build.outputs.commit }}" {
+		t.Errorf("publish job must check out the resolved commit, not the mutable tag: %#v", checkout)
 	}
 	attest := findWorkflowStep(publish.Steps, attestProvenanceAction)
 	if attest == nil || fmtString(attest.With["subject-checksums"]) != "${{ runner.temp }}/asteria-release/checksums.txt" {

@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing vMAJOR.MINOR.PATCH tag to package and publish
+        description: Existing vMAJOR.MINOR.PATCH[-prerelease] tag to package and publish
         required: true
         type: string
 
@@ -120,12 +120,46 @@ jobs:
       attestations: write
       packages: write
     steps:
-      - name: Check out release tag
+      - name: Check out resolved release commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.build.outputs.tag }}
+          ref: ${{ needs.build.outputs.commit }}
           fetch-depth: 0
           persist-credentials: false
+      - name: Verify release identity remains unchanged
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.build.outputs.tag }}
+          RELEASE_COMMIT: ${{ needs.build.outputs.commit }}
+        run: |
+          set -euo pipefail
+          head_commit="$(git rev-parse HEAD)"
+          if [[ "$head_commit" != "$RELEASE_COMMIT" ]]; then
+            printf 'Publish checkout %s does not match resolved release commit %s\n' "$head_commit" "$RELEASE_COMMIT" >&2
+            exit 1
+          fi
+
+          remote_tags="$(git ls-remote --tags origin "refs/tags/$RELEASE_TAG" "refs/tags/$RELEASE_TAG^{}")"
+          remote_tag_commit="$(printf '%s\n' "$remote_tags" | awk '$2 ~ /\^\{\}$/ {print $1; exit}')"
+          if [[ -z "$remote_tag_commit" ]]; then
+            remote_tag_commit="$(printf '%s\n' "$remote_tags" | awk 'NR == 1 {print $1}')"
+          fi
+          if [[ -z "$remote_tag_commit" || "$remote_tag_commit" != "$RELEASE_COMMIT" ]]; then
+            printf 'Remote tag %s no longer resolves to release commit %s\n' "$RELEASE_TAG" "$RELEASE_COMMIT" >&2
+            exit 1
+          fi
+
+          published_tags="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '.[].tag_name')"
+          if grep -Fxq "$RELEASE_TAG" <<< "$published_tags"; then
+            printf 'GitHub Release %s already exists; refusing to republish it\n' "$RELEASE_TAG" >&2
+            exit 1
+          fi
+          immutable_releases="$(gh api "repos/$GITHUB_REPOSITORY/immutable-releases" --jq '.enabled')"
+          if [[ "$immutable_releases" != 'true' ]]; then
+            printf 'GitHub immutable releases must be enabled before publishing %s\n' "$RELEASE_TAG" >&2
+            exit 1
+          fi
       - name: Download release bundle
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
@@ -133,10 +167,22 @@ jobs:
           path: ${{ runner.temp }}/asteria-release
       - name: Verify release checksums
         shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.build.outputs.tag }}
+          RELEASE_COMMIT: ${{ needs.build.outputs.commit }}
         run: |
           set -euo pipefail
           cd "$RUNNER_TEMP/asteria-release"
           sha256sum --check checksums.txt
+          manifest_format="$(jq -er '.format' release-manifest.json)"
+          manifest_version="$(jq -er '.version' release-manifest.json)"
+          manifest_commit="$(jq -er '.commit' release-manifest.json)"
+          if [[ "$manifest_format" != 'asteria-drive-release/v1' ||
+                "$manifest_version" != "$RELEASE_TAG" ||
+                "$manifest_commit" != "$RELEASE_COMMIT" ]]; then
+            printf 'Release manifest identity does not match the resolved tag and commit\n' >&2
+            exit 1
+          fi
       - name: Set up QEMU
         uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
       - name: Set up Docker Buildx
@@ -147,6 +193,30 @@ jobs:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ github.token }}
+      - name: Refuse to overwrite OCI release tags
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.build.outputs.tag }}
+          RELEASE_COMMIT: ${{ needs.build.outputs.commit }}
+        run: |
+          set -euo pipefail
+          for image_ref in \
+            "$REGISTRY/$IMAGE_NAME:$RELEASE_TAG" \
+            "$REGISTRY/$IMAGE_NAME:sha-$RELEASE_COMMIT"; do
+            inspect_error="$(mktemp)"
+            if docker buildx imagetools inspect "$image_ref" >/dev/null 2>"$inspect_error"; then
+              rm -f "$inspect_error"
+              printf 'OCI tag %s already exists; refusing to overwrite it\n' "$image_ref" >&2
+              exit 1
+            fi
+            if ! grep -Eqi 'manifest unknown|name unknown|not found' "$inspect_error"; then
+              cat "$inspect_error" >&2
+              rm -f "$inspect_error"
+              printf 'Could not prove that OCI tag %s is unused\n' "$image_ref" >&2
+              exit 1
+            fi
+            rm -f "$inspect_error"
+          done
       - name: Build and publish immutable OCI image
         id: publish-image
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
@@ -178,7 +248,7 @@ jobs:
           subject-digest: ${{ steps.publish-image.outputs.digest }}
           push-to-registry: true
           show-summary: true
-      - name: Publish immutable GitHub release
+      - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ needs.build.outputs.tag }}
@@ -190,3 +260,8 @@ jobs:
             --verify-tag \
             --title "Asteria Drive $RELEASE_TAG" \
             --generate-notes
+          immutable="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isImmutable --jq '.isImmutable')"
+          if [[ "$immutable" != 'true' ]]; then
+            printf 'Published GitHub Release %s is not immutable\n' "$RELEASE_TAG" >&2
+            exit 1
+          fi

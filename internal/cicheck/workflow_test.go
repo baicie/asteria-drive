@@ -115,6 +115,7 @@ func TestCIWorkflowTrustBoundaryAndStableJobs(t *testing.T) {
 		"GO_MIN_VERSION":     "1.25.13",
 		"GO_CURRENT_VERSION": "1.26.6",
 		"NODE_VERSION":       "24.16.0",
+		"MIN_TOTAL_COVERAGE": "39.0",
 	}
 	if !reflect.DeepEqual(workflow.Env, expectedEnvironment) {
 		t.Errorf("workflow env = %#v, want %#v", workflow.Env, expectedEnvironment)
@@ -135,8 +136,14 @@ func TestCIWorkflowTrustBoundaryAndStableJobs(t *testing.T) {
 				"go mod verify",
 				"gofmt -l .",
 				"go test -json -coverprofile=coverage.out -count=1 ./...",
+				"go tool cover -func=coverage.out",
+				"MIN_TOTAL_COVERAGE",
 				"go vet ./...",
 				"go build ./...",
+				"go run ./tools/package-release",
+				"-version v0.0.0-ci",
+				"go run ./tools/release-checksums",
+				"sha256sum --check checksums.txt",
 				`git diff --check "${{ github.event.pull_request.base.sha }}...${{ github.sha }}"`,
 				`git diff --check "${{ github.event.before }}...${{ github.sha }}"`,
 				"git diff --check HEAD^ HEAD",
@@ -157,6 +164,7 @@ func TestCIWorkflowTrustBoundaryAndStableJobs(t *testing.T) {
 				"docker compose up -d --wait --wait-timeout 180",
 				"docker compose ps",
 				"go test -json -p=1 -count=1 -timeout=15m",
+				"-coverprofile=integration-coverage.out",
 				"./internal/postgres ./internal/s3store ./internal/server",
 				"> integration-test.raw.json",
 				"go run ./tools/verify-integration-report",
@@ -318,7 +326,7 @@ func assertIntegrationJobContract(t *testing.T, job workflowJob) {
 		t.Errorf("integration upload has unexpected inputs: %#v", upload.With)
 	}
 	uploadPaths := strings.Fields(fmt.Sprint(upload.With["path"]))
-	if !reflect.DeepEqual(uploadPaths, []string{"integration-test.json", "compose.log"}) {
-		t.Errorf("integration upload paths = %#v, want only sanitized evidence", uploadPaths)
+	if !reflect.DeepEqual(uploadPaths, []string{"integration-test.json", "integration-coverage.out", "compose.log"}) {
+		t.Errorf("integration upload paths = %#v, want sanitized evidence plus integration coverage", uploadPaths)
 	}
 }
