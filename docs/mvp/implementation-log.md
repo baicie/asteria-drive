@@ -872,3 +872,21 @@ public DNS/TLS ingress, production OIDC lifecycle, managed database trust or
 PITR/WAL, object versioning/Object Lock, KMS-backed rotation, HA, production
 monitoring/SIEM and external alerts, capacity planning, external presign transfer
 evidence, or independent security/platform approval.
+
+## 2026-08-22 - current production-gate and release-state correction
+
+The repository-side release and CI hardening described above is now superseded by
+the checked-in workflow contracts and [production closure checklist](../operations/production-readiness.md).
+The historical `v0.1.0` and `v0.1.1` Release records are retained as provenance and
+artifact evidence, but a current GitHub API review returned `isImmutable=false` for
+both releases while `immutable-releases.enabled=false`. Therefore those historical
+Releases must not be described as immutable production candidates; a new release is
+blocked until the platform setting is enabled and the post-publish immutability
+check succeeds.
+
+The same review found seven required status checks and strict administrator
+enforcement on `main`, but no required pull-request review object, no repository
+rulesets, and no required reviewer on the `release` Environment. The repository
+documents these as open platform gates rather than inferring them from workflow
+presence. The current closure checklist is the authoritative Definition of Done;
+staging evidence remains explicitly non-production.

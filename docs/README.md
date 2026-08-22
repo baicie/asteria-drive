@@ -16,6 +16,7 @@
 | [m2/member-management.md](m2/member-management.md) | M2-2 tenant member listing and lifecycle updates | M2-2 implementation contract |
 | [operations/deployment.md](operations/deployment.md) | Hardened image, Kubernetes baseline, secret injection, and rollout | Production operations |
 | [operations/backup-and-restore.md](operations/backup-and-restore.md) | Isolated backup, restore, verification, and drill procedure | Production recovery |
+| [operations/production-readiness.md](operations/production-readiness.md) | Phase 1 生产门槛、owner、证据与验收标准 | **公网生产 Definition of Done** |
 | [security/threat-model.md](security/threat-model.md) | Production assets, trust boundaries, threats, controls, and residual risk | Security review baseline |
 | [security/control-matrix.md](security/control-matrix.md) | Security requirements mapped to repository and platform evidence | Security assurance |
 | [process/ci-system.md](process/ci-system.md) | GitHub Actions CI topology, staged implementation, and merge gates | CI design and rollout evidence |
@@ -39,4 +40,5 @@
 6. 产品愿景（`vision/`）——愿景不得覆盖本轮 MUST/NOT NOW
 
 当前交付摘要见 [status.md](status.md)；实现进度和验收结论只以
-[mvp/implementation-log.md](mvp/implementation-log.md) 中可复现的证据为准。
+[mvp/implementation-log.md](mvp/implementation-log.md) 中可复现的证据为准。Phase 1 仓库代码完成不等于公网生产准入；生产声明还必须满足
+[operations/production-readiness.md](operations/production-readiness.md) 的候选绑定、平台证据和独立审批。

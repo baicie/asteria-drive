@@ -1,17 +1,16 @@
-# Asteria Drive 后端 MVP REST API
+# Asteria Drive Phase 1 REST API
 
-状态：实现契约基线  
+状态：已实现契约基线
 版本：`v1`  
-最后更新：2026-08-02
+最后更新：2026-08-19
 
 机器可读契约：[OpenAPI 3.1](../openapi.yaml)
 
 ## 1. 范围
 
-本 API 是网盘控制面，处理 OIDC/OAuth2 或 trusted-dev 身份、租户 Namespace、上传协调、下载授权和回收站。文件正文通过短期 S3 URL 在客户端与对象存储之间传输，绝不经过这些路由。
+本 API 是网盘控制面，处理 OIDC/OAuth2 或 trusted-dev 身份、租户治理、成员邀请、组、继承式 ACL、审计、Namespace、上传协调、下载授权和回收站。文件正文通过短期 S3 URL 在客户端与对象存储之间传输，绝不经过这些路由。
 
-成员邀请/删除、正式 ACL、分享、配额、历史版本 API、同步和预览属于后续 M2 阶段。本轮已落地 M2-1 的
-Resource Server 验证、成员解析和基础 RBAC，以及 M2-2 的成员列表、角色和 active/suspended 状态更新；不保留未实现的占位路由。
+Phase 1 仓库已实现 OIDC Resource Server 验证、成员解析与基础 RBAC、邀请创建/撤销/接受、成员删除、组管理、principal/group 继承式 allow-only ACL、追加式审计查询与 NDJSON 导出。分享链接、配额、历史版本 API、同步和预览仍是后续产品能力；本契约不为这些能力保留占位路由。
 
 所有业务路由以 `/api/v1` 开头。`/healthz`、`/readyz` 是无版本探针。
 
@@ -151,7 +150,50 @@ Authorization: Bearer <oidc-access-token-or-trusted-dev-token>
 
 租户在服务启动时由受控 Token 配置初始化；MVP 不提供租户创建、枚举或切换 API。
 
-## 8. Namespace
+## 8. 租户治理
+
+治理路由使用 PostgreSQL 中的成员角色和状态做服务端授权；客户端不能通过 JWT 自声明角色。`owner` 和 `admin` 可以管理成员、邀请和组并读取审计；服务端拒绝移除或停用最后一个 active owner。跨租户主体、组、ACL 项和资源继续使用 `404` 隐藏边界。
+
+### 8.1 成员
+
+- `GET /api/v1/tenant/members?limit=50&cursor=...`：分页列出成员，返回 `principal_id`、`display_name`、`role` 和 `status`。
+- `PATCH /api/v1/tenant/members/{principal_id}`：更新 `role`、`status` 或两者，返回 `200`。
+- `DELETE /api/v1/tenant/members/{principal_id}`：删除成员关系并返回 `204`；不会允许删除最后一个 active owner。
+
+角色为 `owner`、`admin`、`editor`、`viewer`，成员状态为 `active` 或 `suspended`。被 suspended 或已删除的成员不能继续访问租户资源。
+
+### 8.2 邀请
+
+- `POST /api/v1/tenant/invitations`：为指定 OIDC `issuer` + `subject` 创建带角色和过期时间的邀请，返回 `201` 以及只在创建响应中出现的 token。
+- `GET /api/v1/tenant/invitations?status=...`：按可选状态列出邀请，返回 `200`。
+- `POST /api/v1/tenant/invitations/{invitation_id}/revoke`：撤销 pending 邀请，返回 `200`。
+- `POST /api/v1/invitations/accept`：经 ExternalAuthenticator 验证的 OIDC 身份提交 token；只有 token 绑定的 `issuer` + `subject` 能接受，成功返回租户 ID 和成员记录。
+
+接受路由不依赖现有租户成员身份或 `X-Tenant-ID`，但必须具有已验证的外部身份；未配置 ExternalAuthenticator 时返回 `401`。邀请 token 是敏感凭证，不得写入日志或审计 metadata。
+
+### 8.3 组与组成员
+
+- `POST /api/v1/tenant/groups`、`GET /api/v1/tenant/groups`：创建和列出组。
+- `PATCH /api/v1/tenant/groups/{group_id}`、`DELETE /api/v1/tenant/groups/{group_id}`：重命名或删除组；删除组同时删除其成员关系和 ACL grant。
+- `GET /api/v1/tenant/groups/{group_id}/members`：列出组成员。
+- `PUT /api/v1/tenant/groups/{group_id}/members/{principal_id}`、`DELETE /api/v1/tenant/groups/{group_id}/members/{principal_id}`：幂等添加或移除组成员，成功返回 `204`。
+
+### 8.4 审计
+
+- `GET /api/v1/tenant/audit-events?after_sequence=...&from=...&until=...&limit=...`：按单调 sequence 分页读取追加式审计事件。
+- `GET /api/v1/tenant/audit-events/export?from=<RFC3339>&until=<RFC3339>`：导出指定 UTC 时间窗的 `application/x-ndjson`；时间窗必填，超过 10000 条时要求缩小范围。
+
+事件包含 actor、action、target、request ID、受限 metadata 和 UTC 时间。数据库约束保护审计记录不可更新/删除；平台侧保留、SIEM 接入与访问复核仍属于生产门槛。
+
+## 9. 节点 ACL
+
+- `GET /api/v1/nodes/{id}/acl`：列出节点上的直接 grant。
+- `PUT /api/v1/nodes/{id}/acl`：以 `subject_type=principal|group`、租户内 subject ID 和 `role=reader|contributor|manager` 创建或更新 grant，返回 `200`。
+- `DELETE /api/v1/nodes/{id}/acl/{entry_id}`：删除直接 grant，返回 `204`。
+
+ACL 是租户内、allow-only 且向后代继承的权限提升：`reader` 提供读取，`contributor` 提供读写，`manager` 增加删除和 ACL 管理。它不创建 deny 规则，也不能跨租户引用主体。owner/admin 的租户 RBAC 保持管理能力；其他角色只有在基础 RBAC 或继承 grant 满足操作要求时才能访问节点。
+
+## 10. Namespace
 
 ### `POST /api/v1/directories`
 
@@ -190,7 +232,7 @@ Authorization: Bearer <oidc-access-token-or-trusted-dev-token>
 
 要求 `If-Match: \"<revision>\"`。根目录不可修改；目录不能移到自身或后代；目标父必须是活动同租户目录。成功 `200` 返回新 Node/ETag。该操作不调用 StorageProvider。
 
-## 9. 上传
+## 11. 上传
 
 ### `POST /api/v1/uploads`
 
@@ -256,7 +298,7 @@ SHA-256 值使用标准 Base64 编码的 32-byte 摘要。后端返回并验证�
 
 幂等取消未完成会话并尽力 Abort Multipart；对已经持久化为 `failed` 且对象曾完成的会话，重复取消会重试精确对象 Delete。首次和重复成功都返回 `204`。`completing`、`object_completed` 和已提交会话不被公开取消，返回 `409 invalid_state`。过期维护任务使用同一领域操作。
 
-## 10. 下载授权
+## 12. 下载授权
 
 ### `POST /api/v1/files/{id}/download-authorizations`
 
@@ -274,7 +316,7 @@ SHA-256 值使用标准 Base64 编码的 32-byte 摘要。后端返回并验证�
 
 `Content-Disposition` 使用安全编码的显示名。Range 由对象存储处理；API 不代理正文。目录、回收/清理中、未提交和跨租户资源返回 `404`。
 
-## 11. 回收站
+## 13. 回收站
 
 ### `DELETE /api/v1/nodes/{id}`
 
@@ -294,7 +336,7 @@ SHA-256 值使用标准 Base64 编码的 32-byte 摘要。后端返回并验证�
 
 要求 `If-Match`，同步执行引用安全的永久清理；全部对象删除与元数据收尾成功后返回 `204`。节点先进入不可见 `purging`；对象删除失败返回依赖错误且可用相同 revision 重试，不会把节点恢复为可见。仍被版本引用的 Blob 不得调用 Delete。异步 GC 接受语义不属于本轮公开契约。
 
-## 12. 幂等、并发与限制
+## 14. 幂等、并发与限制
 
 - 上传完成以会话 ID + completion digest 强制幂等，是 MUST。
 - 路径和 Body 中格式非法的 UUID 返回 `400 invalid_request`；合法但不存在或跨租户的 UUID 返回 `404 not_found`。
@@ -305,21 +347,38 @@ SHA-256 值使用标准 Base64 编码的 32-byte 摘要。后端返回并验证�
   保留策略尚未进入本轮公开 HTTP 契约。
 - 服务端配置 HTTP 超时；外部依赖错误分类为可重试/不可重试，响应不暴露供应商详情。
 
-## 13. 路由总表
+## 15. 路由总表
 
 | 方法 | 路径 | 成功 |
 | --- | --- | --- |
 | GET | `/healthz` | 200 |
 | GET | `/readyz` | 200/503 |
+| POST | `/api/v1/invitations/accept` | 200 |
 | GET | `/api/v1/tenant` | 200 |
 | GET | `/api/v1/tenant/members` | 200 |
 | PATCH | `/api/v1/tenant/members/{principal_id}` | 200 |
+| DELETE | `/api/v1/tenant/members/{principal_id}` | 204 |
+| POST | `/api/v1/tenant/invitations` | 201 |
+| GET | `/api/v1/tenant/invitations` | 200 |
+| POST | `/api/v1/tenant/invitations/{invitation_id}/revoke` | 200 |
+| POST | `/api/v1/tenant/groups` | 201 |
+| GET | `/api/v1/tenant/groups` | 200 |
+| PATCH | `/api/v1/tenant/groups/{group_id}` | 200 |
+| DELETE | `/api/v1/tenant/groups/{group_id}` | 204 |
+| GET | `/api/v1/tenant/groups/{group_id}/members` | 200 |
+| PUT | `/api/v1/tenant/groups/{group_id}/members/{principal_id}` | 204 |
+| DELETE | `/api/v1/tenant/groups/{group_id}/members/{principal_id}` | 204 |
+| GET | `/api/v1/tenant/audit-events` | 200 |
+| GET | `/api/v1/tenant/audit-events/export` | 200 |
 | POST | `/api/v1/directories` | 201 |
 | GET | `/api/v1/directories/{id}` | 200 |
 | GET | `/api/v1/directories/{id}/children` | 200 |
 | GET | `/api/v1/files/{id}` | 200 |
 | PATCH | `/api/v1/nodes/{id}` | 200 |
 | DELETE | `/api/v1/nodes/{id}` | 204 |
+| GET | `/api/v1/nodes/{id}/acl` | 200 |
+| PUT | `/api/v1/nodes/{id}/acl` | 200 |
+| DELETE | `/api/v1/nodes/{id}/acl/{entry_id}` | 204 |
 | POST | `/api/v1/uploads` | 201 |
 | GET | `/api/v1/uploads/{id}` | 200 |
 | POST | `/api/v1/uploads/{id}/parts/sign` | 200 |
