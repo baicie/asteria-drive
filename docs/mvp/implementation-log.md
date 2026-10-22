@@ -933,7 +933,7 @@ reviewer and independently verified candidate are evidenced.
 The local Web console, loopback Compose stack, real PostgreSQL/SeaweedFS smoke
 script, `asteria-server --healthcheck`, secret-free `CI / web` job, and supporting
 documentation were committed as `feat: add local web console and full-stack dev
-environment` and opened as PR #71.
+environment` and merged as PR #71 (merge commit `806fad1`).
 
 The Playwright harness now accepts `PLAYWRIGHT_PORT`, uses a same-origin mock
 signed URL, and fails fast instead of silently reusing an unrelated local server
@@ -983,9 +983,24 @@ administrator enforcement, conversation resolution, and force-push/deletion
 blocks remain. This is a deliberate governance deviation, not evidence for
 PRD-09 or PRD-10.
 
+## 2026-10-22 - dependency refresh
+
+PR #72 consolidated the open Dependabot updates and merged as `d74c094`:
+
+- Docker release actions: setup-qemu v4.2.0, setup-buildx v4.3.0,
+  download-artifact v8.0.1, build-push v7.3.0;
+- CodeQL init/analyze v4.37.7;
+- AWS SDK modules v1.43.4, config v1.32.35, credentials v1.19.34, S3 v1.107.0,
+  and smithy-go v1.27.7;
+- Redocly CLI 2.64.1 and the matching workflow contract tests.
+
+All required CI/security checks passed before merge. The remaining Dependabot PRs
+were closed as superseded, and the later Vite 8.3.5 update merged as `54aaec4`.
+
 ## 2026-10-22 - web console recycle bin and node actions
 
-The local Web console gained a recycle-bin view and node actions in PR #74:
+The local Web console gained a recycle-bin view and node actions in PR #74,
+merged as merge commit `ef60f9e`:
 
 - recycle-bin listing from `GET /api/v1/recycle-bin`, with restore and permanent
   purge actions that send the node revision in `If-Match`;
