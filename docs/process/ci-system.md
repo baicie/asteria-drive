@@ -166,7 +166,7 @@ image build and API smoke flow remain separate integration work.
 weekly at 03:17 UTC on Mondays, and manual dispatches:
 
 - `Security / govulncheck` runs the explicitly pinned
-  `golang.org/x/vuln/cmd/govulncheck@v1.1.4` against the resolved module graph
+  `golang.org/x/vuln/cmd/govulncheck@v1.9.0` against the resolved module graph
   with both patched minimum Go 1.26.10 and current Go 1.27.3;
 - `Security / dependency-review` runs only for pull requests and blocks newly
   introduced high or critical dependency vulnerabilities;

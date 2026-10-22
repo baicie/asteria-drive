@@ -35,7 +35,7 @@ build; 1.2.2 contains the fix.
 - Upgrade `golang.org/x/text` to v0.41.0.
 - Override the transitive web dependency `source-map-js` to 1.2.2 so the
   lockfile resolves only the patched version.
-- Continue running the pinned `golang.org/x/vuln/cmd/govulncheck@v1.1.4` command
+- Continue running the pinned `golang.org/x/vuln/cmd/govulncheck@v1.9.0` command
   against both Go lanes. Do not add advisory exclusions.
 
 ## Consequences

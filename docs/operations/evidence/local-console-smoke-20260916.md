@@ -106,6 +106,6 @@ git diff --check
   config --quiet` 和 `git diff --check` 全部通过。
 - 同时按 ADR-0025 将 Go 最低/当前工具链提升到 1.26.10/1.27.3，升级
   `golang.org/x/text` 到 v0.41.0，并将 `source-map-js` 固定到 1.2.2；Go 1.26.10
-  上的 `govulncheck@v1.1.4` 结果为 `No vulnerabilities found`。
+  上的 `govulncheck@v1.9.0` 结果为 `No vulnerabilities found`。
 - 本次复核只覆盖仓库门禁与浏览器流程，不替代 2026-09-16 的真实 PostgreSQL/SeaweedFS
   冒烟，也不改变 staging 或生产准入边界。

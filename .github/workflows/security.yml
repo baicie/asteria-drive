@@ -39,14 +39,14 @@ jobs:
       - name: Verify modules
         run: go mod verify
       - name: Run govulncheck on minimum supported Go
-        run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
       - name: Set up current Go
         uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
         with:
           go-version: ${{ env.GO_CURRENT_VERSION }}
           cache: true
       - name: Run govulncheck on current Go
-        run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
 
   dependency-review:
     name: Security / dependency-review

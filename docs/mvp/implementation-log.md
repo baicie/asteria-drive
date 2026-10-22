@@ -966,5 +966,6 @@ The same submission refreshes the security baseline because newly published
 advisories made the required checks red: the minimum supported Go compiler moves
 to 1.26.10, the current/release builder moves to 1.27.3, `golang.org/x/text`
 moves to v0.41.0, and the web lockfile overrides `source-map-js` to 1.2.2.
-ADR-0025 records the decision. A local `govulncheck@v1.1.4` run on Go 1.26.10
-reported no vulnerabilities.
+ADR-0025 records the decision. A local `govulncheck@v1.9.0` run on Go 1.26.10
+reported no vulnerabilities; the scanner moved to v1.9.0 because v1.1.4 panics
+against the Go 1.27.3 HTTP client.
