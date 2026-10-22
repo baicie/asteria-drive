@@ -53,10 +53,10 @@ repository-owned helper that emits structured output.
 
 The five implemented CI jobs run independently. Together with the three security
 jobs in section 4, the repository exposes eight CI/security checks. The protected
-branch currently requires seven; the new web-console check must be added to the
-remote required-check set after its first successful run. GitHub branch protection
-must be checked separately because workflow presence alone does not prove that
-the checks or review policy are required.
+branch requires all eight, including the web-console check, after the 2026-10-22
+remote protection update. GitHub branch protection must be checked separately
+because workflow presence alone does not prove that the checks or review policy
+are required.
 
 ### CI / quality
 
@@ -215,8 +215,8 @@ The rollout step 5 policy is the required target state for `main`:
 
 - require pull requests with at least one approving review;
 - dismiss stale approvals and require approval after the last push;
-- require conversation resolution and the seven stable protected CI/security
-  checks; add the web-console check once remote branch protection is updated;
+- require conversation resolution and the eight stable protected CI/security
+  checks, including `CI / web`;
 - require the branch to be up to date before merge;
 - enforce the policy for administrators and require CODEOWNERS review;
 - disable force pushes and branch deletion.
@@ -314,10 +314,10 @@ Deployment automation remains outside this rollout.
 - Sanitized test and Compose evidence is retained for seven days. Sanitization,
   raw-report removal, `docker compose down -v --remove-orphans`, and artifact
   upload all run through `always()` paths.
-- The seven currently protected CI/security checks remain the required target for
-  pull requests targeting `main` until the remote rules are updated with
-  `CI / web`; API/settings evidence must prove strict up-to-date checks, review
-  rules, CODEOWNERS review, and administrator enforcement.
+- The eight protected CI/security checks, including `CI / web`, are the required
+  target for pull requests targeting `main`; API/settings evidence must prove
+  strict up-to-date checks, review rules, CODEOWNERS review, and administrator
+  enforcement.
 - Security checks run without repository secrets, use pinned Action/tool versions,
   and keep CodeQL's write permission scoped to its job.
 - Dependabot proposes weekly updates for Go, npm, Actions, and Compose/Docker

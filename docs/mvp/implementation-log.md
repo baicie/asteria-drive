@@ -969,3 +969,8 @@ moves to v0.41.0, and the web lockfile overrides `source-map-js` to 1.2.2.
 ADR-0025 records the decision. A local `govulncheck@v1.9.0` run on Go 1.26.10
 reported no vulnerabilities; the scanner moved to v1.9.0 because v1.1.4 panics
 against the Go 1.27.3 HTTP client.
+
+After `CI / web` passed on PR #71, the check was added to the `main` required
+status checks. The remote protection API now reports eight required checks with
+`strict=true`; this closes only the web-check requirement and does not change the
+open production review gates.

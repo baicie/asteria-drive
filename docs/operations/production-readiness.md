@@ -2,7 +2,7 @@
 
 状态：`OPEN`
 
-最后核对：2026-09-06
+最后核对：2026-10-22
 
 适用范围：Asteria Drive Phase 1 公网生产准入
 
@@ -37,13 +37,14 @@
 | `PRD-07` | 外部 presign DNS/TLS/CORS/客户端 | `UNASSIGNED` | `OPEN` | 控制端点与客户端 public endpoint 已分离，production 强制 HTTPS；尚无用户网络的真实公网实测。 | 从生产网络外的普通客户端通过公网 API 创建 multipart、对 public S3 endpoint 上传并完成提交，再执行完整下载和 Range 下载；证明 DNS、证书链/SNI、CORS preflight/headers、同一 bucket/key 命名空间和 TTL 正确；响应不得暴露 control endpoint、长期凭据或内部 bucket/key；保存去敏流量摘要和对象校验值。 |
 | `PRD-08` | 容量计划与负载余量 | `UNASSIGNED` | `OPEN` | 仓库有百万节点完整性和控制面 SLO 工具，staging 只提供单机磁盘/健康采样；没有生产规模和增长计划。 | 业务 owner 批准 tenant、成员、节点、对象字节、目录宽度、请求/上传并发和增长假设；在候选生产拓扑完成读写/上传/维护/恢复负载测试；记录瓶颈、至少一个批准的峰值余量、扩容阈值与 lead time；容量告警和扩容 runbook 经演练。 |
 | `PRD-09` | 独立安全与平台批准 | `UNASSIGNED` | `OPEN` | [安全评审记录](../security/review-record.md) 是旧候选模板，不是批准；没有绑定当前生产候选和环境的签核。 | 独立安全 reviewer 和平台 reviewer 分别核对本矩阵、威胁模型、候选 diff、运行证据和全部 findings；无未处置 high finding，例外均有 owner/expiry/risk decision；在访问受控的 change record 中签署 reviewer identity、UTC、commit、release URL、OCI/manifest digest、环境和证据链接。 |
-| `PRD-10` | 不可变 GitHub Release、tag 保护与发布复核 | `UNASSIGNED` | `OPEN` | 仓库 release workflow 已主动检查 Immutable Releases、重复 Release/OCI tag 和发布后 immutable 状态；2026-09-06 GitHub API 显示 `immutable-releases.enabled=true`，`main` 已有 1 个 PR approval、CODEOWNERS review、旧审批失效和最后推送后审批，active ruleset `22372324` 允许 `baicie` 创建 `v*` 且禁止更新/删除；`release` Environment 已要求 `baicie` reviewer、允许 self-review 和禁止管理员 bypass，但当前没有独立 reviewer。历史 `v0.1.1` 为 `isImmutable=false`，`v0.1.0-dev.0` 虽为 immutable 但不是生产候选。 | GitHub API/设置证据证明候选 Release 已 immutable；repository ruleset 对 `v*` 禁止非受控创建、更新和删除；release Environment 仅允许受控 tag 且要求非发布者的授权 reviewer；从 tag 到受保护 main、源码、checksums、SBOM、provenance 和 OCI digest 完成独立复核，并保存 environment approval 与规则证据。 |
+| `PRD-10` | 不可变 GitHub Release、tag 保护与发布复核 | `UNASSIGNED` | `OPEN` | 仓库 release workflow 已主动检查 Immutable Releases、重复 Release/OCI tag 和发布后 immutable 状态；2026-09-06 GitHub API 显示 `immutable-releases.enabled=true`，`main` 已有 1 个 PR approval、CODEOWNERS review、旧审批失效和最后推送后审批，active ruleset `22372324` 允许 `baicie` 创建 `v*` 且禁止更新/删除；2026-10-22 `CI / web` 首次通过后已加入 required checks，`main` 现为八项；`release` Environment 已要求 `baicie` reviewer、允许 self-review 和禁止管理员 bypass，但当前没有独立 reviewer。历史 `v0.1.1` 为 `isImmutable=false`，`v0.1.0-dev.0` 虽为 immutable 但不是生产候选。 | GitHub API/设置证据证明候选 Release 已 immutable；repository ruleset 对 `v*` 禁止非受控创建、更新和删除；release Environment 仅允许受控 tag 且要求非发布者的授权 reviewer；从 tag 到受保护 main、源码、checksums、SBOM、provenance 和 OCI digest 完成独立复核，并保存 environment approval 与规则证据。 |
 
 ## 当前可复用证据
 
 - 最新 staging 恢复：run [`31953850132`](https://github.com/baicie/asteria-drive/actions/runs/31953850132)，artifact `9265397749`，artifact digest `sha256:a5944afd9514755a2469e1c26eacb8836ebdec70549c0bcab5278c5c2477f619`。它证明 schema `3 -> 3`、15 表、`17 -> 17` 行、storage verifier `2/2`、source PostgreSQL TLS 1.3 和清理完成；claim boundary 为 `staging-recovery-not-production`。
 - 当前发布基线：`v0.1.1`，source `e8d26ded6e9138bbfdeac60f2487c5f835ab61a5`，OCI digest `sha256:2b73f8a7a271c0d7d6c7f73e15987b5e29290437146f07a57b57b9aef031d842`。它证明归档、checksums、SBOM 和 provenance，不证明 `PRD-10` 的外部治理设置。
 - 2026-09-06 平台设置复核：`gh api repos/baicie/asteria-drive/immutable-releases` 返回 `enabled=true`；`branches/main/protection` 已启用七个 required checks、strict、1 个审批、CODEOWNERS review、旧审批失效、最后推送后审批、administrator enforcement、conversation resolution，并禁止强推/删分支；active ruleset `22372324` 对 `refs/tags/v*` 允许 `baicie` 创建、禁止更新/删除；`environments/release` 已要求 `baicie` reviewer、允许 self-review、禁止管理员 bypass，同时保留 `v*` custom branch policy。当前唯一 collaborator 仍不能满足独立审批要求，因此单人发布模式不关闭 PRD-09/PRD-10 的独立审批要求。`v0.1.1` 的 `isImmutable=false`，`v0.1.0-dev.0` 的 `isImmutable=true`。以上结果关闭了部分远端治理缺口，但生产批准仍未完成。
+- 2026-10-22 平台设置更新：`CI / web` 在 PR #71 首次通过后已加入 `main` required checks；`gh api branches/main/protection/required_status_checks` 返回八项检查（`CI / quality`、`CI / race`、`CI / api-contract`、`CI / integration`、`CI / web`、`Security / govulncheck`、`Security / dependency-review`、`Security / codeql`）且 `strict=true`。该更新只关闭 web 检查的必需性缺口，不改变独立 reviewer、Release 复核或其他生产门槛。
 - 控制映射见 [Security Control Matrix](../security/control-matrix.md)，生产恢复步骤见 [Backup and Restore](backup-and-restore.md)，部署边界见 [Deployment](deployment.md)。
 
 ## 关闭规则
