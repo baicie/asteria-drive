@@ -890,3 +890,40 @@ rulesets, and no required reviewer on the `release` Environment. The repository
 documents these as open platform gates rather than inferring them from workflow
 presence. The current closure checklist is the authoritative Definition of Done;
 staging evidence remains explicitly non-production.
+
+## 2026-09-06 - repository and platform recheck
+
+The local worktree was rechecked with no tracked-file changes. The following
+repository validations passed on the current release-gate branch:
+
+```text
+go test ./...
+go vet ./...
+go build ./...
+npm run lint:actions
+npm run lint:openapi
+git diff --check
+```
+
+The GitHub API now reports `immutable-releases.enabled=true`. The `main` branch
+has seven required checks, strict status checks, one required pull-request
+approval with CODEOWNERS review, stale-approval dismissal, approval after the
+last push, administrator enforcement, and conversation resolution. Active ruleset
+`22372324` allows `baicie` to create `v*` tags and forbids tag update and deletion.
+The `release` Environment requires `baicie` as reviewer, allows self-review, and
+disallows administrator bypass. `v0.1.1` remains `isImmutable=false`;
+`v0.1.0-dev.0` is immutable but is not a production candidate. PRD-10 therefore
+remains open until tag creation governance, release review, and independent
+candidate verification are all evidenced.
+
+The remote protection update then enabled one required pull-request approval,
+CODEOWNERS review, stale-approval dismissal, approval after the last push, and
+retained strict status checks, administrator enforcement, conversation resolution,
+and disabled force-push/deletion settings on `main`. Active ruleset `22372324`
+now targets `refs/tags/v*`, allows `baicie` to create tags, and forbids tag update
+and deletion. The `release`
+Environment requires `baicie`, allows self-review, and disallows administrator
+bypass. The `v*` ruleset allows `baicie` to create tags while forbidding update and
+deletion. This makes the single-operator Release workflow usable, but it does not
+satisfy the independent-review requirement; PRD-10 remains open until a separate
+reviewer and independently verified candidate are evidenced.

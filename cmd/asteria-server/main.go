@@ -29,6 +29,13 @@ func main() {
 		fmt.Println(buildinfo.String("asteria-server"))
 		return
 	}
+	if len(os.Args) == 2 && os.Args[1] == "--healthcheck" {
+		if err := healthcheck(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	metrics := observability.NewMetrics()
 	cfg, err := config.Load()
@@ -215,4 +222,26 @@ func main() {
 	if failed {
 		os.Exit(1)
 	}
+}
+
+func healthcheck() error {
+	target := os.Getenv("ASTERIA_HEALTHCHECK_URL")
+	if target == "" {
+		target = "http://127.0.0.1:8080/healthz"
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	if err != nil {
+		return fmt.Errorf("create healthcheck request: %w", err)
+	}
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		return fmt.Errorf("healthcheck request failed: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("healthcheck returned HTTP %d", response.StatusCode)
+	}
+	return nil
 }

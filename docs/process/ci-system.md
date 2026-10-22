@@ -2,16 +2,16 @@
 
 This document turns ADR-0016 and ADR-0017 into an implementation contract. Both
 are accepted. Rollout steps 1 through 6 are implemented in the repository: it has
-pinned quality, race, API-contract, Compose-backed integration, security, and
-tagged release workflows, plus a Dependabot update path and repository contracts
-for protected-main merge gates. GitHub platform settings remain an independently
-verified prerequisite; release publication is additionally gated by the configured
-`release` environment and immutable-release setting.
+pinned quality, race, API-contract, Compose-backed integration, web-console,
+security, and tagged release workflows, plus a Dependabot update path and
+repository contracts for protected-main merge gates. GitHub platform settings
+remain an independently verified prerequisite; release publication is additionally
+gated by the configured `release` environment and immutable-release setting.
 
 ## 1. Current state
 
 - The repository is public and main is the default branch.
-- `.github/workflows/ci.yml` runs four secret-free PR gates. Their required-check
+- `.github/workflows/ci.yml` runs five secret-free PR gates. Their required-check
   status is a GitHub platform setting and must be verified for the target branch.
 - `.github/workflows/security.yml` runs govulncheck, dependency review, and
   CodeQL without repository secrets; `.github/dependabot.yml` covers Go, npm,
@@ -40,7 +40,7 @@ implemented:
 
 | Workflow | Trigger | Merge-gate status | Responsibility |
 | --- | --- | --- | --- |
-| ci.yml | pull request, push to main, manual | required on protected main | quality, race, API contract, and integration implemented |
+| ci.yml | pull request, push to main, manual | required on protected main | quality, race, API contract, integration, and web console implemented |
 | security.yml | pull request, push to main, weekly schedule, manual | required on protected main | govulncheck, dependency review, CodeQL |
 | release.yml | v* tag, manual | protected release environment | reproducible binaries, checksums, SBOM and provenance |
 | dependabot.yml | GitHub configuration | n/a; implemented | Go modules, npm, Actions, and Docker update proposals |
@@ -51,10 +51,12 @@ repository-owned helper that emits structured output.
 
 ## 3. Required CI PR graph
 
-The four implemented CI jobs run independently. Together with the three security
-jobs in section 4, the repository expects seven required checks. GitHub branch
-protection must be checked separately because workflow presence alone does not
-prove that the checks or review policy are required.
+The five implemented CI jobs run independently. Together with the three security
+jobs in section 4, the repository exposes eight CI/security checks. The protected
+branch currently requires seven; the new web-console check must be added to the
+remote required-check set after its first successful run. GitHub branch protection
+must be checked separately because workflow presence alone does not prove that
+the checks or review policy are required.
 
 ### CI / quality
 
@@ -144,6 +146,20 @@ Steps:
 The CLI version and any Node package lockfile belong in the repository. Avoid
 floating latest downloads in workflow files.
 
+### CI / web
+
+Steps:
+
+- install the locked `web/package-lock.json` dependencies with lifecycle scripts
+  disabled;
+- run `vue-tsc --noEmit` over the Vue application;
+- build the production Vite bundle;
+- install Chromium and run the Playwright browser workflow against a local
+  preview server with deterministic API fixtures.
+
+This job is secret-free and does not start Docker or contact the API. The web
+image build and API smoke flow remain separate integration work.
+
 ## 4. Security workflow and dependency updates
 
 `security.yml` runs without repository secrets on pull requests, pushes to main,
@@ -184,7 +200,8 @@ receive id-token: write, attestations: write, or contents: write.
   either pin again requires an explicit policy update.
 - Use actions/setup-go pinned to its v5.5.0 commit with go.sum-based caching.
 - Set GOTOOLCHAIN=local so CI does not silently download a different compiler.
-- Use Node.js 24.16.0 and Redocly CLI 2.43.3 from the committed npm lockfile.
+- Use Node.js 24.16.0, Redocly CLI 2.43.3, and the web build/typecheck
+  toolchain from their committed npm lockfiles.
 - Pin every third-party Action to a full commit SHA and every external container
   to a digest. Dependabot updates those pins.
 - Do not cache PostgreSQL, SeaweedFS, or test buckets between jobs.
@@ -197,7 +214,8 @@ The rollout step 5 policy is the required target state for `main`:
 
 - require pull requests with at least one approving review;
 - dismiss stale approvals and require approval after the last push;
-- require conversation resolution and the seven stable CI/security checks;
+- require conversation resolution and the seven stable protected CI/security
+  checks; add the web-console check once remote branch protection is updated;
 - require the branch to be up to date before merge;
 - enforce the policy for administrators and require CODEOWNERS review;
 - disable force pushes and branch deletion.
@@ -208,12 +226,16 @@ separate follow-up decision. Do not allow an administrator bypass for
 security-sensitive workflow or migration changes without an explicitly recorded
 exception.
 
-The last repository-side review on 2026-08-19 found platform drift: CODEOWNERS
-review, stale-approval dismissal, last-push approval, repository rulesets, and a
-required reviewer on the `release` Environment were not all enabled. Until a new
-GitHub API/settings capture proves the target state, these controls remain open in
-the production closure checklist and the project must not claim protected-main or
-production release approval.
+The repository-side review on 2026-09-06 found that GitHub Immutable Releases is
+now enabled, `main` has the required pull-request review and CODEOWNERS controls,
+and active ruleset `22372324` protects `v*` from update and deletion. The ruleset
+allows only `baicie` to create tags and forbids tag update and deletion. The
+`release` Environment requires `baicie` as reviewer, allows self-review, and
+disallows administrator bypass. Since `baicie` is also the only current
+collaborator, this is a single-operator release mode and does not satisfy the
+independent-review requirement. These remaining controls stay open in the
+production closure checklist, and the project must not claim production release
+approval from the immutable-release setting alone.
 
 ## 7. Artifacts and failure handling
 
@@ -269,15 +291,17 @@ Deployment automation remains outside this rollout.
 ## 10. Rollout steps 2 through 6 acceptance
 
 - Pull requests, pushes to main, and manual runs create stable `CI / quality`,
-  `CI / race`, `CI / api-contract`, and `CI / integration` checks without
-  repository secrets; GitHub settings must independently require them for
-  pull requests targeting `main`.
+  `CI / race`, `CI / api-contract`, `CI / integration`, and `CI / web` checks
+  without repository secrets; GitHub settings must independently require the
+  intended subset for pull requests targeting `main`.
 - Quality verifies modules and formatting, runs tests, vet and build, checks the
   diff, and retains test/coverage evidence for seven days.
 - Race runs the deterministic suite with the Linux race detector.
 - API contract installs only locked npm dependencies, validates the workflow
   schema, lints OpenAPI, compares the pull-request document with its base, and
   checks exact equality between documented and registered HTTP operations.
+- Web typechecks the Vue application and builds the production bundle from the
+  locked `web/package-lock.json`; it does not contact external services.
 - Workflow permissions are read-only, checkout credentials are not persisted,
   pull-request concurrency is cancellable, and third-party Actions use full SHAs.
 - Integration uses disposable repository-owned values rather than GitHub Secrets
@@ -289,9 +313,10 @@ Deployment automation remains outside this rollout.
 - Sanitized test and Compose evidence is retained for seven days. Sanitization,
   raw-report removal, `docker compose down -v --remove-orphans`, and artifact
   upload all run through `always()` paths.
-- The seven stable CI/security checks are the required target for pull requests
-  targeting `main`; API/settings evidence must prove strict up-to-date checks,
-  review rules, CODEOWNERS review, and administrator enforcement.
+- The seven currently protected CI/security checks remain the required target for
+  pull requests targeting `main` until the remote rules are updated with
+  `CI / web`; API/settings evidence must prove strict up-to-date checks, review
+  rules, CODEOWNERS review, and administrator enforcement.
 - Security checks run without repository secrets, use pinned Action/tool versions,
   and keep CodeQL's write permission scoped to its job.
 - Dependabot proposes weekly updates for Go, npm, Actions, and Compose/Docker

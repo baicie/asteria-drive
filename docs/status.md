@@ -1,6 +1,6 @@
 # Asteria Drive 当前交付状态
 
-> 最后核对：2026-08-22。本页是当前交付范围和状态的权威摘要；完成声明仍须由
+> 最后核对：2026-09-06。本页是当前交付范围和状态的权威摘要；完成声明仍须由
 > [实施与验收记录](mvp/implementation-log.md) 中的代码、命令或远端设置证据支持。
 > MVP 文档保留其历史范围和验收语义，产品 Phase 2-4 另立目标。
 
@@ -9,8 +9,9 @@
 | 后端 MVP P0-P4 | 已完成并合入 `main` | Namespace、直传上传、下载、回收、PostgreSQL/SeaweedFS 真实依赖验收 |
 | M2-1 身份与基础权限 | 已完成并合入 `main` | OIDC Resource Server、内部主体、租户成员和 owner/admin/editor/viewer 基础 RBAC |
 | M2-2 成员生命周期 | 已完成 | 成员列表、角色/状态更新、最后 active owner 保护、邀请、成员删除、组、ACL 和审计契约；本页所称完成指仓库代码和测试，不表示生产平台准入 |
-| CI、安全门禁与分支保护 | 仓库工作流与门禁合同已完成；远端策略存在漂移 | CI/security workflow、覆盖率门槛、真实 release packager dry-run 和集成清单已纳入仓库；当前远端仍需恢复 CODEOWNERS review、旧审批失效、最后推送后审批、ruleset 和 release Environment reviewer，详见生产收口清单 |
-| Release 与 API 加固 | 仓库门禁已实现；现有历史 Release 不是不可变证据 | `v0.1.1` 的归档、checksums、SPDX SBOM、Release subject provenance 与 OCI provenance 已验证；新的发布会在 GitHub Immutable Releases、tag 保护和复核环境未满足时主动失败 |
+| 本地 Web 控制台与开发环境 | 首版已实现，待提交 | Vue 控制台、Compose 本地全栈、真实 PostgreSQL/S3 multipart 冒烟、Vite 构建和 Playwright 流程测试已通过；详见 [本地冒烟证据](operations/evidence/local-console-smoke-20260916.md)。该控制台仍不是完整产品，也未进入 release 或生产准入 |
+| CI、安全门禁与分支保护 | 仓库合同与 `main` 远端保护已基本完成；独立发布治理仍不完整 | 远端已有七项 required checks、strict、1 个 PR approval、CODEOWNERS review、旧审批失效、最后推送后审批、administrator enforcement、conversation resolution，并禁止强推/删分支；`v*` ruleset `22372324` 已 active，创建仅允许 `baicie`，更新/删除禁止；`release` Environment 由 `baicie` 审批且允许自审，独立 reviewer 尚未配置 |
+| Release 与 API 加固 | 仓库门禁、tag 不可变基础和单人发布审批门已实现；生产候选仍需独立复核 | GitHub Immutable Releases 已启用，`v*` 创建仅允许 `baicie`、更新/删除已禁止，`release` Environment 要求 `baicie` reviewer 且禁止管理员 bypass；历史 `v0.1.1` 仍不是 immutable 证据，`v0.1.0-dev.0` 虽已 immutable 但不是生产候选；单人自审不满足独立安全/平台审批 |
 | staging 当前部署 | `v0.1.1` 已通过 GitHub Actions 部署并验证 | run `31713181762` 从受保护 `main` 部署固定 OCI digest，artifact `9186277164` 证明迁移 `3 -> 3`、server-managed secrets、鉴权读写、storage verifier `2/2`、loopback、容量门禁、PostgreSQL TLS 1.3/SCRAM/HBA/明文拒绝且未回滚；最终 root bootstrap 已更新到 merge commit `7c6565b` 的只读运维脚本 |
 | staging 周期监测 | 已通过受保护 `main` 启用并完成 TLS v2 实跑 | 每小时及手工 workflow 仅执行 root-owned、摘要固定的只读探针；run `31953366435` 的 artifact `9265267564` 证明 Compose/镜像/容器、loopback、健康、metrics、TLS 1.3、明文拒绝、Secret 属主边界与 85%/5 GiB 容量门禁；这不是生产监控、SIEM、外部告警或容量规划 |
 | staging 恢复演练 | 已通过受保护 `main` 自动化并完成 TLS v2 实跑 | run `31953850132` 的 artifact `9265397749` 证明 schema `3 -> 3`、15 表、`17 -> 17` 行、storage verifier `2/2`、恢复应用 smoke、TLS 1.3、容量和零残留；边界仍为 `staging-recovery-not-production`，且明确未证明 PITR/WAL 或对象版本恢复 |
@@ -26,6 +27,22 @@ KMS 或 secret-controller 轮换、公网 TLS ingress、生产监控/SIEM 与外
 项目不得描述为公网生产就绪。
 
 ## 最近一次复核
+
+2026-09-16，本地全栈 `compose.local.yaml` 启动通过；`scripts/smoke-local.ps1` 在真实
+PostgreSQL/SeaweedFS 上完成两分片上传、下载字节校验、目录列表、回收和永久清理。
+`web/` 的 `vue-tsc`、Vite production build 和 Playwright 浏览器流程测试均通过。
+本次同时修复 Zeus 自定义元素注册/版本不匹配、网页 multipart 上传和成功提示被刷新清除问题。
+该证据只覆盖隔离本机开发环境，不改变 Phase 1 生产门槛和 Phase 2-4 状态。
+
+2026-09-06，本地复核确认工作区无已跟踪改动；`go test ./...`、`go vet ./...`、
+`go build ./...`、GitHub Actions workflow lint 和 OpenAPI 校验均通过。远端 GitHub API
+复核显示 Immutable Releases 已启用；`main` 已启用 required pull-request review、
+CODEOWNERS review、旧审批失效和
+最后推送后审批；`v*` ruleset `22372324` 已 active 并禁止更新/删除。`release`
+Environment 已要求 `baicie` reviewer、允许 self-review 但禁止管理员 bypass；`v*` ruleset `22372324` 允许 `baicie` 创建并禁止更新/删除，但尚无独立 reviewer。`v0.1.1` 的 `isImmutable=false`，`v0.1.0-dev.0` 的
+`isImmutable=true`；截至本次复核，最新 staging monitor run
+[`34002981133`](https://github.com/baicie/asteria-drive/actions/runs/34002981133)
+也已通过；因此 PRD-10 仍保持开放。
 
 2026-08-16，staging TLS rollout 的最终 Secret 属主修复 PR
 [#53](https://github.com/baicie/asteria-drive/pull/53) 通过七项保护检查与额外 CodeQL，
