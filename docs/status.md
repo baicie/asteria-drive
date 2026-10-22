@@ -9,7 +9,7 @@
 | 后端 MVP P0-P4 | 已完成并合入 `main` | Namespace、直传上传、下载、回收、PostgreSQL/SeaweedFS 真实依赖验收 |
 | M2-1 身份与基础权限 | 已完成并合入 `main` | OIDC Resource Server、内部主体、租户成员和 owner/admin/editor/viewer 基础 RBAC |
 | M2-2 成员生命周期 | 已完成 | 成员列表、角色/状态更新、最后 active owner 保护、邀请、成员删除、组、ACL 和审计契约；本页所称完成指仓库代码和测试，不表示生产平台准入 |
-| 本地 Web 控制台与开发环境 | 首版已提交 PR（#71），待评审 | Vue 控制台、Compose 本地全栈、真实 PostgreSQL/S3 multipart 冒烟、Vite 构建和 Playwright 流程测试已通过；详见 [本地冒烟证据](operations/evidence/local-console-smoke-20260916.md)。该控制台仍不是完整产品，也未进入 release 或生产准入 |
+| 本地 Web 控制台与开发环境 | 首版已合入 `main`；第二增量（回收站、重命名/移动）已提交 PR（#74），待评审 | Vue 控制台、Compose 本地全栈、真实 PostgreSQL/S3 multipart 冒烟、Vite 构建和 Playwright 流程测试已通过；2026-10-22 增加回收站列表/恢复/永久删除与重命名/移动。详见 [本地冒烟证据](operations/evidence/local-console-smoke-20260916.md)。该控制台仍不是完整产品，也未进入 release 或生产准入 |
 | CI、安全门禁与分支保护 | 仓库合同与 `main` 远端保护已基本完成；独立发布治理仍不完整 | 远端已有八项 required checks（含 `CI / web`）、strict、administrator enforcement、conversation resolution，并禁止强推/删分支；required PR review（含 CODEOWNERS、旧审批失效、最后推送后审批）已于 2026-10-22 按仓库 owner 指示移除，独立 reviewer 仍未配置，因此不满足 PRD-09/PRD-10 的独立审批要求；`v*` ruleset `22372324` 已 active，创建仅允许 `baicie`，更新/删除禁止；`release` Environment 由 `baicie` 审批且允许自审 |
 | Release 与 API 加固 | 仓库门禁、tag 不可变基础和单人发布审批门已实现；生产候选仍需独立复核 | GitHub Immutable Releases 已启用，`v*` 创建仅允许 `baicie`、更新/删除已禁止，`release` Environment 要求 `baicie` reviewer 且禁止管理员 bypass；历史 `v0.1.1` 仍不是 immutable 证据，`v0.1.0-dev.0` 虽已 immutable 但不是生产候选；单人自审不满足独立安全/平台审批 |
 | staging 当前部署 | `v0.1.1` 已通过 GitHub Actions 部署并验证 | run `31713181762` 从受保护 `main` 部署固定 OCI digest，artifact `9186277164` 证明迁移 `3 -> 3`、server-managed secrets、鉴权读写、storage verifier `2/2`、loopback、容量门禁、PostgreSQL TLS 1.3/SCRAM/HBA/明文拒绝且未回滚；最终 root bootstrap 已更新到 merge commit `7c6565b` 的只读运维脚本 |
@@ -38,7 +38,9 @@ Playwright 浏览器流程在独立端口重跑 `1 passed`。同时按 ADR-0025 
 PR [#71](https://github.com/baicie/asteria-drive/pull/71)，全部 CI 与安全检查通过后已合入
 `main`（merge commit `806fad1`）；`CI / web` 首次通过后已加入 `main` 必需检查，远端现为
 八项。同日按仓库 owner 指示移除 required PR review（含 CODEOWNERS、旧审批失效、最后推送后
-审批），该治理偏离不满足 PRD-09/PRD-10 的独立审批要求。该证据只覆盖仓库门禁与隔离本机开发环境，不改变
+审批），该治理偏离不满足 PRD-09/PRD-10 的独立审批要求。2026-10-22 另提交 Web 控制台第二增量
+PR [#74](https://github.com/baicie/asteria-drive/pull/74)，增加回收站、重命名和移动，并通过
+ue-tsc、Vite build 与扩展后的 Playwright 流程。该证据只覆盖仓库门禁与隔离本机开发环境，不改变
 Phase 1 生产门槛和 Phase 2-4 状态。
 
 2026-09-16，本地全栈 `compose.local.yaml` 启动通过；`scripts/smoke-local.ps1` 在真实

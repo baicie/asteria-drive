@@ -982,3 +982,27 @@ last-push approval are no longer enforced; the eight required checks, strict,
 administrator enforcement, conversation resolution, and force-push/deletion
 blocks remain. This is a deliberate governance deviation, not evidence for
 PRD-09 or PRD-10.
+
+## 2026-10-22 - web console recycle bin and node actions
+
+The local Web console gained a recycle-bin view and node actions in PR #74:
+
+- recycle-bin listing from `GET /api/v1/recycle-bin`, with restore and permanent
+  purge actions that send the node revision in `If-Match`;
+- rename and move dialogs for files and directories, including a folder picker
+  for choosing a move destination;
+- Playwright coverage for rename, recycle, restore, and move in addition to the
+  existing login, folder creation, multipart upload, and download flow.
+
+Verification on 2026-10-22:
+
+```text
+npm run typecheck
+npm run build
+PLAYWRIGHT_PORT=43173 PLAYWRIGHT_CHANNEL=msedge npm run test:e2e
+1 passed
+git diff --check
+```
+
+This remains local development evidence. It does not change backend contracts or
+close any production gate.
