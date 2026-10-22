@@ -17,8 +17,8 @@ const (
 	setupNodeAction        = "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020"
 	uploadArtifactAction   = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
 	dependencyReviewAction = "actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294"
-	codeQLInitAction       = "github/codeql-action/init@f205ea1c3313d32999d8d6a48b4f6530d4437b38"
-	codeQLAnalyzeAction    = "github/codeql-action/analyze@f205ea1c3313d32999d8d6a48b4f6530d4437b38"
+	codeQLInitAction       = "github/codeql-action/init@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd"
+	codeQLAnalyzeAction    = "github/codeql-action/analyze@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd"
 )
 
 var (

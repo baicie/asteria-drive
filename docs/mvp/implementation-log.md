@@ -974,3 +974,11 @@ After `CI / web` passed on PR #71, the check was added to the `main` required
 status checks. The remote protection API now reports eight required checks with
 `strict=true`; this closes only the web-check requirement and does not change the
 open production review gates.
+
+On 2026-10-22 the repository owner also directed removal of the required
+pull-request review object from `main` protection to unblock the single-operator
+workflow. PR approval count, CODEOWNERS review, stale-approval dismissal, and
+last-push approval are no longer enforced; the eight required checks, strict,
+administrator enforcement, conversation resolution, and force-push/deletion
+blocks remain. This is a deliberate governance deviation, not evidence for
+PRD-09 or PRD-10.
