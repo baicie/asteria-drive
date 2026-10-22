@@ -43,6 +43,14 @@ interface Breadcrumb {
   name: string
 }
 
+interface RecycleEntry {
+  node: Node
+  original_parent_id: string
+  deleted_at: string
+}
+
+type ViewMode = 'files' | 'recycle'
+
 type Notice = { kind: 'success' | 'error'; text: string } | null
 
 const token = ref(localStorage.getItem('asteria.token') ?? '')
@@ -57,6 +65,16 @@ const busy = ref('')
 const uploadProgress = ref(0)
 const loginError = ref('')
 const notice = ref<Notice>(null)
+const viewMode = ref<ViewMode>('files')
+const recycleEntries = ref<RecycleEntry[]>([])
+const recycleLoading = ref(false)
+const renameTarget = ref<Node | null>(null)
+const renameValue = ref('')
+const moveTarget = ref<Node | null>(null)
+const movePath = ref<Breadcrumb[]>([])
+const moveDirectories = ref<Node[]>([])
+const moveLoading = ref(false)
+const moveError = ref('')
 
 const connected = computed(() => tenant.value !== null)
 const fileCount = computed(() => entries.value.filter((item) => item.kind === 'file').length)
@@ -170,6 +188,204 @@ async function refresh() {
   const current = currentDirectory.value
   if (!current) return
   await loadDirectory(current.id, breadcrumbs.value)
+}
+
+function revisionHeader(item: Node) {
+  return { 'If-Match': `"${item.revision}"` }
+}
+
+async function switchView(mode: ViewMode) {
+  if (mode === viewMode.value) return
+  viewMode.value = mode
+  clearNotice()
+  if (mode === 'recycle') {
+    await loadRecycleBin()
+  } else {
+    await refresh()
+  }
+}
+
+async function loadRecycleBin() {
+  recycleLoading.value = true
+  clearNotice()
+  try {
+    recycleEntries.value = (await api<RecycleEntry[]>('/api/v1/recycle-bin?limit=100')) ?? []
+  } catch (error) {
+    setNotice(error instanceof Error ? error.message : '无法读取回收站', 'error')
+  } finally {
+    recycleLoading.value = false
+  }
+}
+
+async function recycleEntry(item: Node) {
+  if (!window.confirm(`确定将「${item.name}」移入回收站吗？`)) return
+  busy.value = `recycle:${item.id}`
+  clearNotice()
+  try {
+    await api(`/api/v1/nodes/${encodeURIComponent(item.id)}`, {
+      method: 'DELETE',
+      headers: revisionHeader(item),
+    })
+    await refresh()
+    setNotice(`已将「${item.name}」移入回收站`)
+  } catch (error) {
+    setNotice(error instanceof Error ? error.message : '移入回收站失败', 'error')
+  } finally {
+    busy.value = ''
+  }
+}
+
+async function restoreEntry(entry: RecycleEntry) {
+  busy.value = `restore:${entry.node.id}`
+  clearNotice()
+  try {
+    await api<Node>(`/api/v1/recycle-bin/${encodeURIComponent(entry.node.id)}/restore`, {
+      method: 'POST',
+      headers: revisionHeader(entry.node),
+      body: '{}',
+    })
+    await loadRecycleBin()
+    setNotice(`已恢复「${entry.node.name}」`)
+  } catch (error) {
+    setNotice(error instanceof Error ? error.message : '恢复失败', 'error')
+  } finally {
+    busy.value = ''
+  }
+}
+
+async function purgeEntry(entry: RecycleEntry) {
+  if (!window.confirm(`永久删除「${entry.node.name}」后不可恢复，继续吗？`)) return
+  busy.value = `purge:${entry.node.id}`
+  clearNotice()
+  try {
+    await api(`/api/v1/recycle-bin/${encodeURIComponent(entry.node.id)}`, {
+      method: 'DELETE',
+      headers: revisionHeader(entry.node),
+    })
+    await loadRecycleBin()
+    setNotice(`已永久删除「${entry.node.name}」`)
+  } catch (error) {
+    setNotice(error instanceof Error ? error.message : '永久删除失败', 'error')
+  } finally {
+    busy.value = ''
+  }
+}
+
+function openRename(item: Node) {
+  renameTarget.value = item
+  renameValue.value = item.name
+  clearNotice()
+}
+
+async function submitRename() {
+  const target = renameTarget.value
+  if (!target) return
+  const name = renameValue.value.trim()
+  if (!name) {
+    setNotice('名称不能为空', 'error')
+    return
+  }
+  if (name === target.name) {
+    renameTarget.value = null
+    return
+  }
+  busy.value = `rename:${target.id}`
+  clearNotice()
+  try {
+    await api<Node>(`/api/v1/nodes/${encodeURIComponent(target.id)}`, {
+      method: 'PATCH',
+      headers: revisionHeader(target),
+      body: JSON.stringify({ name }),
+    })
+    renameTarget.value = null
+    await refresh()
+    setNotice(`已重命名为「${name}」`)
+  } catch (error) {
+    setNotice(error instanceof Error ? error.message : '重命名失败', 'error')
+  } finally {
+    busy.value = ''
+  }
+}
+
+async function loadMoveDirectories(path: Breadcrumb[]) {
+  const current = path[path.length - 1]
+  if (!current) return
+  moveLoading.value = true
+  moveError.value = ''
+  try {
+    const children = await api<Node[]>(`/api/v1/directories/${encodeURIComponent(current.id)}/children?limit=200`)
+    moveDirectories.value = (children ?? []).filter((item) => item.kind === 'directory')
+  } catch (error) {
+    moveError.value = error instanceof Error ? error.message : '无法读取目标文件夹'
+    moveDirectories.value = []
+  } finally {
+    moveLoading.value = false
+  }
+}
+
+async function openMove(item: Node) {
+  const rootId = tenant.value?.root_directory_id
+  if (!rootId) return
+  moveTarget.value = item
+  movePath.value = [{ id: rootId, name: '根目录' }]
+  clearNotice()
+  await loadMoveDirectories(movePath.value)
+}
+
+async function enterMoveDirectory(directory: Node) {
+  if (moveTarget.value?.id === directory.id) {
+    moveError.value = '不能移动到自身'
+    return
+  }
+  const path = [...movePath.value, { id: directory.id, name: directory.name }]
+  movePath.value = path
+  await loadMoveDirectories(path)
+}
+
+async function jumpMovePath(index: number) {
+  const path = movePath.value.slice(0, index + 1)
+  movePath.value = path
+  await loadMoveDirectories(path)
+}
+
+async function moveHere() {
+  const target = moveTarget.value
+  const destination = movePath.value[movePath.value.length - 1]
+  if (!target || !destination) return
+  if (target.id === destination.id) {
+    moveError.value = '不能移动到自身'
+    return
+  }
+  busy.value = `move:${target.id}`
+  moveError.value = ''
+  clearNotice()
+  try {
+    await api<Node>(`/api/v1/nodes/${encodeURIComponent(target.id)}`, {
+      method: 'PATCH',
+      headers: revisionHeader(target),
+      body: JSON.stringify({ parent_id: destination.id }),
+    })
+    moveTarget.value = null
+    await refresh()
+    setNotice(`已移动「${target.name}」`)
+  } catch (error) {
+    moveError.value = error instanceof Error ? error.message : '移动失败'
+  } finally {
+    busy.value = ''
+  }
+}
+
+function closeMove() {
+  moveTarget.value = null
+  movePath.value = []
+  moveDirectories.value = []
+  moveError.value = ''
+}
+
+function formatDeletedAt(value: string) {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  return date.toLocaleString('zh-CN', { hour12: false })
 }
 
 async function createFolder() {
@@ -358,16 +574,26 @@ onMounted(() => {
       <section v-else class="drive-layout">
         <div class="drive-heading">
           <div>
-            <span class="eyebrow">MY FILES</span>
-            <h1>文件空间</h1>
+            <span class="eyebrow">{{ viewMode === 'recycle' ? 'RECYCLE BIN' : 'MY FILES' }}</span>
+            <h1>{{ viewMode === 'recycle' ? '回收站' : '文件空间' }}</h1>
           </div>
           <div class="summary-pills">
-            <span><b>{{ folderCount }}</b> 个文件夹</span>
-            <span><b>{{ fileCount }}</b> 个文件</span>
+            <template v-if="viewMode === 'recycle'">
+              <span><b>{{ recycleEntries.length }}</b> 个回收项</span>
+            </template>
+            <template v-else>
+              <span><b>{{ folderCount }}</b> 个文件夹</span>
+              <span><b>{{ fileCount }}</b> 个文件</span>
+            </template>
           </div>
         </div>
 
-        <div class="toolbar">
+        <div class="view-tabs" role="tablist" aria-label="视图切换">
+          <button type="button" role="tab" :aria-selected="viewMode === 'files'" :class="{ active: viewMode === 'files' }" @click="switchView('files')">文件</button>
+          <button type="button" role="tab" :aria-selected="viewMode === 'recycle'" :class="{ active: viewMode === 'recycle' }" @click="switchView('recycle')">回收站</button>
+        </div>
+
+        <div v-if="viewMode === 'files'" class="toolbar">
           <div class="breadcrumb" aria-label="当前位置">
             <template v-for="(item, index) in breadcrumbs" :key="item.id">
               <button type="button" :class="{ current: index === breadcrumbs.length - 1 }" @click="openBreadcrumb(item, index)">
@@ -389,9 +615,16 @@ onMounted(() => {
           </div>
         </div>
 
+        <div v-else class="toolbar recycle-toolbar">
+          <div class="breadcrumb recycle-hint"><span class="home-icon">♻</span>回收站项在永久删除前可恢复</div>
+          <zw-button variant="secondary" size="sm" :disabled="recycleLoading" @click="loadRecycleBin">
+            {{ recycleLoading ? '读取中…' : '刷新' }}
+          </zw-button>
+        </div>
+
         <div v-if="notice" class="notice" :class="notice.kind" role="status">{{ notice.text }}</div>
 
-        <div class="file-card">
+        <div v-if="viewMode === 'files'" class="file-card">
           <div class="file-card-header">
             <span>名称</span><span>类型</span><span>大小</span><span>操作</span>
           </div>
@@ -409,14 +642,87 @@ onMounted(() => {
             <span class="file-kind">{{ formatType(item) }}</span>
             <span class="file-size">{{ item.kind === 'directory' ? '—' : formatSize(item.size) }}</span>
             <div class="row-action">
-              <zw-button v-if="item.kind === 'directory'" variant="secondary" size="sm" @click="openEntry(item)">打开</zw-button>
-              <zw-button v-else variant="secondary" size="sm" :disabled="busy === `download:${item.id}`" @click="downloadFile(item)">
+              <button v-if="item.kind === 'directory'" class="action-link" type="button" @click="openEntry(item)">打开</button>
+              <button v-else class="action-link" type="button" :disabled="busy === `download:${item.id}`" @click="downloadFile(item)">
                 {{ busy === `download:${item.id}` ? '准备中…' : '下载' }}
-              </zw-button>
+              </button>
+              <button class="action-link" type="button" @click="openRename(item)">重命名</button>
+              <button class="action-link" type="button" @click="openMove(item)">移动</button>
+              <button class="action-link danger" type="button" :disabled="busy === `recycle:${item.id}`" @click="recycleEntry(item)">回收</button>
             </div>
           </div>
         </div>
-        <div class="drive-footer"><span>由 Zeus UI + Vite 驱动</span><button type="button" @click="refresh">↻ 刷新</button></div>
+
+        <div v-else class="file-card recycle-card">
+          <div class="file-card-header recycle-row">
+            <span>名称</span><span>类型</span><span>删除时间</span><span>操作</span>
+          </div>
+          <div v-if="recycleLoading" class="state-message"><span class="spinner"></span>正在读取回收站…</div>
+          <div v-else-if="recycleEntries.length === 0" class="state-message empty-state">
+            <span class="empty-icon">♻</span>
+            <strong>回收站是空的</strong>
+            <span>被回收的文件和文件夹会出现在这里。</span>
+          </div>
+          <div v-for="entry in recycleEntries" v-else :key="entry.node.id" class="file-row recycle-row">
+            <div class="file-name">
+              <span class="item-icon" :class="entry.node.kind === 'directory' ? 'folder-icon' : 'file-icon'">{{ entry.node.kind === 'directory' ? '▰' : '▤' }}</span>
+              <span>{{ entry.node.name }}</span>
+            </div>
+            <span class="file-kind">{{ formatType(entry.node) }}</span>
+            <span class="file-size">{{ formatDeletedAt(entry.deleted_at) }}</span>
+            <div class="row-action">
+              <button class="action-link" type="button" :disabled="busy === `restore:${entry.node.id}`" @click="restoreEntry(entry)">
+                {{ busy === `restore:${entry.node.id}` ? '恢复中…' : '恢复' }}
+              </button>
+              <button class="action-link danger" type="button" :disabled="busy === `purge:${entry.node.id}`" @click="purgeEntry(entry)">
+                {{ busy === `purge:${entry.node.id}` ? '删除中…' : '永久删除' }}
+              </button>
+            </div>
+          </div>
+        </div>
+        <div class="drive-footer">
+          <span>由 Zeus UI + Vite 驱动</span>
+          <button type="button" @click="viewMode === 'recycle' ? loadRecycleBin() : refresh()">↻ 刷新</button>
+        </div>
+
+        <div v-if="renameTarget" class="modal-backdrop" @click.self="renameTarget = null">
+          <form class="modal-card" @submit.prevent="submitRename">
+            <h2>重命名</h2>
+            <p class="muted">输入新的名称，最多 255 个字符。</p>
+            <input v-model="renameValue" class="modal-input" maxlength="255" aria-label="新名称" />
+            <div class="modal-actions">
+              <button class="modal-cancel" type="button" @click="renameTarget = null">取消</button>
+              <button class="modal-confirm" type="submit" :disabled="busy === `rename:${renameTarget.id}`">保存</button>
+            </div>
+          </form>
+        </div>
+
+        <div v-if="moveTarget" class="modal-backdrop" @click.self="closeMove">
+          <div class="modal-card">
+            <h2>移动「{{ moveTarget.name }}」</h2>
+            <p class="muted">选择目标文件夹</p>
+            <div class="move-path">
+              <template v-for="(item, index) in movePath" :key="item.id">
+                <button type="button" @click="jumpMovePath(index)">{{ item.name }}</button>
+                <span v-if="index < movePath.length - 1">/</span>
+              </template>
+            </div>
+            <div class="move-list">
+              <div v-if="moveLoading" class="move-empty">正在读取…</div>
+              <div v-else-if="moveDirectories.length === 0" class="move-empty">当前文件夹没有子文件夹</div>
+              <template v-else>
+                <button v-for="directory in moveDirectories" :key="directory.id" class="move-item" type="button" @click="enterMoveDirectory(directory)">
+                  <span>▰ {{ directory.name }}</span><span>进入</span>
+                </button>
+              </template>
+            </div>
+            <p v-if="moveError" class="form-error" role="alert">{{ moveError }}</p>
+            <div class="modal-actions">
+              <button class="modal-cancel" type="button" @click="closeMove">取消</button>
+              <button class="modal-confirm" type="button" :disabled="busy === `move:${moveTarget.id}`" @click="moveHere">移动到这里</button>
+            </div>
+          </div>
+        </div>
       </section>
     </main>
   </div>
