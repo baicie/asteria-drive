@@ -109,5 +109,5 @@ git diff --check
   上的 `govulncheck@v1.9.0` 结果为 `No vulnerabilities found`。
 - 本次复核只覆盖仓库门禁与浏览器流程，不替代 2026-09-16 的真实 PostgreSQL/SeaweedFS
   冒烟，也不改变 staging 或生产准入边界。
-- 同日提交 PR #74，新增回收站列表/恢复/永久删除与重命名/移动；`npm run typecheck`、
+- 同日 PR #74 已合入 `main`（merge commit `ef60f9e`），新增回收站列表/恢复/永久删除与重命名/移动；`npm run typecheck`、
   `npm run build` 和扩展后的 Playwright 流程均通过（`1 passed`）。
