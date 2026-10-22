@@ -20,7 +20,7 @@ concurrency:
 
 env:
   GOTOOLCHAIN: local
-  GO_VERSION: 1.26.6
+  GO_VERSION: 1.27.3
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
 

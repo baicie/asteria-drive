@@ -112,8 +112,8 @@ func TestCIWorkflowTrustBoundaryAndStableJobs(t *testing.T) {
 
 	expectedEnvironment := map[string]string{
 		"GOTOOLCHAIN":        "local",
-		"GO_MIN_VERSION":     "1.25.13",
-		"GO_CURRENT_VERSION": "1.26.6",
+		"GO_MIN_VERSION":     "1.26.10",
+		"GO_CURRENT_VERSION": "1.27.3",
 		"NODE_VERSION":       "24.16.0",
 		"MIN_TOTAL_COVERAGE": "39.0",
 	}
@@ -190,6 +190,17 @@ func TestCIWorkflowTrustBoundaryAndStableJobs(t *testing.T) {
 				"go test ./internal/server -run '^TestOpenAPIOperationsMatchRegisteredRoutes$' -count=1",
 			},
 		},
+		"web": {
+			name: "CI / web", timeoutMinutes: 10,
+			actions: []string{checkoutAction, setupNodeAction},
+			commands: []string{
+				"npm ci --ignore-scripts",
+				"npm run typecheck",
+				"npm run build",
+				"npx playwright install --with-deps chromium",
+				"npm run test:e2e",
+			},
+		},
 	}
 	if len(workflow.Jobs) != len(expectedJobs) {
 		t.Fatalf("workflow has %d jobs, want %d", len(workflow.Jobs), len(expectedJobs))
@@ -243,7 +254,10 @@ func TestCIWorkflowTrustBoundaryAndStableJobs(t *testing.T) {
 				}
 			case setupNodeAction:
 				if fmt.Sprint(step.With["node-version"]) != `${{ env.NODE_VERSION }}` || fmt.Sprint(step.With["cache"]) != "npm" {
-					t.Errorf("api-contract has unexpected setup-node inputs: %#v", step.With)
+					t.Errorf("%s has unexpected setup-node inputs: %#v", jobID, step.With)
+				}
+				if jobID == "web" && fmt.Sprint(step.With["cache-dependency-path"]) != "web/package-lock.json" {
+					t.Errorf("web setup-node cache path = %#v, want web/package-lock.json", step.With["cache-dependency-path"])
 				}
 			}
 		}

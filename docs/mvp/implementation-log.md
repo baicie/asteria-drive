@@ -890,3 +890,87 @@ rulesets, and no required reviewer on the `release` Environment. The repository
 documents these as open platform gates rather than inferring them from workflow
 presence. The current closure checklist is the authoritative Definition of Done;
 staging evidence remains explicitly non-production.
+
+## 2026-09-06 - repository and platform recheck
+
+The local worktree was rechecked with no tracked-file changes. The following
+repository validations passed on the current release-gate branch:
+
+```text
+go test ./...
+go vet ./...
+go build ./...
+npm run lint:actions
+npm run lint:openapi
+git diff --check
+```
+
+The GitHub API now reports `immutable-releases.enabled=true`. The `main` branch
+has seven required checks, strict status checks, one required pull-request
+approval with CODEOWNERS review, stale-approval dismissal, approval after the
+last push, administrator enforcement, and conversation resolution. Active ruleset
+`22372324` allows `baicie` to create `v*` tags and forbids tag update and deletion.
+The `release` Environment requires `baicie` as reviewer, allows self-review, and
+disallows administrator bypass. `v0.1.1` remains `isImmutable=false`;
+`v0.1.0-dev.0` is immutable but is not a production candidate. PRD-10 therefore
+remains open until tag creation governance, release review, and independent
+candidate verification are all evidenced.
+
+The remote protection update then enabled one required pull-request approval,
+CODEOWNERS review, stale-approval dismissal, approval after the last push, and
+retained strict status checks, administrator enforcement, conversation resolution,
+and disabled force-push/deletion settings on `main`. Active ruleset `22372324`
+now targets `refs/tags/v*`, allows `baicie` to create tags, and forbids tag update
+and deletion. The `release`
+Environment requires `baicie`, allows self-review, and disallows administrator
+bypass. The `v*` ruleset allows `baicie` to create tags while forbidding update and
+deletion. This makes the single-operator Release workflow usable, but it does not
+satisfy the independent-review requirement; PRD-10 remains open until a separate
+reviewer and independently verified candidate are evidenced.
+
+## 2026-10-22 - local web console submission
+
+The local Web console, loopback Compose stack, real PostgreSQL/SeaweedFS smoke
+script, `asteria-server --healthcheck`, secret-free `CI / web` job, and supporting
+documentation were committed as `feat: add local web console and full-stack dev
+environment` and opened as PR #71.
+
+The Playwright harness now accepts `PLAYWRIGHT_PORT`, uses a same-origin mock
+signed URL, and fails fast instead of silently reusing an unrelated local server
+on port 4173. The browser flow passed on an isolated port:
+
+```text
+PLAYWRIGHT_PORT=43173 PLAYWRIGHT_CHANNEL=msedge npm run test:e2e
+1 passed
+```
+
+The following repository gates were rechecked on 2026-10-22 and passed:
+
+```text
+go test ./...
+go vet ./...
+go build ./...
+npm run typecheck
+npm run build
+npm run lint:actions
+npm run lint:openapi
+docker compose -f compose.local.yaml config --quiet
+git diff --check
+```
+
+This is local development and repository evidence only. It does not replace the
+2026-09-16 real PostgreSQL/SeaweedFS smoke evidence and does not close any Phase 1
+production gate.
+
+The same submission refreshes the security baseline because newly published
+advisories made the required checks red: the minimum supported Go compiler moves
+to 1.26.10, the current/release builder moves to 1.27.3, `golang.org/x/text`
+moves to v0.41.0, and the web lockfile overrides `source-map-js` to 1.2.2.
+ADR-0025 records the decision. A local `govulncheck@v1.9.0` run on Go 1.26.10
+reported no vulnerabilities; the scanner moved to v1.9.0 because v1.1.4 panics
+against the Go 1.27.3 HTTP client.
+
+After `CI / web` passed on PR #71, the check was added to the `main` required
+status checks. The remote protection API now reports eight required checks with
+`strict=true`; this closes only the web-check requirement and does not change the
+open production review gates.

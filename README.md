@@ -28,10 +28,65 @@ Outbox 和独立 Worker 属于后续产品目标。
 
 ### 依赖
 
-- Go 1.25.13 或更高版本
+- Go 1.26.10 或更高版本
 - Docker Engine 与 Docker Compose v2
 - PowerShell 7 或 Windows PowerShell 5.1（以下命令使用 PowerShell）
 - Node.js 24.16.0 与 npm 11（Actions schema 与 OpenAPI 契约校验需要）
+
+### Docker 一键启动（推荐）
+
+下面的 Compose 文件会在本机回环地址启动 PostgreSQL、SeaweedFS、数据库迁移、API 和网页控制台，
+不会复用仓库旧的依赖容器。镜像构建和示例凭据仅适用于隔离的本机开发环境，不是生产配置：
+
+```powershell
+docker compose -f compose.local.yaml config --quiet
+docker compose -f compose.local.yaml up -d --build --wait --wait-timeout 240
+docker compose -f compose.local.yaml ps
+```
+
+浏览器打开 `http://127.0.0.1:18080/` 使用网页控制台；API 地址为
+`http://127.0.0.1:18081`，metrics 地址为 `http://127.0.0.1:19090`，SeaweedFS S3 地址为
+`http://127.0.0.1:18333`。迁移服务成功退出后 API 才会启动；可用以下命令检查：
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:18080/healthz  # 网页反代
+Invoke-RestMethod http://127.0.0.1:18081/healthz  # API 直连
+Invoke-RestMethod http://127.0.0.1:18080/readyz
+```
+
+运行仓库自带的真实端到端冒烟。脚本会创建临时目录，上传一个跨越两个 S3 multipart
+分片的文件，校验下载字节和目录列表，然后回收并永久清理测试数据：
+
+```powershell
+.\scripts\smoke-local.ps1
+```
+
+网页控制台的类型检查、生产构建和浏览器级流程测试：
+
+```powershell
+Push-Location web
+npm ci
+npm run typecheck
+npm run build
+npx playwright install chromium
+npm run test:e2e
+Pop-Location
+```
+
+停止容器但保留本地命名卷：
+
+```powershell
+docker compose -f compose.local.yaml down
+```
+
+`verifier` 默认不启动；完成一次 API 写入验证后，可运行真实 PostgreSQL/S3 存储校验：
+
+```powershell
+docker compose -f compose.local.yaml --profile tools run --rm verifier
+```
+
+不要对包含需要保留数据的环境使用 `down -v`；本地卷名为
+`asteria-drive-local-postgres` 和 `asteria-drive-local-seaweedfs`。
 
 ### 1. 启动依赖
 
@@ -159,8 +214,8 @@ go test ./internal/server -run '^TestOpenAPIOperationsMatchRegisteredRoutes$' -c
 
 Linux race 也已在 Debian 13 容器中用 Go 1.24.4 + GCC 验证；完整结果、真实依赖地址和 OpenAPI lint
 见 [P4 证据页](docs/mvp/evidence/p4-live-baseline.md)。GitHub Actions 使用固定版本的工具和 Action 提交，
-已实现 `CI / quality`、`CI / race`、`CI / api-contract` 和 `CI / integration` 四项无 GitHub Secrets
-检查，详见 [CI 系统设计](docs/process/ci-system.md)。其中集成检查以固定 digest 的 PostgreSQL 与
+已实现 `CI / quality`、`CI / race`、`CI / api-contract`、`CI / integration` 和 `CI / web`
+五项无 GitHub Secrets 检查，详见 [CI 系统设计](docs/process/ci-system.md)。其中集成检查以固定 digest 的 PostgreSQL 与
 SeaweedFS 运行 21 个必需测试（18 个 PostgreSQL、1 个 SeaweedFS、2 个 live HTTP），结构化验证每个
 package 和测试均为 `pass`，任意 `skip` 都会失败；`always()` 路径会脱敏证据、保留 7 天并清理 Compose
 资源。仓库已定义 Rollout step 5 的检查和 review 合同，但 GitHub 远端保护策略仍需独立复核；

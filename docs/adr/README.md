@@ -30,6 +30,7 @@
 | [0022](0022-github-actions-staging-deployment.md) | GitHub Actions single-host staging deployment | Accepted |
 | [0023](0023-s3-control-and-public-presign-endpoints.md) | Separate private S3 control traffic from client-visible presigned URLs | Accepted |
 | [0024](0024-staging-postgresql-private-pki.md) | Staging PostgreSQL private PKI, TLS verification, and sanitized evidence | Accepted |
+| [0025](0025-go-toolchain-security-refresh-2026-10.md) | 2026-10 Go toolchain and dependency security refresh | Accepted |
 
 ## Conventions
 

@@ -71,8 +71,8 @@ func TestSecurityWorkflowTrustBoundaryAndJobs(t *testing.T) {
 	}
 	if !reflect.DeepEqual(workflow.Env, map[string]string{
 		"GOTOOLCHAIN":        "local",
-		"GO_MIN_VERSION":     "1.25.13",
-		"GO_CURRENT_VERSION": "1.26.6",
+		"GO_MIN_VERSION":     "1.26.10",
+		"GO_CURRENT_VERSION": "1.27.3",
 	}) {
 		t.Errorf("security env = %#v, want fixed Go policy", workflow.Env)
 	}
@@ -176,9 +176,9 @@ func TestSecurityWorkflowTrustBoundaryAndJobs(t *testing.T) {
 			if !reflect.DeepEqual(setupGoVersions, []string{`${{ env.GO_MIN_VERSION }}`, `${{ env.GO_CURRENT_VERSION }}`}) {
 				t.Errorf("job %q Go setup versions = %#v, want minimum then current", jobID, setupGoVersions)
 			}
-			govulncheckCommand := "go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./..."
+			govulncheckCommand := "go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./..."
 			if strings.Count(strings.Join(commands, "\n"), govulncheckCommand) != 2 {
-				t.Errorf("job %q must run govulncheck@v1.1.4 against both Go lanes", jobID)
+				t.Errorf("job %q must run govulncheck@v1.9.0 against both Go lanes", jobID)
 			}
 		}
 	}

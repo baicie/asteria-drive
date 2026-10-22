@@ -1,0 +1,37 @@
+{
+  "name": "asteria-drive-web",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Asteria Drive web console built with Zeus UI and Vite.",
+  "author": "baicie",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test:e2e": "playwright test",
+    "typecheck": "vue-tsc --noEmit"
+  },
+  "dependencies": {
+    "@zeus-js/zeus": "0.1.0-beta.8",
+    "@zeus-web/button": "0.1.0-beta.0",
+    "@zeus-web/input": "0.1.0-beta.0",
+    "@zeus-web/themes": "0.1.0-beta.0",
+    "@zeus-web/ui": "0.1.0-beta.0",
+    "vue": "^3.5.38"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.63.0",
+    "@types/node": "^24.0.0",
+    "@vitejs/plugin-vue": "^6.0.7",
+    "typescript": "^6.0.3",
+    "vite": "^8.0.16",
+    "vue-tsc": "^3.3.11"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "overrides": {
+    "source-map-js": "1.2.2"
+  }
+}
