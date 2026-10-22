@@ -21,7 +21,7 @@ gated by the configured `release` environment and immutable-release setting.
   while race uses the current Go 1.27.3. Automatic toolchain downloads are
   disabled in every job.
 - Contract tooling is locked by `package-lock.json` to Node.js 24.16.0,
-  Action Validator 0.6.0, and Redocly CLI 2.43.3.
+  Action Validator 0.6.0, and Redocly CLI 2.64.1.
 - `compose.yaml` pins PostgreSQL 17.5 and SeaweedFS 3.85 by image digest and
   exposes them only on host ports 15432 and 18333.
 - PostgreSQL tests use ASTERIA_TEST_DATABASE_URL.
@@ -201,7 +201,7 @@ receive id-token: write, attestations: write, or contents: write.
   requires an explicit policy update.
 - Use actions/setup-go pinned to its v5.5.0 commit with go.sum-based caching.
 - Set GOTOOLCHAIN=local so CI does not silently download a different compiler.
-- Use Node.js 24.16.0, Redocly CLI 2.43.3, and the web build/typecheck
+- Use Node.js 24.16.0, Redocly CLI 2.64.1, and the web build/typecheck
   toolchain from their committed npm lockfiles.
 - Pin every third-party Action to a full commit SHA and every external container
   to a digest. Dependabot updates those pins.
@@ -220,6 +220,14 @@ The rollout step 5 policy is the required target state for `main`:
 - require the branch to be up to date before merge;
 - enforce the policy for administrators and require CODEOWNERS review;
 - disable force pushes and branch deletion.
+
+The actual `main` protection state changed on 2026-10-22: the repository owner
+directed removal of the required pull-request review object. Review count,
+CODEOWNERS review, stale-approval dismissal, and last-push approval are no longer
+enforced. The eight required checks, strict up-to-date requirement, administrator
+enforcement, conversation resolution, and force-push/deletion blocks remain. This
+is a recorded deviation from the rollout step 5 target and must not be treated as
+satisfying PRD-09 or PRD-10 independent review.
 
 CODEOWNERS covers the repository by default and calls out workflow, ADR/process,
 and infrastructure paths explicitly. Linear-history enforcement remains a
