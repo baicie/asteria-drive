@@ -17,8 +17,8 @@ gated by the configured `release` environment and immutable-release setting.
   CodeQL without repository secrets; `.github/dependabot.yml` covers Go, npm,
   GitHub Actions, and Compose/Docker dependencies.
 - `go.mod` declares Go 1.25; quality and API checks use patched minimum Go
-  1.25.13,
-  while race uses the current Go 1.26.6. Automatic toolchain downloads are
+  1.26.10,
+  while race uses the current Go 1.27.3. Automatic toolchain downloads are
   disabled in every job.
 - Contract tooling is locked by `package-lock.json` to Node.js 24.16.0,
   Action Validator 0.6.0, and Redocly CLI 2.43.3.
@@ -94,7 +94,7 @@ concurrency are covered by the integration job.
 
 ### CI / integration
 
-Runner: Ubuntu 24.04 with Docker Compose v2 and Go 1.26.6. The job timeout is
+Runner: Ubuntu 24.04 with Docker Compose v2 and Go 1.27.3. The job timeout is
 25 minutes and it does not reference GitHub Secrets; all credentials are
 disposable values scoped to the isolated Compose project.
 
@@ -167,7 +167,7 @@ weekly at 03:17 UTC on Mondays, and manual dispatches:
 
 - `Security / govulncheck` runs the explicitly pinned
   `golang.org/x/vuln/cmd/govulncheck@v1.1.4` against the resolved module graph
-  with both patched minimum Go 1.25.13 and current Go 1.26.6;
+  with both patched minimum Go 1.26.10 and current Go 1.27.3;
 - `Security / dependency-review` runs only for pull requests and blocks newly
   introduced high or critical dependency vulnerabilities;
 - `Security / codeql` analyzes Go with the pinned CodeQL action and grants only
@@ -195,9 +195,10 @@ receive id-token: write, attestations: write, or contents: write.
 ## 5. Toolchain, action, and cache policy
 
 - Keep the Go language directive and the supported compiler policy separate.
-  Quality and API checks use patched minimum Go 1.25.13; race also covers the
-  current Go 1.26.6. ADR-0017 records the current compiler-floor increase; raising
-  either pin again requires an explicit policy update.
+  Quality and API checks use patched minimum Go 1.26.10; race also covers the
+  current Go 1.27.3. ADR-0017 records the original compiler-floor increase;
+  ADR-0025 records the 2026-10 security refresh. Raising either pin again
+  requires an explicit policy update.
 - Use actions/setup-go pinned to its v5.5.0 commit with go.sum-based caching.
 - Set GOTOOLCHAIN=local so CI does not silently download a different compiler.
 - Use Node.js 24.16.0, Redocly CLI 2.43.3, and the web build/typecheck

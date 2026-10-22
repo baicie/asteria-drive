@@ -927,3 +927,44 @@ bypass. The `v*` ruleset allows `baicie` to create tags while forbidding update 
 deletion. This makes the single-operator Release workflow usable, but it does not
 satisfy the independent-review requirement; PRD-10 remains open until a separate
 reviewer and independently verified candidate are evidenced.
+
+## 2026-10-22 - local web console submission
+
+The local Web console, loopback Compose stack, real PostgreSQL/SeaweedFS smoke
+script, `asteria-server --healthcheck`, secret-free `CI / web` job, and supporting
+documentation were committed as `feat: add local web console and full-stack dev
+environment` and opened as PR #71.
+
+The Playwright harness now accepts `PLAYWRIGHT_PORT`, uses a same-origin mock
+signed URL, and fails fast instead of silently reusing an unrelated local server
+on port 4173. The browser flow passed on an isolated port:
+
+```text
+PLAYWRIGHT_PORT=43173 PLAYWRIGHT_CHANNEL=msedge npm run test:e2e
+1 passed
+```
+
+The following repository gates were rechecked on 2026-10-22 and passed:
+
+```text
+go test ./...
+go vet ./...
+go build ./...
+npm run typecheck
+npm run build
+npm run lint:actions
+npm run lint:openapi
+docker compose -f compose.local.yaml config --quiet
+git diff --check
+```
+
+This is local development and repository evidence only. It does not replace the
+2026-09-16 real PostgreSQL/SeaweedFS smoke evidence and does not close any Phase 1
+production gate.
+
+The same submission refreshes the security baseline because newly published
+advisories made the required checks red: the minimum supported Go compiler moves
+to 1.26.10, the current/release builder moves to 1.27.3, `golang.org/x/text`
+moves to v0.41.0, and the web lockfile overrides `source-map-js` to 1.2.2.
+ADR-0025 records the decision. A local `govulncheck@v1.1.4` run on Go 1.26.10
+reported no vulnerabilities.

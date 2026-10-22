@@ -28,7 +28,7 @@ Outbox 和独立 Worker 属于后续产品目标。
 
 ### 依赖
 
-- Go 1.25.13 或更高版本
+- Go 1.26.10 或更高版本
 - Docker Engine 与 Docker Compose v2
 - PowerShell 7 或 Windows PowerShell 5.1（以下命令使用 PowerShell）
 - Node.js 24.16.0 与 npm 11（Actions schema 与 OpenAPI 契约校验需要）

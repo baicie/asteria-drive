@@ -9,7 +9,7 @@
 | 后端 MVP P0-P4 | 已完成并合入 `main` | Namespace、直传上传、下载、回收、PostgreSQL/SeaweedFS 真实依赖验收 |
 | M2-1 身份与基础权限 | 已完成并合入 `main` | OIDC Resource Server、内部主体、租户成员和 owner/admin/editor/viewer 基础 RBAC |
 | M2-2 成员生命周期 | 已完成 | 成员列表、角色/状态更新、最后 active owner 保护、邀请、成员删除、组、ACL 和审计契约；本页所称完成指仓库代码和测试，不表示生产平台准入 |
-| 本地 Web 控制台与开发环境 | 首版已实现，待提交 | Vue 控制台、Compose 本地全栈、真实 PostgreSQL/S3 multipart 冒烟、Vite 构建和 Playwright 流程测试已通过；详见 [本地冒烟证据](operations/evidence/local-console-smoke-20260916.md)。该控制台仍不是完整产品，也未进入 release 或生产准入 |
+| 本地 Web 控制台与开发环境 | 首版已提交 PR（#71），待评审 | Vue 控制台、Compose 本地全栈、真实 PostgreSQL/S3 multipart 冒烟、Vite 构建和 Playwright 流程测试已通过；详见 [本地冒烟证据](operations/evidence/local-console-smoke-20260916.md)。该控制台仍不是完整产品，也未进入 release 或生产准入 |
 | CI、安全门禁与分支保护 | 仓库合同与 `main` 远端保护已基本完成；独立发布治理仍不完整 | 远端已有七项 required checks、strict、1 个 PR approval、CODEOWNERS review、旧审批失效、最后推送后审批、administrator enforcement、conversation resolution，并禁止强推/删分支；`v*` ruleset `22372324` 已 active，创建仅允许 `baicie`，更新/删除禁止；`release` Environment 由 `baicie` 审批且允许自审，独立 reviewer 尚未配置 |
 | Release 与 API 加固 | 仓库门禁、tag 不可变基础和单人发布审批门已实现；生产候选仍需独立复核 | GitHub Immutable Releases 已启用，`v*` 创建仅允许 `baicie`、更新/删除已禁止，`release` Environment 要求 `baicie` reviewer 且禁止管理员 bypass；历史 `v0.1.1` 仍不是 immutable 证据，`v0.1.0-dev.0` 虽已 immutable 但不是生产候选；单人自审不满足独立安全/平台审批 |
 | staging 当前部署 | `v0.1.1` 已通过 GitHub Actions 部署并验证 | run `31713181762` 从受保护 `main` 部署固定 OCI digest，artifact `9186277164` 证明迁移 `3 -> 3`、server-managed secrets、鉴权读写、storage verifier `2/2`、loopback、容量门禁、PostgreSQL TLS 1.3/SCRAM/HBA/明文拒绝且未回滚；最终 root bootstrap 已更新到 merge commit `7c6565b` 的只读运维脚本 |
@@ -27,6 +27,17 @@ KMS 或 secret-controller 轮换、公网 TLS ingress、生产监控/SIEM 与外
 项目不得描述为公网生产就绪。
 
 ## 最近一次复核
+
+2026-10-22，本地复核 `go test ./...`、`go vet ./...`、`go build ./...`、`web/` 的
+`vue-tsc`/Vite production build、GitHub Actions workflow lint、OpenAPI lint、
+`docker compose -f compose.local.yaml config --quiet` 和 `git diff --check` 全部通过；
+Playwright 浏览器流程在独立端口重跑 `1 passed`。同时按 ADR-0025 将最低/当前 Go
+工具链提升到 1.26.10/1.27.3，升级 `golang.org/x/text` 到 v0.41.0，并将 `web/` 的
+传递依赖 `source-map-js` 固定到 1.2.2，以清除新增的 reachable 漏洞和依赖审查发现。
+本地 Web 控制台与开发环境改动已整理为
+PR [#71](https://github.com/baicie/asteria-drive/pull/71)，尚待评审与合并；`CI / web`
+需在首次成功运行后加入 `main` 必需检查。该证据只覆盖仓库门禁与隔离本机开发环境，不改变
+Phase 1 生产门槛和 Phase 2-4 状态。
 
 2026-09-16，本地全栈 `compose.local.yaml` 启动通过；`scripts/smoke-local.ps1` 在真实
 PostgreSQL/SeaweedFS 上完成两分片上传、下载字节校验、目录列表、回收和永久清理。

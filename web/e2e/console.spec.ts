@@ -131,7 +131,7 @@ test('logs in and completes a multipart upload from the console', async ({ page 
   await tokenInput.fill('browser-smoke-token')
   await page.locator('.primary-action').click()
 
-  await expect(page.getByText('文件空间')).toBeVisible()
+  await expect(page.getByRole('heading', { name: '文件空间' })).toBeVisible()
   await expect(page.getByText('Browser Smoke')).toBeVisible()
 
   const folderInput = page.locator('.new-folder input')

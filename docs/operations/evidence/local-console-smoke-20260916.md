@@ -96,3 +96,16 @@ git diff --check
 - 未验证生产 OIDC、生产 PostgreSQL PITR/WAL、对象锁、KMS 或 HA。
 - Playwright 使用确定性 API fixture 验证浏览器交互；真实 PostgreSQL/S3 字节路径由
   `scripts/smoke-local.ps1` 单独验证。
+
+## 2026-10-22 复核
+
+- Playwright 改为通过 `PLAYWRIGHT_PORT` 选择端口，并使用同源 mock signed URL；
+  在 `43173` 端口重跑 `1 passed`，不再依赖或复用占用 `4173` 的其他本地服务。
+- `go test ./...`、`go vet ./...`、`go build ./...`、`npm run typecheck`、`npm run build`、
+  `npm run lint:actions`、`npm run lint:openapi`、`docker compose -f compose.local.yaml
+  config --quiet` 和 `git diff --check` 全部通过。
+- 同时按 ADR-0025 将 Go 最低/当前工具链提升到 1.26.10/1.27.3，升级
+  `golang.org/x/text` 到 v0.41.0，并将 `source-map-js` 固定到 1.2.2；Go 1.26.10
+  上的 `govulncheck@v1.1.4` 结果为 `No vulnerabilities found`。
+- 本次复核只覆盖仓库门禁与浏览器流程，不替代 2026-09-16 的真实 PostgreSQL/SeaweedFS
+  冒烟，也不改变 staging 或生产准入边界。

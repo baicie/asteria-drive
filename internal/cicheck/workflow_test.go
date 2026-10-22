@@ -112,8 +112,8 @@ func TestCIWorkflowTrustBoundaryAndStableJobs(t *testing.T) {
 
 	expectedEnvironment := map[string]string{
 		"GOTOOLCHAIN":        "local",
-		"GO_MIN_VERSION":     "1.25.13",
-		"GO_CURRENT_VERSION": "1.26.6",
+		"GO_MIN_VERSION":     "1.26.10",
+		"GO_CURRENT_VERSION": "1.27.3",
 		"NODE_VERSION":       "24.16.0",
 		"MIN_TOTAL_COVERAGE": "39.0",
 	}

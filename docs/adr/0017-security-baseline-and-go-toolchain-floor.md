@@ -2,7 +2,9 @@
 
 ## Status
 
-Accepted on 2026-08-04; minimum patch level amended on 2026-08-16.
+Accepted on 2026-08-04; minimum patch level amended on 2026-08-16; toolchain
+floor superseded by [ADR-0025](0025-go-toolchain-security-refresh-2026-10.md) on
+2026-10-22.
 
 ## Context
 
