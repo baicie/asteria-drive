@@ -272,13 +272,14 @@ Target operational budgets:
 ## 8. Release boundary
 
 ADR-0018 defines the release format. `release.yml` builds the server and
-migration binaries for Linux `amd64` and `arm64` from a clean tag checkout,
-produces deterministic archives, a sorted SHA-256 manifest, an SPDX JSON SBOM,
-and a release manifest. The tag must be reachable from protected `main`.
+migration binaries for Linux `amd64` and `arm64`, the Web console static bundle,
+deterministic archives, a sorted SHA-256 manifest, SPDX JSON SBOMs for the Go
+artifacts and the Web dependency tree, and a release manifest. The tag must be
+reachable from protected `main`.
 
 The publish job is separated from the build job, requires the `release`
-environment, attaches GitHub OIDC provenance to checksum subjects and the
-published OCI digest, and refuses to publish unless GitHub Immutable Releases is
+environment, attaches GitHub OIDC provenance to checksum subjects and both
+published OCI digests, and refuses to publish unless GitHub Immutable Releases is
 enabled. It also refuses existing GitHub Release/OCI tags and verifies immutability
 after publication. Pull requests never publish or attest release artifacts.
 Deployment automation remains outside this rollout.
@@ -334,14 +335,14 @@ Deployment automation remains outside this rollout.
   publish artifacts.
 - Release archives contain both control-plane binaries and README metadata for
   Linux `amd64` and `arm64`, with deterministic timestamps and embedded build
-  metadata.
+  metadata; the Web console static bundle is included as a separate archive.
 - The release bundle contains a manifest, sorted SHA-256 checksums covering the
-  bundle, and an SPDX JSON SBOM.
+  bundle, and SPDX JSON SBOMs for the Go artifacts and the Web dependency tree.
 - Only the protected `release` environment may publish, with write and OIDC
   permissions limited to the publish job.
-- The published GHCR image is built for Linux `amd64` and `arm64`, carries the
-  source-commit tag, and receives a provenance attestation for its manifest
-  digest. Deployments pin that digest rather than a mutable tag.
+- The published GHCR images (API and Web) are built for Linux `amd64` and
+  `arm64`, carry the source-commit tag, and receive provenance attestations for
+  their manifest digests. Deployments pin those digests rather than mutable tags.
 
 ## 11. Definition of done for the full CI system
 

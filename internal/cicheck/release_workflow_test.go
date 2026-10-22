@@ -102,13 +102,16 @@ func TestReleaseWorkflowTrustBoundaryAndArtifactContract(t *testing.T) {
 	}
 	assertPinnedActions(t, build.Steps)
 	buildActions := workflowActions(build.Steps)
-	if !reflect.DeepEqual(buildActions, []string{checkoutAction, setupGoAction, sbomAction, uploadArtifactAction}) {
+	if !reflect.DeepEqual(buildActions, []string{checkoutAction, setupGoAction, setupNodeAction, sbomAction, sbomAction, uploadArtifactAction}) {
 		t.Errorf("build actions = %#v", buildActions)
 	}
 	buildCommands := workflowCommands(build.Steps)
 	for _, required := range []string{
 		"git merge-base --is-ancestor",
 		"go run ./tools/package-release",
+		"npm ci --ignore-scripts",
+		"npm run build",
+		"tar -czf",
 		"go run ./tools/release-checksums",
 	} {
 		if !strings.Contains(buildCommands, required) {
@@ -123,6 +126,9 @@ func TestReleaseWorkflowTrustBoundaryAndArtifactContract(t *testing.T) {
 	if publish.Name != "Release / publish" || publish.Needs != "build" || publish.Environment != "release" || publish.RunsOn != "ubuntu-24.04" {
 		t.Errorf("publish job metadata = %#v", publish)
 	}
+	if publish.Timeout != 20 {
+		t.Errorf("publish job timeout = %d, want 20", publish.Timeout)
+	}
 	if !reflect.DeepEqual(publish.Permissions, map[string]string{
 		"contents": "write", "id-token": "write", "attestations": "write", "packages": "write",
 	}) {
@@ -133,6 +139,7 @@ func TestReleaseWorkflowTrustBoundaryAndArtifactContract(t *testing.T) {
 	if !reflect.DeepEqual(publishActions, []string{
 		checkoutAction, downloadArtifactAction, setupQEMUAction, setupBuildxAction,
 		registryLoginAction, buildPushAction, attestProvenanceAction, attestProvenanceAction,
+		buildPushAction, attestProvenanceAction,
 	}) {
 		t.Errorf("publish actions = %#v", publishActions)
 	}
@@ -175,6 +182,23 @@ func TestReleaseWorkflowTrustBoundaryAndArtifactContract(t *testing.T) {
 		fmtString(imageAttestation.With["subject-digest"]) != "${{ steps.publish-image.outputs.digest }}" ||
 		imageAttestation.With["push-to-registry"] != true {
 		t.Errorf("publish job must attest the pushed OCI manifest digest: %#v", imageAttestation)
+	}
+	webImage := findWorkflowStepNamed(publish.Steps, "Build and publish immutable Web OCI image")
+	if webImage == nil || webImage.Uses != buildPushAction ||
+		fmtString(webImage.With["context"]) != "web" ||
+		fmtString(webImage.With["platforms"]) != "linux/amd64,linux/arm64" ||
+		webImage.With["push"] != true ||
+		!strings.Contains(fmtString(webImage.With["tags"]), "${{ env.IMAGE_NAME }}-web:${{ needs.build.outputs.tag }}") ||
+		!strings.Contains(fmtString(webImage.With["tags"]), "${{ env.IMAGE_NAME }}-web:sha-${{ needs.build.outputs.commit }}") ||
+		webImage.With["provenance"] != false {
+		t.Errorf("publish job must push a multi-architecture web image: %#v", webImage)
+	}
+	webAttestation := findWorkflowStepNamed(publish.Steps, "Attest Web OCI image")
+	if webAttestation == nil || webAttestation.Uses != attestProvenanceAction ||
+		fmtString(webAttestation.With["subject-name"]) != "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-web" ||
+		fmtString(webAttestation.With["subject-digest"]) != "${{ steps.publish-web-image.outputs.digest }}" ||
+		webAttestation.With["push-to-registry"] != true {
+		t.Errorf("publish job must attest the pushed web OCI manifest digest: %#v", webAttestation)
 	}
 }
 
