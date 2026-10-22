@@ -42,7 +42,7 @@ implemented:
 | --- | --- | --- | --- |
 | ci.yml | pull request, push to main, manual | required on protected main | quality, race, API contract, integration, and web console implemented |
 | security.yml | pull request, push to main, weekly schedule, manual | required on protected main | govulncheck, dependency review, CodeQL |
-| release.yml | v* tag, manual | protected release environment | reproducible binaries, checksums, SBOM and provenance |
+| release.yml | v* tag, manual | protected release environment | reproducible API binaries, Web static bundle, checksums, SBOMs and provenance |
 | dependabot.yml | GitHub configuration | n/a; implemented | Go modules, npm, Actions, and Docker update proposals |
 
 The workflows should not duplicate business commands. Each job calls commands

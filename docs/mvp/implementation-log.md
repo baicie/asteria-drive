@@ -1021,3 +1021,19 @@ git diff --check
 
 This remains local development evidence. It does not change backend contracts or
 close any production gate.
+## 2026-10-22 - v0.2.0 release
+
+Release `v0.2.0` was published from protected `main` commit
+`5169da638beac679c9cfed66757159474de879dc` by run
+[`39786795936`](https://github.com/baicie/asteria-drive/actions/runs/39786795936).
+The Release is immutable and contains:
+
+- API OCI digest `sha256:964e71a496e0800a48aaeb9d513f3927d175927a7e271dde37e0570532dc4853`;
+- Web OCI digest `sha256:135661c53b8e77d79f5a0c8e39638fee1e6580c00e1950dacd6e53243f008469`;
+- Linux `amd64`/`arm64` API archives, Web static bundle, two SPDX SBOMs,
+  `checksums.txt`, and `release-manifest.json`.
+
+The release workflow now builds and attests both multi-architecture images and
+refuses to overwrite either image tag. Staging remains pinned to `v0.1.1`; moving
+it to `v0.2.0` requires reinstalling the root-owned bootstrap/monitor/recovery
+scripts before the deployment and monitoring evidence can be regenerated.
