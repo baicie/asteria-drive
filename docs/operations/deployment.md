@@ -16,10 +16,13 @@ migration and bucket creation are disabled.
 ## Automated single-host staging
 
 The `Deploy staging` workflow provides a narrower operational target for the first
-real server rollout. It verifies the `v0.1.1` OCI provenance and deploys only
-`ghcr.io/baicie/asteria-drive@sha256:2b73f8a7a271c0d7d6c7f73e15987b5e29290437146f07a57b57b9aef031d842`
+real server rollout. It verifies the `v0.2.0` OCI provenance and, after explicit
+approval, deploys only
+`ghcr.io/baicie/asteria-drive@sha256:964e71a496e0800a48aaeb9d513f3927d175927a7e271dde37e0570532dc4853`
 through a dedicated SSH key with strict host-key verification. Application secrets
-remain in server-managed Docker volumes and are not GitHub Secrets.
+remain in server-managed Docker volumes and are not GitHub Secrets. The checked-in
+pins are a candidate; the staging host remains on `v0.1.1` until root bootstrap and
+deployment approval are completed.
 
 The staging API, S3 diagnostic, and metrics ports bind to loopback. The workflow runs
 the migration from a candidate Compose file, verifies the schema transition and

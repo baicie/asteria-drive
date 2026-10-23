@@ -1,8 +1,10 @@
 # Docker staging deployment
 
-This target deploys the immutable `v0.1.1` image to one selected Docker host. It is
+This target deploys the immutable `v0.2.0` image to one selected Docker host. It is
 an operational staging target, not the production topology in
-`docs/operations/deployment.md`.
+`docs/operations/deployment.md`. The repository pins are a deployment candidate:
+the host remains on `v0.1.1` until the root-owned bootstrap has been refreshed and a
+separate deployment approval has completed.
 
 The API (`18080`), S3 diagnostic (`18333`), and metrics (`19090`) ports bind only to
 host loopback. PostgreSQL is reachable only on an internal Docker network.
@@ -37,7 +39,7 @@ PKI state and does not rotate or repair it implicitly.
 
 The legacy `database-url` remains in the application secret volume only so the
 previous active Compose definition can be restored if the first TLS candidate
-fails. The `v0.1.1` API, migration, and verifier all read `database-url-tls` with
+fails. The `v0.2.0` API, migration, and verifier all read `database-url-tls` with
 `sslmode=verify-full`. The API retains the staging `development` boundary; migration
 runs with `ASTERIA_ENV=production` to exercise the released DSN guardrail.
 
@@ -50,7 +52,7 @@ space. The deployment also checks the root filesystem, Docker data root, and bot
 application data volumes before accepting an 85% usage / 5 GiB reserve guard. These
 limits protect the shared staging host; they are not a production capacity plan.
 
-The `v0.1.1` binary can separate S3 control and public presign endpoints, but this
+The `v0.2.0` binary can separate S3 control and public presign endpoints, but this
 Compose target intentionally leaves the public endpoint unset. It therefore uses
 `http://seaweedfs:8333` for both operations and presigned URLs. The deployment smoke
 test reaches that exact signed host through the loopback mapping with
@@ -58,7 +60,7 @@ test reaches that exact signed host through the loopback mapping with
 platform overlay still needs a client-visible HTTPS endpoint, trusted DNS/TLS,
 CORS, and real external transfer evidence before serving public clients.
 
-The `Deploy staging` workflow verifies the `v0.1.1` OCI attestation, deploys the exact
+The `Deploy staging` workflow verifies the `v0.2.0` OCI attestation, deploys the exact
 image digest, runs forward-only migrations, checks health/readiness, performs an
 authenticated multipart upload and byte-for-byte download, scrapes metrics, requires
 the storage verifier to inspect at least one healthy object, and uploads secret-free

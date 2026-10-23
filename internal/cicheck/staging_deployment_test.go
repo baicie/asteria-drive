@@ -14,7 +14,9 @@ import (
 )
 
 const (
-	stagingImage             = "ghcr.io/baicie/asteria-drive@sha256:2b73f8a7a271c0d7d6c7f73e15987b5e29290437146f07a57b57b9aef031d842"
+	stagingImage             = "ghcr.io/baicie/asteria-drive@sha256:964e71a496e0800a48aaeb9d513f3927d175927a7e271dde37e0570532dc4853"
+	stagingReleaseTag        = "v0.2.0"
+	stagingReleaseCommit     = "5169da638beac679c9cfed66757159474de879dc"
 	stagingSecretHelperImage = "chrislusf/seaweedfs:3.85@sha256:49312939c00c01e5ee6afbd7d728b18027821d3764c35a797a72acd4fdf3296a"
 )
 
@@ -36,7 +38,7 @@ func TestStagingDeploymentWorkflowTrustBoundary(t *testing.T) {
 	}
 	for _, required := range []string{
 		stagingImage,
-		"deploy-v0.1.1",
+		"deploy-v0.2.0",
 		"github.ref == 'refs/heads/main'",
 		"gh attestation verify",
 		"--signer-workflow baicie/asteria-drive/.github/workflows/release.yml",
@@ -90,6 +92,15 @@ func TestStagingDeploymentWorkflowTrustBoundary(t *testing.T) {
 	if workflow.Name != "Deploy staging" {
 		t.Errorf("workflow name = %q, want Deploy staging", workflow.Name)
 	}
+	for key, want := range map[string]string{
+		"RELEASE_TAG":    stagingReleaseTag,
+		"RELEASE_COMMIT": stagingReleaseCommit,
+		"IMAGE":          stagingImage,
+	} {
+		if got := workflow.Env[key]; got != want {
+			t.Errorf("staging deployment env %s = %q, want %q", key, got, want)
+		}
+	}
 	if len(workflow.On) != 1 {
 		t.Fatalf("workflow triggers = %#v, want only workflow_dispatch", workflow.On)
 	}
@@ -112,7 +123,7 @@ func TestStagingDeploymentWorkflowTrustBoundary(t *testing.T) {
 	if job.Name != "Deploy / staging" || job.RunsOn != "ubuntu-24.04" || job.Environment != "staging" || job.TimeoutMinutes != 20 {
 		t.Errorf("unexpected deploy job contract: %#v", job)
 	}
-	if job.If != "github.ref == 'refs/heads/main' && inputs.confirmation == 'deploy-v0.1.1'" {
+	if job.If != "github.ref == 'refs/heads/main' && inputs.confirmation == 'deploy-v0.2.0'" {
 		t.Errorf("deploy job condition = %q", job.If)
 	}
 	if len(job.Permissions) != 0 {
@@ -155,6 +166,8 @@ func TestStagingComposePinsImagesAndKeepsPortsOnLoopback(t *testing.T) {
 		"127.0.0.1:19090:9090",
 		"internal: true",
 		"asteria-drive-staging-loopback",
+		"com.baicie.asteria.release: v0.2.0",
+		"com.baicie.asteria.source: 5169da638beac679c9cfed66757159474de879dc",
 		"-master.volumePreallocate=false",
 		"-master.volumeSizeLimitMB=256",
 		"-volume.max=8",
@@ -512,7 +525,7 @@ func TestStagingMonitorWorkflowAndScriptTrustBoundary(t *testing.T) {
 	}
 	monitorText := string(monitor)
 	for _, required := range []string{
-		"sha256:2b73f8a7a271c0d7d6c7f73e15987b5e29290437146f07a57b57b9aef031d842",
+		"sha256:964e71a496e0800a48aaeb9d513f3927d175927a7e271dde37e0570532dc4853",
 		"asteria-drive-staging-monitor/v2",
 		"status=\"failed\"",
 		"trap finish EXIT",
