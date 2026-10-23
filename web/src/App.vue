@@ -1,84 +1,91 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-
-type NodeKind = 'directory' | 'file'
-
-interface Tenant {
-  display_name: string
-  root_directory_id: string
-}
-
-interface Node {
-  id: string
-  parent_id?: string
-  kind: NodeKind
-  name: string
-  size?: number
-  mime_type?: string
-  revision: number
-}
-
-interface UploadSession {
-  id: string
-  status: string
-  part_size: number
-  expected_size: number
-}
-
-interface SignedPart {
-  part_number: number
-  method: string
-  url: string
-  required_headers?: Record<string, string>
-}
-
-interface CompletedPart {
-  part_number: number
-  etag: string
-  size: number
-}
-
-interface Breadcrumb {
-  id: string
-  name: string
-}
-
-interface RecycleEntry {
-  node: Node
-  original_parent_id: string
-  deleted_at: string
-}
+import { api as apiRequest } from './api/client'
+import type { Breadcrumb, Node, Notice, RecycleEntry, Tenant } from './api/types'
+import { openDownloadWindow } from './features/downloads/download-window'
+import MoveDialog from './features/files/MoveDialog.vue'
+import RenameDialog from './features/files/RenameDialog.vue'
+import { useDirectory } from './features/files/use-directory'
+import { useMovePicker } from './features/files/use-move-picker'
+import { useRecycleBin } from './features/recycle/use-recycle-bin'
+import { useUploadTask } from './features/uploads/use-upload-task'
+import { newIdempotencyKey } from './lib/idempotency'
 
 type ViewMode = 'files' | 'recycle'
 
-type Notice = { kind: 'success' | 'error'; text: string } | null
-
 const token = ref(localStorage.getItem('asteria.token') ?? '')
 const tenant = ref<Tenant | null>(null)
-const currentDirectory = ref<Node | null>(null)
-const entries = ref<Node[]>([])
-const breadcrumbs = ref<Breadcrumb[]>([])
 const folderName = ref('')
 const fileInput = ref<HTMLInputElement | null>(null)
-const loading = ref(false)
 const busy = ref('')
-const uploadProgress = ref(0)
 const loginError = ref('')
 const notice = ref<Notice>(null)
 const viewMode = ref<ViewMode>('files')
-const recycleEntries = ref<RecycleEntry[]>([])
-const recycleLoading = ref(false)
 const renameTarget = ref<Node | null>(null)
-const renameValue = ref('')
-const moveTarget = ref<Node | null>(null)
-const movePath = ref<Breadcrumb[]>([])
-const moveDirectories = ref<Node[]>([])
-const moveLoading = ref(false)
-const moveError = ref('')
+
+// A response started for an earlier modal or session must never overwrite a newer view.
+let connectionGeneration = 0
 
 const connected = computed(() => tenant.value !== null)
-const fileCount = computed(() => entries.value.filter((item) => item.kind === 'file').length)
-const folderCount = computed(() => entries.value.filter((item) => item.kind === 'directory').length)
+
+const {
+  currentDirectory,
+  entries,
+  breadcrumbs,
+  loading,
+  loadingMore: directoryLoadingMore,
+  cursor: directoryCursor,
+  fileCount,
+  folderCount,
+  load: loadDirectory,
+  loadMore: loadMoreDirectory,
+  refresh: refreshDirectory,
+  generationSnapshot: directoryGenerationSnapshot,
+  reset: resetDirectory,
+} = useDirectory({ token, notify: setNotice, clearNotice })
+
+const {
+  entries: recycleEntries,
+  loading: recycleLoading,
+  loadingMore: recycleLoadingMore,
+  cursor: recycleCursor,
+  load: loadRecycleBin,
+  loadMore: loadMoreRecycleBin,
+  reset: resetRecycleBin,
+} = useRecycleBin({ token, notify: setNotice, clearNotice })
+
+const {
+  target: moveTarget,
+  path: movePath,
+  directories: moveDirectories,
+  loading: moveLoading,
+  loadingMore: moveLoadingMore,
+  error: moveError,
+  cursor: moveCursor,
+  open: openMovePicker,
+  loadMore: loadMoreMoveDirectories,
+  enter: enterMoveDirectory,
+  jump: jumpMovePath,
+  close: closeMovePicker,
+} = useMovePicker({ token })
+
+const {
+  progress: uploadProgress,
+  phase: uploadPhase,
+  cancelling: uploadCancelling,
+  start: startUpload,
+  cancel: cancelUpload,
+  cancelForLogout: cancelUploadForLogout,
+} = useUploadTask({
+  token,
+  busy,
+  getParent: () => currentDirectory.value,
+  currentDirectory,
+  directoryGeneration: directoryGenerationSnapshot,
+  refreshDirectory,
+  notify: setNotice,
+  clearNotice,
+})
 
 function onTokenChange(event: Event) {
   const value = (event as CustomEvent<{ value?: string }>).detail?.value
@@ -98,51 +105,13 @@ function clearNotice() {
   notice.value = null
 }
 
-function errorMessage(body: unknown, status: number) {
-  if (body && typeof body === 'object') {
-    const value = body as { error?: { message?: string }; message?: string }
-    if (value.error?.message) return value.error.message
-    if (value.message) return value.message
-  }
-  return `请求失败（HTTP ${status}）`
-}
-
 async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const headers = new Headers(init.headers)
-  if (token.value) headers.set('Authorization', `Bearer ${token.value}`)
-  if (init.body && !(init.body instanceof FormData) && !headers.has('Content-Type')) {
-    headers.set('Content-Type', 'application/json')
-  }
-
-  const response = await fetch(path, { ...init, headers })
-  const body = response.status === 204 ? null : await response.json().catch(() => null)
-  if (!response.ok) throw new Error(errorMessage(body, response.status))
-  return ((body as { data?: T } | null)?.data ?? body) as T
+  return apiRequest<T>(path, { ...init, token: token.value })
 }
 
-function newIdempotencyKey() {
-  return globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`
-}
-
-async function loadDirectory(id: string, nextBreadcrumbs: Breadcrumb[]) {
-  loading.value = true
-  clearNotice()
-  try {
-    const [directory, children] = await Promise.all([
-      api<Node>(`/api/v1/directories/${encodeURIComponent(id)}`),
-      api<Node[]>(`/api/v1/directories/${encodeURIComponent(id)}/children?limit=100`),
-    ])
-    currentDirectory.value = directory
-    entries.value = children ?? []
-    breadcrumbs.value = nextBreadcrumbs
-  } catch (error) {
-    setNotice(error instanceof Error ? error.message : '无法读取文件夹', 'error')
-  } finally {
-    loading.value = false
-  }
-}
 
 async function connect() {
+  const generation = ++connectionGeneration
   token.value = token.value.trim()
   loginError.value = ''
   clearNotice()
@@ -154,23 +123,34 @@ async function connect() {
   loading.value = true
   try {
     const result = await api<Tenant>('/api/v1/tenant')
+    if (generation !== connectionGeneration) return
+    const loaded = await loadDirectory(result.root_directory_id, [{ id: result.root_directory_id, name: '根目录' }])
+    if (generation !== connectionGeneration) return
+    if (!loaded) throw new Error('根目录读取失败，连接未完成')
     tenant.value = result
     localStorage.setItem('asteria.token', token.value)
-    await loadDirectory(result.root_directory_id, [{ id: result.root_directory_id, name: '根目录' }])
   } catch (error) {
+    if (generation !== connectionGeneration) return
     tenant.value = null
     loginError.value = error instanceof Error ? error.message : '连接失败'
   } finally {
-    loading.value = false
+    if (generation === connectionGeneration) loading.value = false
   }
 }
 
 function logout() {
+  // Cancel any in-flight S3 transport before invalidating the current UI session.
+  // Upload cleanup uses the credential captured at upload start, not the cleared reactive token.
+  cancelUploadForLogout()
+  busy.value = ''
+  connectionGeneration += 1
+  resetDirectory()
+  resetRecycleBin()
+  closeMovePicker()
   token.value = ''
   tenant.value = null
-  currentDirectory.value = null
-  entries.value = []
-  breadcrumbs.value = []
+  renameTarget.value = null
+  viewMode.value = 'files'
   localStorage.removeItem('asteria.token')
   clearNotice()
 }
@@ -185,9 +165,7 @@ async function openBreadcrumb(item: Breadcrumb, index: number) {
 }
 
 async function refresh() {
-  const current = currentDirectory.value
-  if (!current) return
-  await loadDirectory(current.id, breadcrumbs.value)
+  await refreshDirectory()
 }
 
 function revisionHeader(item: Node) {
@@ -201,19 +179,8 @@ async function switchView(mode: ViewMode) {
   if (mode === 'recycle') {
     await loadRecycleBin()
   } else {
+    resetRecycleBin()
     await refresh()
-  }
-}
-
-async function loadRecycleBin() {
-  recycleLoading.value = true
-  clearNotice()
-  try {
-    recycleEntries.value = (await api<RecycleEntry[]>('/api/v1/recycle-bin?limit=100')) ?? []
-  } catch (error) {
-    setNotice(error instanceof Error ? error.message : '无法读取回收站', 'error')
-  } finally {
-    recycleLoading.value = false
   }
 }
 
@@ -273,14 +240,13 @@ async function purgeEntry(entry: RecycleEntry) {
 
 function openRename(item: Node) {
   renameTarget.value = item
-  renameValue.value = item.name
   clearNotice()
 }
 
-async function submitRename() {
+async function submitRename(value: string) {
   const target = renameTarget.value
   if (!target) return
-  const name = renameValue.value.trim()
+  const name = value.trim()
   if (!name) {
     setNotice('名称不能为空', 'error')
     return
@@ -307,45 +273,11 @@ async function submitRename() {
   }
 }
 
-async function loadMoveDirectories(path: Breadcrumb[]) {
-  const current = path[path.length - 1]
-  if (!current) return
-  moveLoading.value = true
-  moveError.value = ''
-  try {
-    const children = await api<Node[]>(`/api/v1/directories/${encodeURIComponent(current.id)}/children?limit=200`)
-    moveDirectories.value = (children ?? []).filter((item) => item.kind === 'directory')
-  } catch (error) {
-    moveError.value = error instanceof Error ? error.message : '无法读取目标文件夹'
-    moveDirectories.value = []
-  } finally {
-    moveLoading.value = false
-  }
-}
-
 async function openMove(item: Node) {
   const rootId = tenant.value?.root_directory_id
   if (!rootId) return
-  moveTarget.value = item
-  movePath.value = [{ id: rootId, name: '根目录' }]
   clearNotice()
-  await loadMoveDirectories(movePath.value)
-}
-
-async function enterMoveDirectory(directory: Node) {
-  if (moveTarget.value?.id === directory.id) {
-    moveError.value = '不能移动到自身'
-    return
-  }
-  const path = [...movePath.value, { id: directory.id, name: directory.name }]
-  movePath.value = path
-  await loadMoveDirectories(path)
-}
-
-async function jumpMovePath(index: number) {
-  const path = movePath.value.slice(0, index + 1)
-  movePath.value = path
-  await loadMoveDirectories(path)
+  await openMovePicker(item, rootId)
 }
 
 async function moveHere() {
@@ -365,7 +297,7 @@ async function moveHere() {
       headers: revisionHeader(target),
       body: JSON.stringify({ parent_id: destination.id }),
     })
-    moveTarget.value = null
+    closeMovePicker()
     await refresh()
     setNotice(`已移动「${target.name}」`)
   } catch (error) {
@@ -376,10 +308,7 @@ async function moveHere() {
 }
 
 function closeMove() {
-  moveTarget.value = null
-  movePath.value = []
-  moveDirectories.value = []
-  moveError.value = ''
+  closeMovePicker()
 }
 
 function formatDeletedAt(value: string) {
@@ -417,74 +346,18 @@ function chooseFile() {
 async function uploadFile(event: Event) {
   const input = event.target as HTMLInputElement
   const file = input.files?.[0]
-  const parent = currentDirectory.value
   input.value = ''
-  if (!file || !parent) return
-  if (file.size < 1) {
-    setNotice('不能上传空文件', 'error')
-    return
-  }
-
-  busy.value = 'upload'
-  uploadProgress.value = 0
-  clearNotice()
-  let uploadId = ''
-  try {
-    const upload = await api<UploadSession>('/api/v1/uploads', {
-      method: 'POST',
-      headers: { 'Idempotency-Key': newIdempotencyKey() },
-      body: JSON.stringify({
-        parent_id: parent.id,
-        name: file.name,
-        size: file.size,
-        mime_type: file.type || 'application/octet-stream',
-      }),
-    })
-    uploadId = upload.id
-    if (!Number.isInteger(upload.part_size) || upload.part_size < 1) {
-      throw new Error('服务端返回了无效的分片大小')
-    }
-
-    const partCount = Math.ceil(file.size / upload.part_size)
-    if (partCount > 10000) throw new Error('文件过大，超过单次上传的 10000 个分片上限')
-    const completedParts: CompletedPart[] = []
-    for (let index = 0; index < partCount; index += 1) {
-      const partNumber = index + 1
-      const start = index * upload.part_size
-      const chunk = file.slice(start, Math.min(start + upload.part_size, file.size))
-      const signed = await api<SignedPart>(`/api/v1/uploads/${upload.id}/parts/sign`, {
-        method: 'POST',
-        body: JSON.stringify({ part_number: partNumber }),
-      })
-      const objectResponse = await fetch(signed.url, {
-        method: signed.method,
-        headers: signed.required_headers ?? {},
-        body: chunk,
-      })
-      if (!objectResponse.ok) throw new Error(`对象存储上传失败（HTTP ${objectResponse.status}）`)
-      const etag = objectResponse.headers.get('ETag') ?? objectResponse.headers.get('etag') ?? ''
-      if (!etag) throw new Error(`分片 ${partNumber} 未返回 ETag`)
-      completedParts.push({ part_number: signed.part_number, etag, size: chunk.size })
-      uploadProgress.value = Math.round((partNumber / partCount) * 100)
-    }
-    await api(`/api/v1/uploads/${upload.id}/complete`, {
-      method: 'POST',
-      body: JSON.stringify({ parts: completedParts }),
-    })
-    await refresh()
-    setNotice(`已上传「${file.name}」`)
-  } catch (error) {
-    if (uploadId) {
-      await api(`/api/v1/uploads/${uploadId}`, { method: 'DELETE' }).catch(() => undefined)
-    }
-    setNotice(error instanceof Error ? error.message : '上传失败', 'error')
-  } finally {
-    busy.value = ''
-    uploadProgress.value = 0
-  }
+  if (!file) return
+  await startUpload(file)
 }
 
 async function downloadFile(item: Node) {
+  // The window must be opened while the click's user activation is still present.
+  const target = openDownloadWindow()
+  if (!target) {
+    setNotice('浏览器拦截了下载窗口，请允许弹窗后重试', 'error')
+    return
+  }
   busy.value = `download:${item.id}`
   clearNotice()
   try {
@@ -492,8 +365,13 @@ async function downloadFile(item: Node) {
       method: 'POST',
       body: '{}',
     })
-    window.open(authorization.url, '_blank', 'noopener,noreferrer')
+    if (target.closed) {
+      setNotice('下载窗口已关闭，请重试', 'error')
+      return
+    }
+    target.setUrl(authorization.url)
   } catch (error) {
+    target.close()
     setNotice(error instanceof Error ? error.message : '下载失败', 'error')
   } finally {
     busy.value = ''
@@ -610,7 +488,10 @@ onMounted(() => {
             <input ref="fileInput" type="file" hidden @change="uploadFile" />
             <zw-button variant="primary" :disabled="busy !== ''" @click="chooseFile">
               <span class="upload-icon">↑</span>
-              {{ busy === 'upload' ? `上传中 ${uploadProgress}%` : '上传文件' }}
+              {{ busy === 'upload' ? (uploadPhase === 'completing' ? '正在提交…' : `上传中 ${uploadProgress}%`) : '上传文件' }}
+            </zw-button>
+            <zw-button v-if="busy === 'upload' && uploadPhase === 'uploading'" variant="secondary" :disabled="uploadCancelling" @click="cancelUpload">
+              {{ uploadCancelling ? '取消中…' : '取消上传' }}
             </zw-button>
           </div>
         </div>
@@ -651,6 +532,11 @@ onMounted(() => {
               <button class="action-link danger" type="button" :disabled="busy === `recycle:${item.id}`" @click="recycleEntry(item)">回收</button>
             </div>
           </div>
+          <div v-if="!loading && directoryCursor" class="page-more">
+            <button type="button" :disabled="directoryLoadingMore" @click="loadMoreDirectory">
+              {{ directoryLoadingMore ? '加载中…' : '加载更多文件' }}
+            </button>
+          </div>
         </div>
 
         <div v-else class="file-card recycle-card">
@@ -679,50 +565,41 @@ onMounted(() => {
               </button>
             </div>
           </div>
+          <div v-if="!recycleLoading && recycleCursor" class="page-more">
+            <button type="button" :disabled="recycleLoadingMore" @click="loadMoreRecycleBin">
+              {{ recycleLoadingMore ? '加载中…' : '加载更多回收项' }}
+            </button>
+          </div>
         </div>
         <div class="drive-footer">
           <span>由 Zeus UI + Vite 驱动</span>
           <button type="button" @click="viewMode === 'recycle' ? loadRecycleBin() : refresh()">↻ 刷新</button>
         </div>
 
-        <div v-if="renameTarget" class="modal-backdrop" @click.self="renameTarget = null">
-          <form class="modal-card" @submit.prevent="submitRename">
-            <h2>重命名</h2>
-            <p class="muted">输入新的名称，最多 255 个字符。</p>
-            <input v-model="renameValue" class="modal-input" maxlength="255" aria-label="新名称" />
-            <div class="modal-actions">
-              <button class="modal-cancel" type="button" @click="renameTarget = null">取消</button>
-              <button class="modal-confirm" type="submit" :disabled="busy === `rename:${renameTarget.id}`">保存</button>
-            </div>
-          </form>
-        </div>
+        <RenameDialog
+          v-if="renameTarget"
+          :target="renameTarget"
+          :busy="busy === `rename:${renameTarget.id}`"
+          @cancel="renameTarget = null"
+          @submit="submitRename"
+        />
 
-        <div v-if="moveTarget" class="modal-backdrop" @click.self="closeMove">
-          <div class="modal-card">
-            <h2>移动「{{ moveTarget.name }}」</h2>
-            <p class="muted">选择目标文件夹</p>
-            <div class="move-path">
-              <template v-for="(item, index) in movePath" :key="item.id">
-                <button type="button" @click="jumpMovePath(index)">{{ item.name }}</button>
-                <span v-if="index < movePath.length - 1">/</span>
-              </template>
-            </div>
-            <div class="move-list">
-              <div v-if="moveLoading" class="move-empty">正在读取…</div>
-              <div v-else-if="moveDirectories.length === 0" class="move-empty">当前文件夹没有子文件夹</div>
-              <template v-else>
-                <button v-for="directory in moveDirectories" :key="directory.id" class="move-item" type="button" @click="enterMoveDirectory(directory)">
-                  <span>▰ {{ directory.name }}</span><span>进入</span>
-                </button>
-              </template>
-            </div>
-            <p v-if="moveError" class="form-error" role="alert">{{ moveError }}</p>
-            <div class="modal-actions">
-              <button class="modal-cancel" type="button" @click="closeMove">取消</button>
-              <button class="modal-confirm" type="button" :disabled="busy === `move:${moveTarget.id}`" @click="moveHere">移动到这里</button>
-            </div>
-          </div>
-        </div>
+        <MoveDialog
+          v-if="moveTarget"
+          :target="moveTarget"
+          :path="movePath"
+          :directories="moveDirectories"
+          :loading="moveLoading"
+          :loading-more="moveLoadingMore"
+          :error="moveError"
+          :cursor="moveCursor"
+          :busy="busy === `move:${moveTarget.id}`"
+          @close="closeMove"
+          @enter="enterMoveDirectory"
+          @jump="jumpMovePath"
+          @load-more="loadMoreMoveDirectories"
+          @move="moveHere"
+        />
       </section>
     </main>
   </div>
