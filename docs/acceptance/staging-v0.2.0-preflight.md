@@ -4,7 +4,7 @@
 - 实现 PR：[#83](https://github.com/baicie/asteria-drive/pull/83)
 - 仓库：`https://github.com/baicie/asteria-drive`
 - 起始 HEAD：`cf63a93480ba26c449ee2d0f93d3ea74df307c06`
-- 当前本地 HEAD：`cf63a93480ba26c449ee2d0f93d3ea74df307c06`
+- 产品 main HEAD：`cf63a93480ba26c449ee2d0f93d3ea74df307c06`; 实现 PR #83 HEAD 见 GitHub
 - 工作区：干净
 - 目标：只准备 staging v0.2.0 候选和审批材料；本轮不得把 staging 结果提升为生产就绪。
 

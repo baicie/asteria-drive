@@ -2,6 +2,7 @@
 
 - 报告状态：`READY_FOR_HOST_VALIDATION`
 - 实现 PR：[#83](https://github.com/baicie/asteria-drive/pull/83)（release bundles / state machine / rollback workflow）
+- 实现说明：[staging-release-controller.md](https://github.com/baicie/asteria-drive/blob/codex/staging-release-controller/docs/acceptance/staging-release-controller.md)
 - 生成时间：2026-10-23T08:55:00Z
 - 起始产品 HEAD：`cf63a93480ba26c449ee2d0f93d3ea74df307c06`
 - 最终产品 HEAD：`cf63a93480ba26c449ee2d0f93d3ea74df307c06`（本轮未修改产品代码；验收文档提交在 PR #82）
