@@ -112,7 +112,7 @@ function errorMessage(body: unknown, status: number) {
 
 async function apiResponse<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers)
-  if (token.value) headers.set('Authorization', `Bearer ${token.value}`)
+  if (token.value && !headers.has('Authorization')) headers.set('Authorization', `Bearer ${token.value}`)
   if (init.body && !(init.body instanceof FormData) && !headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json')
   }
@@ -229,6 +229,14 @@ async function connect() {
 }
 
 function logout() {
+  // Cancel any in-flight S3 transport before invalidating the current UI session.
+  // Upload cleanup uses the credential captured at upload start, not the cleared reactive token.
+  uploadAbort.value?.abort()
+  uploadAbort.value = null
+  uploadPhase.value = null
+  uploadCancelling.value = false
+  uploadProgress.value = 0
+  busy.value = ''
   connectionGeneration += 1
   directoryGeneration += 1
   recycleGeneration += 1
@@ -580,12 +588,17 @@ async function uploadFile(event: Event) {
   uploadPhase.value = 'uploading'
   const controller = new AbortController()
   uploadAbort.value = controller
+  const uploadToken = token.value
+  // Always use the initiating session for upload/abort requests, even during logout.
+  const uploadHeaders = (headers: Record<string, string> = {}) => ({
+    ...headers, Authorization: `Bearer ${uploadToken}`,
+  })
   clearNotice()
 
   const gateway: UploadGateway = {
     create: (uploadFile, parentId, key) => api('/api/v1/uploads', {
       method: 'POST',
-      headers: { 'Idempotency-Key': key },
+      headers: uploadHeaders({ 'Idempotency-Key': key }),
       body: JSON.stringify({
         parent_id: parentId,
         name: uploadFile.name,
@@ -595,36 +608,53 @@ async function uploadFile(event: Event) {
     }),
     sign: (uploadId, partNumber) => api(`/api/v1/uploads/${encodeURIComponent(uploadId)}/parts/sign`, {
       method: 'POST',
+      headers: uploadHeaders(),
       body: JSON.stringify({ part_number: partNumber }),
     }),
     complete: async (uploadId, parts) => {
       await api(`/api/v1/uploads/${encodeURIComponent(uploadId)}/complete`, {
         method: 'POST',
+        headers: uploadHeaders(),
         body: JSON.stringify({ parts }),
       })
     },
-    read: (uploadId) => api(`/api/v1/uploads/${encodeURIComponent(uploadId)}`),
+    read: (uploadId) => api(`/api/v1/uploads/${encodeURIComponent(uploadId)}`, {
+      headers: uploadHeaders(),
+    }),
     abort: async (uploadId) => {
-      await api(`/api/v1/uploads/${encodeURIComponent(uploadId)}`, { method: 'DELETE' })
+      await api(`/api/v1/uploads/${encodeURIComponent(uploadId)}`, {
+        method: 'DELETE',
+        headers: uploadHeaders(),
+      })
     },
   }
 
   try {
     await uploadMultipart(gateway, file, parent.id, newIdempotencyKey(), {
       signal: controller.signal,
-      onProgress: (progress) => { uploadProgress.value = progress },
-      onPhase: (phase) => { uploadPhase.value = phase },
+      onProgress: (progress) => {
+        if (uploadAbort.value === controller) uploadProgress.value = progress
+      },
+      onPhase: (phase) => {
+        if (uploadAbort.value === controller) uploadPhase.value = phase
+      },
     })
+    if (uploadAbort.value !== controller) return
     await refresh()
-    setNotice(`已上传「${file.name}」`)
+    if (uploadAbort.value === controller) setNotice(`已上传「${file.name}」`)
   } catch (error) {
-    setNotice(error instanceof Error ? error.message : '上传失败', 'error')
+    if (uploadAbort.value === controller) {
+      setNotice(error instanceof Error ? error.message : '上传失败', 'error')
+    }
   } finally {
-    uploadAbort.value = null
-    uploadPhase.value = null
-    uploadCancelling.value = false
-    busy.value = ''
-    uploadProgress.value = 0
+    // A previous session must not clear a newer session's controls or notices.
+    if (uploadAbort.value === controller) {
+      uploadAbort.value = null
+      uploadPhase.value = null
+      uploadCancelling.value = false
+      busy.value = ''
+      uploadProgress.value = 0
+    }
   }
 }
 
