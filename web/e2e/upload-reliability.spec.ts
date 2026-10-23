@@ -166,3 +166,92 @@ test('cancels an active upload and aborts its multipart session', async ({ page 
   expect(aborted).toBe(true)
   expect(completed).toBe(false)
 })
+
+
+test('replays completion after object_completed and confirms final commit', async ({ page }) => {
+  const files: Record<string, unknown>[] = []
+  let completeCalls = 0
+  let readCalls = 0
+  let aborted = false
+
+  await page.route('**/s3/upload/**', async (route) => {
+    await route.fulfill({ status: 200, headers: { ETag: '"part-1"' } })
+  })
+  await page.route('**/api/v1/**', async (route) => {
+    const request = route.request()
+    const url = new URL(request.url())
+    const base = serveBase(route, url, files)
+    if (base) { await base; return }
+    if (url.pathname === '/api/v1/uploads' && request.method() === 'POST') {
+      await route.fulfill({ status: 201, json: { data: { id: uploadId, status: 'created', part_size: 8, expected_size: 4 } } })
+    } else if (url.pathname.endsWith('/parts/sign')) {
+      await route.fulfill({ json: { data: { part_number: 1, method: 'PUT', url: '/s3/upload/1' } } })
+    } else if (url.pathname.endsWith('/complete')) {
+      completeCalls += 1
+      if (completeCalls === 1) {
+        await route.fulfill({ status: 503, json: { error: { message: 'object written, metadata not yet committed' } } })
+      } else {
+        files.push({ id: 'replayed-file', kind: 'file', name: 'replayed.txt', parent_id: rootId, size: 4, revision: 1 })
+        await route.fulfill({ status: 200, json: { data: { upload: { status: 'committed' } } } })
+      }
+    } else if (url.pathname === `/api/v1/uploads/${uploadId}` && request.method() === 'GET') {
+      readCalls += 1
+      await route.fulfill({ json: { data: { id: uploadId, status: 'object_completed', part_size: 8, expected_size: 4 } } })
+    } else if (url.pathname === `/api/v1/uploads/${uploadId}` && request.method() === 'DELETE') {
+      aborted = true
+      await route.fulfill({ status: 204, body: '' })
+    } else {
+      await route.fulfill({ status: 404, json: { error: { message: 'unexpected route' } } })
+    }
+  })
+
+  await login(page)
+  await page.locator('input[type="file"]').setInputFiles({
+    name: 'replayed.txt', mimeType: 'text/plain', buffer: Buffer.from('done'),
+  })
+  await expect(page.getByText('已上传「replayed.txt」')).toBeVisible()
+  expect(completeCalls).toBe(2)
+  expect(readCalls).toBe(1)
+  expect(aborted).toBe(false)
+})
+
+test('logout aborts an active upload using its original credential', async ({ page }) => {
+  const files: Record<string, unknown>[] = []
+  let abortAuthorization: string | undefined
+  let completeCalls = 0
+
+  await page.route('**/s3/upload/**', async (route) => {
+    await route.fulfill({ status: 503, body: 'temporary failure' })
+  })
+  await page.route('**/api/v1/**', async (route) => {
+    const request = route.request()
+    const url = new URL(request.url())
+    const base = serveBase(route, url, files)
+    if (base) { await base; return }
+    if (url.pathname === '/api/v1/uploads' && request.method() === 'POST') {
+      await route.fulfill({ status: 201, json: { data: { id: uploadId, status: 'created', part_size: 8, expected_size: 12 } } })
+    } else if (url.pathname.endsWith('/parts/sign')) {
+      const part = (request.postDataJSON() as { part_number: number }).part_number
+      await route.fulfill({ json: { data: { part_number: part, method: 'PUT', url: `/s3/upload/${part}` } } })
+    } else if (url.pathname.endsWith('/complete')) {
+      completeCalls += 1
+      await route.fulfill({ status: 201, json: { data: {} } })
+    } else if (url.pathname === `/api/v1/uploads/${uploadId}` && request.method() === 'DELETE') {
+      abortAuthorization = request.headers()['authorization']
+      await route.fulfill({ status: 204, body: '' })
+    } else {
+      await route.fulfill({ status: 404, json: { error: { message: 'unexpected route' } } })
+    }
+  })
+
+  await login(page)
+  await page.locator('input[type="file"]').setInputFiles({
+    name: 'logout.txt', mimeType: 'text/plain', buffer: Buffer.from('twelve-bytes'),
+  })
+  await expect(page.getByRole('button', { name: '取消上传' })).toBeVisible()
+  await page.getByRole('button', { name: '退出' }).click()
+  await expect(page.getByRole('heading', { name: '连接你的空间' })).toBeVisible()
+  await expect.poll(() => abortAuthorization).toBe('Bearer upload-reliability-token')
+  expect(completeCalls).toBe(0)
+  await expect(page.getByRole('heading', { name: '文件空间' })).toHaveCount(0)
+})
