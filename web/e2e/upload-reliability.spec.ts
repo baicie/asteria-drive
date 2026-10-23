@@ -81,6 +81,50 @@ test('retries transient S3 PUT with a fresh signature and completes sorted parts
   expect(putCounts.get(2)).toBe(2)
 })
 
+test('stops on a non-retryable part failure and aborts the session', async ({ page }) => {
+  const files: Record<string, unknown>[] = []
+  let signCalls = 0
+  let putCalls = 0
+  let completeCalls = 0
+  let abortAuthorization: string | undefined
+
+  await page.route('**/s3/upload/**', async (route) => {
+    putCalls += 1
+    await route.fulfill({ status: 404, body: 'part does not exist' })
+  })
+
+  await page.route('**/api/v1/**', async (route) => {
+    const request = route.request()
+    const url = new URL(request.url())
+    const base = serveBase(route, url, files)
+    if (base) { await base; return }
+    if (url.pathname === '/api/v1/uploads' && request.method() === 'POST') {
+      await route.fulfill({ status: 201, json: { data: { id: uploadId, status: 'created', part_size: 8, expected_size: 4 } } })
+    } else if (url.pathname.endsWith('/parts/sign')) {
+      signCalls += 1
+      await route.fulfill({ json: { data: { part_number: 1, method: 'PUT', url: '/s3/upload/1' } } })
+    } else if (url.pathname.endsWith('/complete')) {
+      completeCalls += 1
+      await route.fulfill({ status: 201, json: { data: {} } })
+    } else if (url.pathname === `/api/v1/uploads/${uploadId}` && request.method() === 'DELETE') {
+      abortAuthorization = request.headers()['authorization']
+      await route.fulfill({ status: 204, body: '' })
+    } else {
+      await route.fulfill({ status: 404, json: { error: { message: 'unexpected route' } } })
+    }
+  })
+
+  await login(page)
+  await page.locator('input[type="file"]').setInputFiles({
+    name: 'rejected.txt', mimeType: 'text/plain', buffer: Buffer.from('data'),
+  })
+  await expect(page.getByText('分片 1 上传失败：HTTP 404（不可重试）')).toBeVisible()
+  expect(signCalls).toBe(1)
+  expect(putCalls).toBe(1)
+  expect(completeCalls).toBe(0)
+  await expect.poll(() => abortAuthorization).toBe('Bearer upload-reliability-token')
+})
+
 test('reconciles lost completion response without aborting an already committed upload', async ({ page }) => {
   const files: Record<string, unknown>[] = []
   let checked = 0
