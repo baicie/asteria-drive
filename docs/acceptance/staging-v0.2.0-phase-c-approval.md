@@ -1,8 +1,8 @@
 # Phase C 审批材料：Staging v0.2.0 Deployment
 
-- 材料状态：`BLOCKED_ROLLBACK_CONTRACT`
+- 材料状态：`READY_FOR_HOST_VALIDATION`
 - 执行依赖：Phase B 完成且有真实主机证据 + 独立 Phase C 批准
-- 关联 PR：#82
+- 关联 PR：#82（验收文档）；实现 PR：[#83](https://github.com/baicie/asteria-drive/pull/83)
 - 操作 Runbook：[staging-v0.2.0-bootstrap-runbook.md](staging-v0.2.0-bootstrap-runbook.md)
 
 准备时间：2026-10-23T08:55:00Z
@@ -124,14 +124,14 @@ confirmation: deploy-v0.2.0
 
 ### 成功部署后
 
-当前**没有**受控的 `Rollback staging` workflow。完整回滚需要：
+PR #83 已提供受控的 `Rollback staging` workflow：使用固定 v0.1.1 bundle、严格主机校验和独立 rollback evidence。完整回滚仍需要：
 
 1. 恢复旧 root-owned dispatcher/monitor/recovery/config/authorized_keys；
 2. 受保护 main 上的 staging workflow 固定点回滚 PR（monitor/recovery/deploy）；
 3. active Compose/image 恢复到 v0.1.1 的受控路径；
 4. 手工 monitor/recovery 验证。
 
-在 1–4 获批和可执行前，状态为 `BLOCKED_ROLLBACK_CONTRACT`，不得部署。
+在 1–4 完成真实主机演练并获得独立批准前，状态为 `READY_FOR_HOST_VALIDATION`，不得部署，也不得标记 `ROLLBACK_VERIFIED`。
 
 ## 9. Phase D 交接
 

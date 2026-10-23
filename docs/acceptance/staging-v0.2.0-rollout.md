@@ -1,6 +1,7 @@
 # Staging v0.2.0 运行验收报告（Sprint S1）
 
-- 报告状态：`BLOCKED_ROLLBACK_CONTRACT`
+- 报告状态：`READY_FOR_HOST_VALIDATION`
+- 实现 PR：[#83](https://github.com/baicie/asteria-drive/pull/83)（release bundles / state machine / rollback workflow）
 - 生成时间：2026-10-23T08:55:00Z
 - 起始产品 HEAD：`cf63a93480ba26c449ee2d0f93d3ea74df307c06`
 - 最终产品 HEAD：`cf63a93480ba26c449ee2d0f93d3ea74df307c06`（本轮未修改产品代码；验收文档提交在 PR #82）
@@ -9,11 +10,11 @@
 
 ## 结论
 
-`BLOCKED_ROLLBACK_CONTRACT`
+`READY_FOR_HOST_VALIDATION`
 
 当前没有 v0.2.0 的 staging 主机运行证据。Phase B/C/D 未执行。
 
-DB/API 前向兼容性通过；失败尝试内自动回滚的数据库契约通过。但**成功部署后的完整回滚没有受控、可审计、原子路径**：需要同时恢复主机运行态、主机 root-owned 脚本和 GitHub Workflow 摘要契约。因此不得宣称自动回滚安全，也不得批准 Phase C。
+DB/API 前向兼容性通过；失败尝试内自动回滚的数据库契约通过。PR #83 已提供固定 v0.1.1 bundle 的受控 `Rollback staging` workflow，但**真实主机回滚尚未演练**，且跨 GitHub Actions 与主机的操作不是原子事务。因此不得宣称自动回滚安全或 `ROLLBACK_VERIFIED`，Phase C 仍需独立批准。
 
 ## 固定点
 
@@ -79,7 +80,7 @@ staging deploy command rejected\n
 - **未证明**：API、PostgreSQL、SeaweedFS、TLS、磁盘、容量是否健康；空 evidence 不能证明服务不可用或可用。
 - **未验证**：主机安装摘要、active Compose、运行镜像；必须按 Phase B Runbook 第 2 节只读采集。
 
-调度延迟：cron `23 * * * *` 的 run 实际创建于 `07:42:43Z`，至少延迟 79 分钟；不得依赖精确 cron 时间保证升级原子性。
+调度延迟：cron `23 * * * *` 的 run 实际创建于 `07:42:43Z`，但无法证明对应 06:23 还是 07:23 的 cron occurrence，不能据此推断固定延迟；不得依赖精确 cron 时间保证升级原子性。
 
 ## DB / API 兼容性
 
@@ -112,7 +113,7 @@ v0.2.0 source：`5169da638beac679c9cfed66757159474de879dc`
 
 ## Phase C：Staging deployment
 
-状态：`BLOCKED_ROLLBACK_CONTRACT`
+状态：`READY_FOR_HOST_VALIDATION`
 
 | 项目 | 值 |
 | --- | --- |
@@ -159,7 +160,7 @@ Phase C 审批材料：[staging-v0.2.0-phase-c-approval.md](staging-v0.2.0-phase
 | SCRAM / 明文拒绝 | `NOT_RUN` | 同上 |
 | S3 multipart 上传/下载/字节校验 | `NOT_RUN` | 需要新 deployment artifact |
 | 失败尝试内自动回滚代码 | PASS（代码审查） | previous Compose + `--pull never`，不删除数据卷 |
-| 成功部署后的完整回滚 | `BLOCKED_ROLLBACK_CONTRACT` | 无受控 workflow；需同时恢复主机文件、运行态和 GitHub workflow pins |
+| 成功部署后的完整回滚 | `READY_FOR_HOST_VALIDATION` | PR #83 已加入 `Rollback staging` 固定 bundle workflow；仍需主机演练 |
 | 旧 dispatcher 恢复 = 监控恢复 | **错误，已修复** | 旧 dispatcher 只接受旧 SHA；main 仍发送 v0.2.0 SHA 时会继续拒绝 |
 | 实际回滚演练 | `NOT_RUN` | 未部署，无法验证 |
 
@@ -167,7 +168,7 @@ Phase C 审批材料：[staging-v0.2.0-phase-c-approval.md](staging-v0.2.0-phase
 
 1. `staging` GitHub Environment 只有 branch policy，没有 required reviewers；部署门是手动 dispatch + confirmation，不是独立 Environment reviewer gate。
 2. 恢复旧 dispatcher 不会恢复 GitHub monitor；必须同时回滚 workflow 摘要。
-3. 没有受控的 `Rollback staging` workflow；成功部署后的回滚不可自动保证。
+3. PR #83 已加入受控的 `Rollback staging` workflow；仓库侧路径可验证，但真实主机回滚尚未执行，不能宣称 `ROLLBACK_VERIFIED`。
 4. 没有真实主机基线，无法确认 installed dispatcher/monitor/recovery 摘要和所有权。
 5. 没有 root bootstrap 备份 SHA-256、主机证据、操作者/复核人。
 6. 没有 deployment run ID、artifact digest、真实 OCI/Compose 比对。

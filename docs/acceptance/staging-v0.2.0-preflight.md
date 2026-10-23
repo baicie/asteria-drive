@@ -1,6 +1,7 @@
 # Staging v0.2.0 发布前核查（Sprint S1）
 
-- 核查时间：2026-10-23T06:26:43Z；最终修订：2026-10-23T08:55:00Z
+- 核查时间：2026-10-23T06:26:43Z；最终修订：2026-10-23T10:31:00Z
+- 实现 PR：[#83](https://github.com/baicie/asteria-drive/pull/83)
 - 仓库：`https://github.com/baicie/asteria-drive`
 - 起始 HEAD：`cf63a93480ba26c449ee2d0f93d3ea74df307c06`
 - 当前本地 HEAD：`cf63a93480ba26c449ee2d0f93d3ea74df307c06`
@@ -13,11 +14,11 @@
 | --- | --- | --- |
 | A. 发布前核查 | `PASS` | 仓库、Release、OCI、摘要和回滚代码核查通过 |
 | B. Root bootstrap | `BLOCKED_APPROVAL` | 未获 root 主机操作授权；只准备 Runbook |
-| C. Staging 部署 | `BLOCKED_ROLLBACK_CONTRACT` | 依赖 B；完整回滚契约闭合前不得部署 |
+| C. Staging 部署 | `READY_FOR_HOST_VALIDATION` | 仓库侧回滚 workflow 已实现（PR #83）；主机验证和批准前不得部署 |
 | D. Monitor / Recovery | `BLOCKED_APPROVAL` | 依赖 C；未执行远端探针或恢复演练 |
-| E. 最终 rollout 报告 | `BLOCKED_ROLLBACK_CONTRACT` | 模板和失败证据已更新；成功路径未执行 |
+| E. 最终 rollout 报告 | `READY_FOR_HOST_VALIDATION` | 模板和失败证据已更新；成功路径未执行 |
 | F. 下一轮产品规划 | `PASS` | 仅提出候选方向，未实施产品功能 |
-| 回滚契约 | `BLOCKED_ROLLBACK_CONTRACT` | DB/API 前向兼容 PASS；成功部署后的完整回滚缺少受控、原子路径 |
+| 回滚契约 | `READY_FOR_HOST_VALIDATION` | DB/API 前向兼容 PASS；PR #83 已实现固定 bundle 回滚路径，真实主机演练未执行 |
 
 ## A1. main 与 required checks
 
@@ -60,7 +61,7 @@ staging deploy command rejected\n
 - **未证明**：API、PostgreSQL、SeaweedFS、TLS、磁盘或容量是否健康。空 evidence 不能证明服务不可用，也不能证明服务可用。
 - **未验证**：主机实际安装摘要、active Compose、容器镜像身份，必须以 Phase B 只读基线确认。
 
-调度延迟：workflow cron 为 `23 * * * *`，但实际 run 创建于 `07:42:43Z`，说明 GitHub Actions 调度可延迟至少 79 分钟。不得把精确 cron 时间当作升级原子性或监控连续性的保证。
+调度延迟：workflow cron 为 `23 * * * *`，但实际 run 创建于 `07:42:43Z`，说明 GitHub Actions 调度存在显著延迟，但无法从单次 run 推断固定延迟。不得把精确 cron 时间当作升级原子性或监控连续性的保证。
 
 ## A2. Release、tag、OCI 与 provenance
 
@@ -87,7 +88,7 @@ Release 页面：<https://github.com/baicie/asteria-drive/releases/tag/v0.2.0>
 | `scripts/deploy-staging.sh` | `007eb3a34bc5eff5bdff1db247ef9ed2b396814eac8231a0df71579a3f79138f` | PASS |
 | `scripts/monitor-staging.sh` | `d1e186cb375bf22fb910118e122d6003a6904c4345134d503e212aa051916d69` | PASS |
 | `scripts/recover-staging.sh` | `91c45a195b773b98e0dc70f3843f8f4af8efc05e2c6f66c7811cccabc633c1b4` | PASS |
-| `scripts/bootstrap-staging-host.sh` | `e1f9013f4ca9de66fae7a8c64c24ef7d50e86d627bcbec1860be08e79247c519` | 本次 bootstrap 输入 |
+| `scripts/bootstrap-staging-host.sh` | `92b4ad1682f42365f5da6939f599e3a51785991ba6d58030f062c7a6c0c04eeb` | 本次 bootstrap 输入 |
 
 交叉核对：
 
@@ -133,7 +134,7 @@ Release 页面：<https://github.com/baicie/asteria-drive/releases/tag/v0.2.0>
 
 - 这是针对 **v0.1.1→v0.2.0 这一对不可变产物** 的结论，不推广到未来 migration。
 - “自动失败回滚”只在部署尝试失败且 previous active Compose 存在时发生；它不是“成功部署后的通用回滚”。
-- 完整回滚还涉及主机 dispatcher/monitor/recovery 和 GitHub Workflow 摘要契约，见 A5b；该部分仍为 `BLOCKED_ROLLBACK_CONTRACT`。
+- 完整回滚还涉及主机 dispatcher/monitor/recovery 和 GitHub Workflow 摘要契约，见 A5b；该部分仍为 `READY_FOR_HOST_VALIDATION`。
 
 结论：DB/API 前向兼容 PASS；完整回滚契约 BLOCKED。
 
@@ -185,7 +186,7 @@ main 上的 `.github/workflows/monitor-staging.yml` 仍会发送 v0.2.0 的 `MON
 因此：
 
 - **失败尝试内的自动回滚**：DB/API 契约 PASS，因为 migration 未变化；不删除数据卷。
-- **成功部署后的完整回滚**：`BLOCKED_ROLLBACK_CONTRACT`。当前没有 `Rollback staging` 受控 workflow，也没有把“恢复主机文件 + 回滚 GitPins + 恢复 active Compose/image”做成可审计的单一路径。
+- **成功部署后的完整回滚**：`READY_FOR_HOST_VALIDATION`。PR #83 已加入受控的 `Rollback staging` workflow 和静态 v0.1.1 bundle；仍缺真实主机回滚演练，不能标记 `ROLLBACK_VERIFIED`。
 - 不得宣称“自动回滚安全”；不得以旧 dispatcher 恢复代替 GitHub workflow 摘要回滚。
 
 最小权限、可审核、不绕过 SHA-256 的候选路线见 Runbook 第 9 节；该路线需要新的受保护 PR/审批，不在本次 PR #82 内实施。
@@ -241,13 +242,13 @@ Phase B 的实际 root 操作未执行，状态 `BLOCKED_APPROVAL`。精确操�
 
 ## Phase C/D 状态
 
-- Phase C：`BLOCKED_ROLLBACK_CONTRACT`。未触发 `Deploy staging`；在完整回滚契约获批前不应部署。审批材料见 [`staging-v0.2.0-phase-c-approval.md`](staging-v0.2.0-phase-c-approval.md)。
+- Phase C：`READY_FOR_HOST_VALIDATION`。未触发 `Deploy staging`；在完整回滚契约获批前不应部署。审批材料见 [`staging-v0.2.0-phase-c-approval.md`](staging-v0.2.0-phase-c-approval.md)。
 - Phase D：`BLOCKED_APPROVAL`。未触发 monitor/recovery，未获取任何成功 artifact。
 - 当前 staging 实际运行版本：**未由本轮重新验证**；仓库记录仍为 `v0.1.1`，不能推断为 v0.2.0。
 - monitor run `39919598579` 的失败只证明 dispatcher 拒绝，不证明 v0.1.1 服务健康或不可用。
 
 ## 结论
 
-`BLOCKED_ROLLBACK_CONTRACT`：Phase A 仓库核查 PASS；DB/API 前向兼容 PASS；失败尝试内自动回滚的数据库契约 PASS；但**成功部署后的完整回滚没有受控路径**，且恢复旧 dispatcher 不能恢复 GitHub monitor。
+`READY_FOR_HOST_VALIDATION`：Phase A 仓库核查 PASS；DB/API 前向兼容 PASS；失败尝试内自动回滚的数据库契约 PASS；PR #83 已实现固定 bundle 的 rollback workflow 和版本感知 monitor/recovery；**真实主机回滚和监控恢复仍未执行**，不能标记 `ROLLBACK_VERIFIED` 或 `STAGING_DEPLOYED`。
 
 下一步唯一最优先动作：先评审并批准“主机运行态 + GitHub Workflow 摘要契约”的完整回滚路线（Runbook 第 9 节），再批准 Phase B；在该路线获批前不得执行 Phase C。

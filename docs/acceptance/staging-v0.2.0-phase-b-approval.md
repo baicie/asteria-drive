@@ -2,7 +2,7 @@
 
 - 材料状态：`READY_FOR_APPROVAL`（Phase B 本身）
 - 执行依赖：人工批准 + 目标主机 root shell
-- 关联 PR：#82
+- 关联 PR：#82（验收文档）；实现 PR：[#83](https://github.com/baicie/asteria-drive/pull/83)
 - 操作 Runbook：[staging-v0.2.0-bootstrap-runbook.md](staging-v0.2.0-bootstrap-runbook.md)
 
 准备时间：2026-10-23T08:55:00Z
@@ -28,11 +28,15 @@
 
 | 文件 | SHA-256 |
 | --- | --- |
-| `scripts/bootstrap-staging-host.sh` | `e1f9013f4ca9de66fae7a8c64c24ef7d50e86d627bcbec1860be08e79247c519` |
+| `scripts/bootstrap-staging-host.sh` | `92b4ad1682f42365f5da6939f599e3a51785991ba6d58030f062c7a6c0c04eeb` |
 | `scripts/monitor-staging.sh` | `d1e186cb375bf22fb910118e122d6003a6904c4345134d503e212aa051916d69` |
 | `scripts/recover-staging.sh` | `91c45a195b773b98e0dc70f3843f8f4af8efc05e2c6f66c7811cccabc633c1b4` |
 | `scripts/deploy-staging.sh` | `007eb3a34bc5eff5bdff1db247ef9ed2b396814eac8231a0df71579a3f79138f` |
 | `infra/docker/staging/compose.yaml` | `cba2ba284a8f17231976ca40b99e77c4233f7948992372d703203cd98bdd3005` |
+| `infra/docker/staging/releases/v0.1.1/compose.yaml` | `aa4336dc8914faaccc304266cba715b8212d10722adb4afd7aeea5d40f4c9637` |
+| `infra/docker/staging/releases/v0.1.1/deploy-staging.sh` | `cd200fa32fdc2314817308479c99fe6425a481ff3bcd7384a60e145b2ad45044` |
+| `infra/docker/staging/releases/v0.1.1/monitor-staging.sh` | `3ef39670c2a5a90b9aee4bf926c7dd6b40938038d861457b0ed92ba48765c279` |
+| `infra/docker/staging/releases/v0.1.1/recover-staging.sh` | `3b2bb836852893548f1f1d64602745c67b02a307f0c8ad5fcf17c9c5a41f459a` |
 
 ## 3. 只读基线（执行前必须记录）
 
@@ -42,6 +46,8 @@
 - Docker Engine / Compose 版本
 - active Compose 路径和 SHA-256
 - `/usr/local/libexec/asteria-staging-{dispatch,monitor,recovery}` 摘要、owner、mode
+- `/usr/local/libexec/asteria-staging-monitor-v0.1.1` 和
+  `asteria-staging-recovery-v0.1.1` 的存在性、摘要、owner、mode（若已安装）
 - `/etc/asteria-drive/staging-dispatch.conf` 摘要、owner、mode
 - `docker compose ps` 和 API `.Config.Image`
 - `docker volume ls --filter name=asteria-drive-staging`

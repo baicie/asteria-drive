@@ -1,6 +1,6 @@
 # Staging Root Bootstrap 最小权限 Runbook（v0.2.0）
 
-- 状态：Phase B `BLOCKED_APPROVAL`，尚未执行；Phase C 因完整回滚契约未闭合为 `BLOCKED_ROLLBACK_CONTRACT`
+- 状态：Phase B `BLOCKED_APPROVAL`，尚未执行；Phase C 仓库侧已实现为 `READY_FOR_HOST_VALIDATION`，尚未部署
 - 源提交：`cf63a93480ba26c449ee2d0f93d3ea74df307c06`
 - 目标：把 root-owned dispatcher / monitor / recovery / 配置更新到 v0.2.0 固定点
 - 不在本 Runbook 中读取、导出或写入任何应用 Secret、数据库密码、PKI 私钥或 SSH 私钥
@@ -31,17 +31,25 @@ sha256sum \
   scripts/monitor-staging.sh \
   scripts/recover-staging.sh \
   scripts/deploy-staging.sh \
-  infra/docker/staging/compose.yaml
+  infra/docker/staging/compose.yaml \
+  infra/docker/staging/releases/v0.1.1/monitor-staging.sh \
+  infra/docker/staging/releases/v0.1.1/recover-staging.sh \
+  infra/docker/staging/releases/v0.1.1/compose.yaml \
+  infra/docker/staging/releases/v0.1.1/deploy-staging.sh
 ```
 
 预期：
 
 ```text
-e1f9013f4ca9de66fae7a8c64c24ef7d50e86d627bcbec1860be08e79247c519  scripts/bootstrap-staging-host.sh
+92b4ad1682f42365f5da6939f599e3a51785991ba6d58030f062c7a6c0c04eeb  scripts/bootstrap-staging-host.sh
 d1e186cb375bf22fb910118e122d6003a6904c4345134d503e212aa051916d69  scripts/monitor-staging.sh
 91c45a195b773b98e0dc70f3843f8f4af8efc05e2c6f66c7811cccabc633c1b4  scripts/recover-staging.sh
 007eb3a34bc5eff5bdff1db247ef9ed2b396814eac8231a0df71579a3f79138f  scripts/deploy-staging.sh
 cba2ba284a8f17231976ca40b99e77c4233f7948992372d703203cd98bdd3005  infra/docker/staging/compose.yaml
+3ef39670c2a5a90b9aee4bf926c7dd6b40938038d861457b0ed92ba48765c279  infra/docker/staging/releases/v0.1.1/monitor-staging.sh
+3b2bb836852893548f1f1d64602745c67b02a307f0c8ad5fcf17c9c5a41f459a  infra/docker/staging/releases/v0.1.1/recover-staging.sh
+aa4336dc8914faaccc304266cba715b8212d10722adb4afd7aeea5d40f4c9637  infra/docker/staging/releases/v0.1.1/compose.yaml
+cd200fa32fdc2314817308479c99fe6425a481ff3bcd7384a60e145b2ad45044  infra/docker/staging/releases/v0.1.1/deploy-staging.sh
 ```
 
 任一不匹配：停止，不执行 Phase B。
@@ -131,13 +139,19 @@ install -d -m 0700 "$stage"
 install -m 0700 /root/transfer/bootstrap-staging-host.sh "$stage/"
 install -m 0600 /root/transfer/monitor-staging.sh "$stage/"
 install -m 0600 /root/transfer/recover-staging.sh "$stage/"
+install -m 0600 /root/transfer/monitor-staging-v0.1.1.sh "$stage/"
+install -m 0600 /root/transfer/recover-staging-v0.1.1.sh "$stage/"
 
 sha256sum "$stage/bootstrap-staging-host.sh" \
           "$stage/monitor-staging.sh" \
-          "$stage/recover-staging.sh"
+          "$stage/recover-staging.sh" \
+          "$stage/monitor-staging-v0.1.1.sh" \
+          "$stage/recover-staging-v0.1.1.sh"
 ```
 
-必须与第 1 节摘要一致。
+必须与第 1 节摘要一致；两个 v0.1.1 文件来自
+`infra/docker/staging/releases/v0.1.1/`，摘要分别为 `3ef39670...` 和
+`3b2bb836...`。
 
 ## 5. 从现有 authorized_keys 提取 deploy 公钥
 
@@ -160,8 +174,12 @@ test -n "$ASTERIA_DEPLOY_PUBLIC_KEY_B64"
 ```bash
 export ASTERIA_STAGING_MONITOR_B64="$(base64 -w0 "$stage/monitor-staging.sh")"
 export ASTERIA_STAGING_RECOVERY_B64="$(base64 -w0 "$stage/recover-staging.sh")"
+export ASTERIA_STAGING_MONITOR_V011_B64="$(base64 -w0 "$stage/monitor-staging-v0.1.1.sh")"
+export ASTERIA_STAGING_RECOVERY_V011_B64="$(base64 -w0 "$stage/recover-staging-v0.1.1.sh")"
 test -n "$ASTERIA_STAGING_MONITOR_B64"
 test -n "$ASTERIA_STAGING_RECOVERY_B64"
+test -n "$ASTERIA_STAGING_MONITOR_V011_B64"
+test -n "$ASTERIA_STAGING_RECOVERY_V011_B64"
 ```
 
 若系统 `base64` 不支持 `-w0`，使用 `base64 "$file" | tr -d '\n'`。
@@ -283,9 +301,9 @@ sha256sum /usr/local/libexec/asteria-staging-* \
 
 当前限制：
 
-- 仓库没有 `Rollback staging` workflow；成功部署后没有自动回滚路径。
+- PR #83 已加入 `Rollback staging` workflow；成功部署后走固定 v0.1.1 bundle 的受控回滚路径。
 - 回滚 PR 尚未创建；本次只准备审批材料，不创建代码 PR。
-- 因此完整回滚契约状态为 **`BLOCKED_ROLLBACK_CONTRACT`**，不得宣称“自动回滚安全”。
+- 因此仓库侧状态为 **`READY_FOR_HOST_VALIDATION`**；真实主机回滚未执行前不得宣称 `ROLLBACK_VERIFIED` 或“自动回滚安全”。
 - 失败尝试内的自动回滚仅覆盖 previous active Compose 存在的 runtime 恢复；它不覆盖 GitHub workflow pins，也不覆盖成功部署后的回滚。
 
 ### 9.4 监控连续性
@@ -298,7 +316,7 @@ sha256sum /usr/local/libexec/asteria-staging-* \
 
 - 不暂停、不修改 monitor/recovery workflow；不以禁用监控换取窗口。
 - 维护窗口必须同时覆盖 Phase B 和 Phase C；窗口开始前完成只读基线、备份和审批。
-- 不依赖 `:23Z` 作为硬边界；cron 延迟已观察到至少 79 分钟。窗口以人工开始/结束和状态检查为准。
+- 不依赖 `:23Z` 作为硬边界；观测到 run 创建于 07:42:43Z，但无法证明对应哪一次 cron occurrence。窗口以人工开始/结束和状态检查为准。
 - 窗口内 monitor 触发时，预期因旧 active Compose/旧 image 与 v0.2.0 pin 不匹配而 fail-closed；这是预期信号，不是数据故障。
 - 若窗口内无法完成 deployment，执行第 9 节回滚，恢复旧 host 文件并完成 workflow 摘要回滚；不留下半升级 host。
 - recovery 每周 `17 4 * * 1`，避开该窗口。
@@ -314,5 +332,5 @@ sha256sum /usr/local/libexec/asteria-staging-* \
 - 影响范围：仅 root-owned dispatcher/monitor/recovery/config/authorized_keys；
 - 回滚：第 9 节；
 - Phase C 需要**另一条**明确部署授权；
-- Phase C 在完整回滚契约（主机运行态 + GitHub workflow 摘要）获批前保持 `BLOCKED_ROLLBACK_CONTRACT`；
+- Phase C 在真实主机回滚演练和独立批准前保持 `READY_FOR_HOST_VALIDATION`；
 - 任何人不得把“自动失败回滚”表述为“成功部署后的自动回滚”。
