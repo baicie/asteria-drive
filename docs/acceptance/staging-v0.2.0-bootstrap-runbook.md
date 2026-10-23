@@ -185,9 +185,15 @@ staging host bootstrap is ready
 - `/usr/local/libexec/asteria-staging-monitor`
 - `/usr/local/libexec/asteria-staging-recovery`
 - `/etc/asteria-drive/staging-dispatch.conf`
-- `asteria-deploy` 的 `authorized_keys`
+- `asteria-deploy` 的 `authorized_keys`（只保留本次提供的 deploy 公钥）
 
-不重启现有容器，不修改应用 Secret/PKI 内容，不删除 volume。
+影响范围：
+
+- 会覆盖上述 root-owned 文件；不会重启现有容器。
+- 会把 deploy 用户加入 `docker` 组（幂等）。
+- 不会修改应用 Secret/PKI 内容；完整存在时跳过创建，部分存在时 fail-closed。
+- 不会创建或删除持久化数据卷；缺失的 secret volume 会被创建。
+- `authorized_keys` 会被替换为单一 deploy 公钥，其他旧 key 不再被保留。
 
 ## 8. Bootstrap 后只读验证
 
