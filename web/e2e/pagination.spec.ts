@@ -155,6 +155,43 @@ test('ignores obsolete directory responses after returning to root', async ({ pa
   await expect(page.getByText('should-not-appear.txt')).toHaveCount(0)
 })
 
+test('ignores a directory response that arrives after logout', async ({ page }) => {
+  const folder = node('folder-logout', 'Logout folder', 'directory')
+  let releaseSlow!: () => void
+  let startedSlow!: () => void
+  const slowStarted = new Promise<void>((resolve) => { startedSlow = resolve })
+  const slowGate = new Promise<void>((resolve) => { releaseSlow = resolve })
+
+  await page.route('**/api/v1/**', async (route) => {
+    const url = new URL(route.request().url())
+    if (url.pathname === '/api/v1/tenant') {
+      await route.fulfill({ json: { data: { display_name: 'Pagination Tenant', root_directory_id: rootId } } })
+    } else if (url.pathname === `/api/v1/directories/${rootId}`) {
+      await route.fulfill({ json: { data: node(rootId, '根目录', 'directory') } })
+    } else if (url.pathname === `/api/v1/directories/${rootId}/children`) {
+      await route.fulfill({ json: { data: [folder], page: { next_cursor: null } } })
+    } else if (url.pathname === `/api/v1/directories/${folder.id}`) {
+      await route.fulfill({ json: { data: folder } })
+    } else if (url.pathname === `/api/v1/directories/${folder.id}/children`) {
+      startedSlow()
+      await slowGate
+      await route.fulfill({ json: { data: [node('after-logout', 'after-logout.txt')], page: { next_cursor: null } } })
+    } else {
+      await route.fulfill({ status: 404, json: { error: { message: 'unexpected API route' } } })
+    }
+  })
+
+  await logIn(page)
+  await page.locator('.file-row').filter({ hasText: folder.name }).getByRole('button', { name: '打开' }).click()
+  await slowStarted
+  await page.getByRole('button', { name: '退出' }).click()
+  await expect(page.getByRole('heading', { name: '连接你的空间' })).toBeVisible()
+  releaseSlow()
+  await expect(page.getByRole('heading', { name: '连接你的空间' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '文件空间' })).toHaveCount(0)
+  await expect(page.getByText('after-logout.txt')).toHaveCount(0)
+})
+
 test('does not mark login connected when the root directory fails', async ({ page }) => {
   await page.route('**/api/v1/**', async (route) => {
     const url = new URL(route.request().url())

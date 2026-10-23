@@ -1,87 +1,91 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { uploadMultipart, type UploadGateway } from './features/uploads/upload-manager'
-
-type NodeKind = 'directory' | 'file'
-
-interface Tenant {
-  display_name: string
-  root_directory_id: string
-}
-
-interface Node {
-  id: string
-  parent_id?: string
-  kind: NodeKind
-  name: string
-  size?: number
-  mime_type?: string
-  revision: number
-}
-
-
-
-interface Breadcrumb {
-  id: string
-  name: string
-}
-
-interface RecycleEntry {
-  node: Node
-  original_parent_id: string
-  deleted_at: string
-}
-
-interface PageResponse<T> {
-  data: T[]
-  page: { next_cursor: string | null }
-}
+import { api as apiRequest } from './api/client'
+import type { Breadcrumb, Node, Notice, RecycleEntry, Tenant } from './api/types'
+import { openDownloadWindow } from './features/downloads/download-window'
+import MoveDialog from './features/files/MoveDialog.vue'
+import RenameDialog from './features/files/RenameDialog.vue'
+import { useDirectory } from './features/files/use-directory'
+import { useMovePicker } from './features/files/use-move-picker'
+import { useRecycleBin } from './features/recycle/use-recycle-bin'
+import { useUploadTask } from './features/uploads/use-upload-task'
+import { newIdempotencyKey } from './lib/idempotency'
 
 type ViewMode = 'files' | 'recycle'
 
-type Notice = { kind: 'success' | 'error'; text: string } | null
-
 const token = ref(localStorage.getItem('asteria.token') ?? '')
 const tenant = ref<Tenant | null>(null)
-const currentDirectory = ref<Node | null>(null)
-const entries = ref<Node[]>([])
-const breadcrumbs = ref<Breadcrumb[]>([])
 const folderName = ref('')
 const fileInput = ref<HTMLInputElement | null>(null)
-const loading = ref(false)
 const busy = ref('')
-const uploadProgress = ref(0)
-const uploadAbort = ref<AbortController | null>(null)
-const uploadPhase = ref<'uploading' | 'completing' | null>(null)
-const uploadCancelling = ref(false)
 const loginError = ref('')
 const notice = ref<Notice>(null)
 const viewMode = ref<ViewMode>('files')
-const recycleEntries = ref<RecycleEntry[]>([])
-const recycleLoading = ref(false)
 const renameTarget = ref<Node | null>(null)
-const renameValue = ref('')
-const moveTarget = ref<Node | null>(null)
-const movePath = ref<Breadcrumb[]>([])
-const moveDirectories = ref<Node[]>([])
-const moveLoading = ref(false)
-const moveError = ref('')
-const directoryCursor = ref<string | null>(null)
-const directoryLoadingMore = ref(false)
-const recycleCursor = ref<string | null>(null)
-const recycleLoadingMore = ref(false)
-const moveCursor = ref<string | null>(null)
-const moveLoadingMore = ref(false)
 
-// A response started for an earlier directory, modal, or session must never overwrite a newer view.
-let directoryGeneration = 0
-let recycleGeneration = 0
-let moveGeneration = 0
+// A response started for an earlier modal or session must never overwrite a newer view.
 let connectionGeneration = 0
 
 const connected = computed(() => tenant.value !== null)
-const fileCount = computed(() => entries.value.filter((item) => item.kind === 'file').length)
-const folderCount = computed(() => entries.value.filter((item) => item.kind === 'directory').length)
+
+const {
+  currentDirectory,
+  entries,
+  breadcrumbs,
+  loading,
+  loadingMore: directoryLoadingMore,
+  cursor: directoryCursor,
+  fileCount,
+  folderCount,
+  load: loadDirectory,
+  loadMore: loadMoreDirectory,
+  refresh: refreshDirectory,
+  generationSnapshot: directoryGenerationSnapshot,
+  reset: resetDirectory,
+} = useDirectory({ token, notify: setNotice, clearNotice })
+
+const {
+  entries: recycleEntries,
+  loading: recycleLoading,
+  loadingMore: recycleLoadingMore,
+  cursor: recycleCursor,
+  load: loadRecycleBin,
+  loadMore: loadMoreRecycleBin,
+  reset: resetRecycleBin,
+} = useRecycleBin({ token, notify: setNotice, clearNotice })
+
+const {
+  target: moveTarget,
+  path: movePath,
+  directories: moveDirectories,
+  loading: moveLoading,
+  loadingMore: moveLoadingMore,
+  error: moveError,
+  cursor: moveCursor,
+  open: openMovePicker,
+  loadMore: loadMoreMoveDirectories,
+  enter: enterMoveDirectory,
+  jump: jumpMovePath,
+  close: closeMovePicker,
+} = useMovePicker({ token })
+
+const {
+  progress: uploadProgress,
+  phase: uploadPhase,
+  cancelling: uploadCancelling,
+  start: startUpload,
+  cancel: cancelUpload,
+  cancelForLogout: cancelUploadForLogout,
+} = useUploadTask({
+  token,
+  busy,
+  getParent: () => currentDirectory.value,
+  currentDirectory,
+  directoryGeneration: directoryGenerationSnapshot,
+  refreshDirectory,
+  notify: setNotice,
+  clearNotice,
+})
 
 function onTokenChange(event: Event) {
   const value = (event as CustomEvent<{ value?: string }>).detail?.value
@@ -101,104 +105,10 @@ function clearNotice() {
   notice.value = null
 }
 
-function errorMessage(body: unknown, status: number) {
-  if (body && typeof body === 'object') {
-    const value = body as { error?: { message?: string }; message?: string }
-    if (value.error?.message) return value.error.message
-    if (value.message) return value.message
-  }
-  return `请求失败（HTTP ${status}）`
-}
-
-async function apiResponse<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const headers = new Headers(init.headers)
-  if (token.value && !headers.has('Authorization')) headers.set('Authorization', `Bearer ${token.value}`)
-  if (init.body && !(init.body instanceof FormData) && !headers.has('Content-Type')) {
-    headers.set('Content-Type', 'application/json')
-  }
-
-  const response = await fetch(path, { ...init, headers })
-  const body: unknown = response.status === 204 ? null : await response.json().catch(() => null)
-  if (!response.ok) throw new Error(errorMessage(body, response.status))
-  return body as T
-}
-
 async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const body = await apiResponse<{ data?: T } | T>(path, init)
-  return ((body as { data?: T } | null)?.data ?? body) as T
+  return apiRequest<T>(path, { ...init, token: token.value })
 }
 
-async function apiPage<T>(path: string): Promise<PageResponse<T>> {
-  const response = await apiResponse<PageResponse<T>>(path)
-  if (!response || !Array.isArray(response.data) || !response.page ||
-      (response.page.next_cursor !== null && typeof response.page.next_cursor !== 'string')) {
-    throw new Error('分页响应格式无效')
-  }
-  return response
-}
-
-function appendUnique<T>(oldItems: T[], newItems: T[], getId: (item: T) => string): T[] {
-  const known = new Set(oldItems.map(getId))
-  const result = [...oldItems]
-  for (const item of newItems) {
-    const id = getId(item)
-    if (known.has(id)) continue
-    known.add(id)
-    result.push(item)
-  }
-  return result
-}
-
-function newIdempotencyKey() {
-  return globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`
-}
-
-async function loadDirectory(id: string, nextBreadcrumbs: Breadcrumb[]): Promise<boolean> {
-  const generation = ++directoryGeneration
-  loading.value = true
-  directoryLoadingMore.value = false
-  directoryCursor.value = null
-  clearNotice()
-  try {
-    const [directory, children] = await Promise.all([
-      api<Node>(`/api/v1/directories/${encodeURIComponent(id)}`),
-      apiPage<Node>(`/api/v1/directories/${encodeURIComponent(id)}/children?limit=100`),
-    ])
-    if (generation !== directoryGeneration) return false
-    currentDirectory.value = directory
-    entries.value = appendUnique([], children.data, (node) => node.id)
-    directoryCursor.value = children.page.next_cursor
-    breadcrumbs.value = nextBreadcrumbs
-    return true
-  } catch (error) {
-    if (generation === directoryGeneration) {
-      setNotice(error instanceof Error ? error.message : '无法读取文件夹', 'error')
-    }
-    return false
-  } finally {
-    if (generation === directoryGeneration) loading.value = false
-  }
-}
-
-async function loadMoreDirectory() {
-  const directoryId = currentDirectory.value?.id
-  const cursor = directoryCursor.value
-  if (!directoryId || !cursor || loading.value || directoryLoadingMore.value) return
-  const generation = directoryGeneration
-  directoryLoadingMore.value = true
-  clearNotice()
-  try {
-    const page = await apiPage<Node>(`/api/v1/directories/${encodeURIComponent(directoryId)}/children?limit=100&cursor=${encodeURIComponent(cursor)}`)
-    if (generation !== directoryGeneration || currentDirectory.value?.id !== directoryId) return
-    if (page.page.next_cursor === cursor) throw new Error('服务端返回了重复的分页游标')
-    entries.value = appendUnique(entries.value, page.data, (node) => node.id)
-    directoryCursor.value = page.page.next_cursor
-  } catch (error) {
-    if (generation === directoryGeneration) setNotice(error instanceof Error ? error.message : '加载更多文件失败', 'error')
-  } finally {
-    if (generation === directoryGeneration) directoryLoadingMore.value = false
-  }
-}
 
 async function connect() {
   const generation = ++connectionGeneration
@@ -231,38 +141,15 @@ async function connect() {
 function logout() {
   // Cancel any in-flight S3 transport before invalidating the current UI session.
   // Upload cleanup uses the credential captured at upload start, not the cleared reactive token.
-  uploadAbort.value?.abort()
-  uploadAbort.value = null
-  uploadPhase.value = null
-  uploadCancelling.value = false
-  uploadProgress.value = 0
+  cancelUploadForLogout()
   busy.value = ''
   connectionGeneration += 1
-  directoryGeneration += 1
-  recycleGeneration += 1
-  moveGeneration += 1
+  resetDirectory()
+  resetRecycleBin()
+  closeMovePicker()
   token.value = ''
   tenant.value = null
-  currentDirectory.value = null
-  entries.value = []
-  recycleEntries.value = []
-  breadcrumbs.value = []
-  directoryCursor.value = null
-  recycleCursor.value = null
-  moveCursor.value = null
-  loading.value = false
-  directoryLoadingMore.value = false
-  recycleLoading.value = false
-  recycleLoadingMore.value = false
-  moveLoading.value = false
-  moveLoadingMore.value = false
-  moveTarget.value = null
   renameTarget.value = null
-  renameValue.value = ''
-  movePath.value = []
-  moveDirectories.value = []
-  moveError.value = ''
-  busy.value = ''
   viewMode.value = 'files'
   localStorage.removeItem('asteria.token')
   clearNotice()
@@ -278,9 +165,7 @@ async function openBreadcrumb(item: Breadcrumb, index: number) {
 }
 
 async function refresh() {
-  const current = currentDirectory.value
-  if (!current) return
-  await loadDirectory(current.id, breadcrumbs.value)
+  await refreshDirectory()
 }
 
 function revisionHeader(item: Node) {
@@ -294,47 +179,8 @@ async function switchView(mode: ViewMode) {
   if (mode === 'recycle') {
     await loadRecycleBin()
   } else {
-    recycleGeneration += 1
-    recycleLoading.value = false
-    recycleLoadingMore.value = false
+    resetRecycleBin()
     await refresh()
-  }
-}
-
-async function loadRecycleBin() {
-  const generation = ++recycleGeneration
-  recycleLoading.value = true
-  recycleLoadingMore.value = false
-  recycleCursor.value = null
-  clearNotice()
-  try {
-    const page = await apiPage<RecycleEntry>('/api/v1/recycle-bin?limit=100')
-    if (generation !== recycleGeneration) return
-    recycleEntries.value = appendUnique([], page.data, (entry) => entry.node.id)
-    recycleCursor.value = page.page.next_cursor
-  } catch (error) {
-    if (generation === recycleGeneration) setNotice(error instanceof Error ? error.message : '无法读取回收站', 'error')
-  } finally {
-    if (generation === recycleGeneration) recycleLoading.value = false
-  }
-}
-
-async function loadMoreRecycleBin() {
-  const cursor = recycleCursor.value
-  if (!cursor || recycleLoading.value || recycleLoadingMore.value) return
-  const generation = recycleGeneration
-  recycleLoadingMore.value = true
-  clearNotice()
-  try {
-    const page = await apiPage<RecycleEntry>(`/api/v1/recycle-bin?limit=100&cursor=${encodeURIComponent(cursor)}`)
-    if (generation !== recycleGeneration) return
-    if (page.page.next_cursor === cursor) throw new Error('服务端返回了重复的分页游标')
-    recycleEntries.value = appendUnique(recycleEntries.value, page.data, (entry) => entry.node.id)
-    recycleCursor.value = page.page.next_cursor
-  } catch (error) {
-    if (generation === recycleGeneration) setNotice(error instanceof Error ? error.message : '加载更多回收项失败', 'error')
-  } finally {
-    if (generation === recycleGeneration) recycleLoadingMore.value = false
   }
 }
 
@@ -394,14 +240,13 @@ async function purgeEntry(entry: RecycleEntry) {
 
 function openRename(item: Node) {
   renameTarget.value = item
-  renameValue.value = item.name
   clearNotice()
 }
 
-async function submitRename() {
+async function submitRename(value: string) {
   const target = renameTarget.value
   if (!target) return
-  const name = renameValue.value.trim()
+  const name = value.trim()
   if (!name) {
     setNotice('名称不能为空', 'error')
     return
@@ -428,71 +273,11 @@ async function submitRename() {
   }
 }
 
-async function loadMoveDirectories(path: Breadcrumb[]) {
-  const current = path[path.length - 1]
-  if (!current) return
-  const generation = ++moveGeneration
-  moveLoading.value = true
-  moveLoadingMore.value = false
-  moveCursor.value = null
-  moveError.value = ''
-  try {
-    const page = await apiPage<Node>(`/api/v1/directories/${encodeURIComponent(current.id)}/children?limit=200`)
-    if (generation !== moveGeneration || !moveTarget.value) return
-    moveDirectories.value = appendUnique([], page.data.filter((item) => item.kind === 'directory'), (node) => node.id)
-    moveCursor.value = page.page.next_cursor
-  } catch (error) {
-    if (generation !== moveGeneration) return
-    moveError.value = error instanceof Error ? error.message : '无法读取目标文件夹'
-    moveDirectories.value = []
-  } finally {
-    if (generation === moveGeneration) moveLoading.value = false
-  }
-}
-
-async function loadMoreMoveDirectories() {
-  const current = movePath.value[movePath.value.length - 1]
-  const cursor = moveCursor.value
-  if (!current || !cursor || moveLoading.value || moveLoadingMore.value) return
-  const generation = moveGeneration
-  moveLoadingMore.value = true
-  moveError.value = ''
-  try {
-    const page = await apiPage<Node>(`/api/v1/directories/${encodeURIComponent(current.id)}/children?limit=200&cursor=${encodeURIComponent(cursor)}`)
-    if (generation !== moveGeneration || !moveTarget.value) return
-    if (page.page.next_cursor === cursor) throw new Error('服务端返回了重复的分页游标')
-    moveDirectories.value = appendUnique(moveDirectories.value, page.data.filter((item) => item.kind === 'directory'), (node) => node.id)
-    moveCursor.value = page.page.next_cursor
-  } catch (error) {
-    if (generation === moveGeneration) moveError.value = error instanceof Error ? error.message : '加载更多目标文件夹失败'
-  } finally {
-    if (generation === moveGeneration) moveLoadingMore.value = false
-  }
-}
-
 async function openMove(item: Node) {
   const rootId = tenant.value?.root_directory_id
   if (!rootId) return
-  moveTarget.value = item
-  movePath.value = [{ id: rootId, name: '根目录' }]
   clearNotice()
-  await loadMoveDirectories(movePath.value)
-}
-
-async function enterMoveDirectory(directory: Node) {
-  if (moveTarget.value?.id === directory.id) {
-    moveError.value = '不能移动到自身'
-    return
-  }
-  const path = [...movePath.value, { id: directory.id, name: directory.name }]
-  movePath.value = path
-  await loadMoveDirectories(path)
-}
-
-async function jumpMovePath(index: number) {
-  const path = movePath.value.slice(0, index + 1)
-  movePath.value = path
-  await loadMoveDirectories(path)
+  await openMovePicker(item, rootId)
 }
 
 async function moveHere() {
@@ -512,7 +297,7 @@ async function moveHere() {
       headers: revisionHeader(target),
       body: JSON.stringify({ parent_id: destination.id }),
     })
-    moveTarget.value = null
+    closeMovePicker()
     await refresh()
     setNotice(`已移动「${target.name}」`)
   } catch (error) {
@@ -523,14 +308,7 @@ async function moveHere() {
 }
 
 function closeMove() {
-  moveGeneration += 1
-  moveTarget.value = null
-  movePath.value = []
-  moveDirectories.value = []
-  moveCursor.value = null
-  moveLoading.value = false
-  moveLoadingMore.value = false
-  moveError.value = ''
+  closeMovePicker()
 }
 
 function formatDeletedAt(value: string) {
@@ -565,104 +343,21 @@ function chooseFile() {
   fileInput.value?.click()
 }
 
-function cancelUpload() {
-  if (uploadPhase.value !== 'uploading' || !uploadAbort.value) return
-  uploadCancelling.value = true
-  uploadAbort.value.abort()
-}
-
 async function uploadFile(event: Event) {
   const input = event.target as HTMLInputElement
   const file = input.files?.[0]
-  const parent = currentDirectory.value
   input.value = ''
-  if (!file || !parent) return
-  if (file.size < 1) {
-    setNotice('不能上传空文件', 'error')
-    return
-  }
-
-  busy.value = 'upload'
-  uploadProgress.value = 0
-  uploadCancelling.value = false
-  uploadPhase.value = 'uploading'
-  const controller = new AbortController()
-  uploadAbort.value = controller
-  const uploadToken = token.value
-  const uploadDirectoryGeneration = directoryGeneration
-  // Always use the initiating session for upload/abort requests, even during logout.
-  const uploadHeaders = (headers: Record<string, string> = {}) => ({
-    ...headers, Authorization: `Bearer ${uploadToken}`,
-  })
-  clearNotice()
-
-  const gateway: UploadGateway = {
-    create: (uploadFile, parentId, key) => api('/api/v1/uploads', {
-      method: 'POST',
-      headers: uploadHeaders({ 'Idempotency-Key': key }),
-      body: JSON.stringify({
-        parent_id: parentId,
-        name: uploadFile.name,
-        size: uploadFile.size,
-        mime_type: uploadFile.type || 'application/octet-stream',
-      }),
-    }),
-    sign: (uploadId, partNumber) => api(`/api/v1/uploads/${encodeURIComponent(uploadId)}/parts/sign`, {
-      method: 'POST',
-      headers: uploadHeaders(),
-      body: JSON.stringify({ part_number: partNumber }),
-    }),
-    complete: async (uploadId, parts) => {
-      await api(`/api/v1/uploads/${encodeURIComponent(uploadId)}/complete`, {
-        method: 'POST',
-        headers: uploadHeaders(),
-        body: JSON.stringify({ parts }),
-      })
-    },
-    read: (uploadId) => api(`/api/v1/uploads/${encodeURIComponent(uploadId)}`, {
-      headers: uploadHeaders(),
-    }),
-    abort: async (uploadId) => {
-      await api(`/api/v1/uploads/${encodeURIComponent(uploadId)}`, {
-        method: 'DELETE',
-        headers: uploadHeaders(),
-      })
-    },
-  }
-
-  try {
-    await uploadMultipart(gateway, file, parent.id, newIdempotencyKey(), {
-      signal: controller.signal,
-      onProgress: (progress) => {
-        if (uploadAbort.value === controller) uploadProgress.value = progress
-      },
-      onPhase: (phase) => {
-        if (uploadAbort.value === controller) uploadPhase.value = phase
-      },
-    })
-    if (uploadAbort.value !== controller) return
-    const sameDirectory = currentDirectory.value?.id === parent.id && directoryGeneration === uploadDirectoryGeneration
-    if (sameDirectory) await refresh()
-    if (uploadAbort.value === controller) {
-      setNotice(sameDirectory ? `已上传「${file.name}」` : `已上传「${file.name}」到「${parent.name}」`)
-    }
-  } catch (error) {
-    if (uploadAbort.value === controller) {
-      setNotice(error instanceof Error ? error.message : '上传失败', 'error')
-    }
-  } finally {
-    // A previous session must not clear a newer session's controls or notices.
-    if (uploadAbort.value === controller) {
-      uploadAbort.value = null
-      uploadPhase.value = null
-      uploadCancelling.value = false
-      busy.value = ''
-      uploadProgress.value = 0
-    }
-  }
+  if (!file) return
+  await startUpload(file)
 }
 
 async function downloadFile(item: Node) {
+  // The window must be opened while the click's user activation is still present.
+  const target = openDownloadWindow()
+  if (!target) {
+    setNotice('浏览器拦截了下载窗口，请允许弹窗后重试', 'error')
+    return
+  }
   busy.value = `download:${item.id}`
   clearNotice()
   try {
@@ -670,8 +365,13 @@ async function downloadFile(item: Node) {
       method: 'POST',
       body: '{}',
     })
-    window.open(authorization.url, '_blank', 'noopener,noreferrer')
+    if (target.closed) {
+      setNotice('下载窗口已关闭，请重试', 'error')
+      return
+    }
+    target.setUrl(authorization.url)
   } catch (error) {
+    target.close()
     setNotice(error instanceof Error ? error.message : '下载失败', 'error')
   } finally {
     busy.value = ''
@@ -876,49 +576,30 @@ onMounted(() => {
           <button type="button" @click="viewMode === 'recycle' ? loadRecycleBin() : refresh()">↻ 刷新</button>
         </div>
 
-        <div v-if="renameTarget" class="modal-backdrop" @click.self="renameTarget = null">
-          <form class="modal-card" @submit.prevent="submitRename">
-            <h2>重命名</h2>
-            <p class="muted">输入新的名称，最多 255 个字符。</p>
-            <input v-model="renameValue" class="modal-input" maxlength="255" aria-label="新名称" />
-            <div class="modal-actions">
-              <button class="modal-cancel" type="button" @click="renameTarget = null">取消</button>
-              <button class="modal-confirm" type="submit" :disabled="busy === `rename:${renameTarget.id}`">保存</button>
-            </div>
-          </form>
-        </div>
+        <RenameDialog
+          v-if="renameTarget"
+          :target="renameTarget"
+          :busy="busy === `rename:${renameTarget.id}`"
+          @cancel="renameTarget = null"
+          @submit="submitRename"
+        />
 
-        <div v-if="moveTarget" class="modal-backdrop" @click.self="closeMove">
-          <div class="modal-card">
-            <h2>移动「{{ moveTarget.name }}」</h2>
-            <p class="muted">选择目标文件夹</p>
-            <div class="move-path">
-              <template v-for="(item, index) in movePath" :key="item.id">
-                <button type="button" @click="jumpMovePath(index)">{{ item.name }}</button>
-                <span v-if="index < movePath.length - 1">/</span>
-              </template>
-            </div>
-            <div class="move-list">
-              <div v-if="moveLoading" class="move-empty">正在读取…</div>
-              <div v-else-if="moveDirectories.length === 0" class="move-empty">当前文件夹没有子文件夹</div>
-              <template v-else>
-                <button v-for="directory in moveDirectories" :key="directory.id" class="move-item" type="button" @click="enterMoveDirectory(directory)">
-                  <span>▰ {{ directory.name }}</span><span>进入</span>
-                </button>
-              </template>
-              <div v-if="!moveLoading && moveCursor" class="page-more">
-                <button type="button" :disabled="moveLoadingMore" @click="loadMoreMoveDirectories">
-                  {{ moveLoadingMore ? '加载中…' : '加载更多文件夹' }}
-                </button>
-              </div>
-            </div>
-            <p v-if="moveError" class="form-error" role="alert">{{ moveError }}</p>
-            <div class="modal-actions">
-              <button class="modal-cancel" type="button" @click="closeMove">取消</button>
-              <button class="modal-confirm" type="button" :disabled="busy === `move:${moveTarget.id}`" @click="moveHere">移动到这里</button>
-            </div>
-          </div>
-        </div>
+        <MoveDialog
+          v-if="moveTarget"
+          :target="moveTarget"
+          :path="movePath"
+          :directories="moveDirectories"
+          :loading="moveLoading"
+          :loading-more="moveLoadingMore"
+          :error="moveError"
+          :cursor="moveCursor"
+          :busy="busy === `move:${moveTarget.id}`"
+          @close="closeMove"
+          @enter="enterMoveDirectory"
+          @jump="jumpMovePath"
+          @load-more="loadMoreMoveDirectories"
+          @move="moveHere"
+        />
       </section>
     </main>
   </div>
