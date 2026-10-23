@@ -3,6 +3,8 @@ package staging
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -16,19 +18,33 @@ func testBundles(t *testing.T) BundleSet {
 }
 
 type fakeHost struct {
-	active         ActiveState
-	activateErr    error
-	verifyErr      error
-	verifyEvidence *Evidence
-	rollbackErr    error
-	rollbackVerify *Evidence
-	activateCalls  []string
-	rollbackCalls  []string
-	deletedVolumes bool
+	active              ActiveState
+	readErr             error
+	bundles             BundleSet
+	activateErr         error
+	verifyErr           error
+	verifyEvidence      *Evidence
+	rollbackErr         error
+	rollbackVerify      *Evidence
+	activeAfterRollback *ActiveState
+	activateCalls       []string
+	rollbackCalls       []string
+	deletedVolumes      bool
 }
 
 func (host *fakeHost) ReadActive(context.Context) (ActiveState, error) {
-	return host.active, nil
+	if host.readErr != nil {
+		return ActiveState{}, host.readErr
+	}
+	active := host.active
+	if active.ComposeSHA256 == "" {
+		if bundle, ok := host.bundles[active.Version]; ok {
+			active.ComposeSHA256 = bundle.ComposeSHA256
+			active.Image = bundle.Image
+			active.SchemaVersion = bundle.SchemaVersion
+		}
+	}
+	return active, nil
 }
 
 func (host *fakeHost) Activate(_ context.Context, bundle Bundle) (ActiveState, error) {
@@ -55,7 +71,11 @@ func (host *fakeHost) Rollback(_ context.Context, bundle Bundle) (ActiveState, e
 	if host.rollbackErr != nil {
 		return ActiveState{}, host.rollbackErr
 	}
-	host.active = ActiveState{Version: bundle.Version, ComposeSHA256: bundle.ComposeSHA256, Image: bundle.Image, SchemaVersion: bundle.SchemaVersion, Healthy: true}
+	if host.activeAfterRollback != nil {
+		host.active = *host.activeAfterRollback
+	} else {
+		host.active = ActiveState{Version: bundle.Version, ComposeSHA256: bundle.ComposeSHA256, Image: bundle.Image, SchemaVersion: bundle.SchemaVersion, Healthy: true}
+	}
 	return host.active, nil
 }
 
@@ -104,6 +124,9 @@ func (locker *fakeLocker) Acquire(context.Context, string) (func(), error) {
 func newTestController(t *testing.T, host Host) (*Controller, BundleSet, *fakeStore, *fakeLocker) {
 	t.Helper()
 	bundles := testBundles(t)
+	if fake, ok := host.(*fakeHost); ok {
+		fake.bundles = bundles
+	}
 	store := &fakeStore{}
 	locker := &fakeLocker{}
 	controller := &Controller{Bundles: bundles, Host: host, Store: store, Locker: locker}
@@ -199,8 +222,8 @@ func TestExpectedCurrentVersionMismatch(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected active version mismatch")
 	}
-	if record.State != StateFailed {
-		t.Fatalf("state = %s, want FAILED", record.State)
+	if record.State != StateRecoveryRequired {
+		t.Fatalf("state = %s, want RECOVERY_REQUIRED", record.State)
 	}
 	if len(host.activateCalls) != 0 {
 		t.Fatal("activated despite expected-current mismatch")
@@ -424,5 +447,172 @@ func TestTransitionTableRejectsIllegalTransition(t *testing.T) {
 	}
 	if !TransitionAllowed(StateIdle, StatePrepared) || !TransitionAllowed(StateActivating, StateVerifying) {
 		t.Fatal("approved transitions were rejected")
+	}
+}
+func TestPreSwitchUnreadableBlocksDeploy(t *testing.T) {
+	host := &fakeHost{readErr: errors.New("docker unavailable")}
+	controller, _, _, _ := newTestController(t, host)
+	record, err := controller.Deploy(context.Background(), request("20", VersionV020, VersionV011))
+	if !errors.Is(err, ErrRecoveryRequired) {
+		t.Fatalf("error = %v, want ErrRecoveryRequired", err)
+	}
+	if record.State != StateRecoveryRequired || len(host.activateCalls) != 0 {
+		t.Fatalf("unexpected record/calls: %#v %#v", record, host.activateCalls)
+	}
+}
+
+func TestPreSwitchUnknownActiveBlocksDeploy(t *testing.T) {
+	host := &fakeHost{active: ActiveState{Version: "v9.9.9", Healthy: true}}
+	controller, _, _, _ := newTestController(t, host)
+	record, err := controller.Deploy(context.Background(), request("21", VersionV020, ""))
+	if !errors.Is(err, ErrRecoveryRequired) {
+		t.Fatalf("error = %v, want ErrRecoveryRequired", err)
+	}
+	if record.State != StateRecoveryRequired || len(host.activateCalls) != 0 {
+		t.Fatalf("unexpected record/calls: %#v %#v", record, host.activateCalls)
+	}
+}
+
+func TestPreSwitchActiveComposeDriftBlocksDeploy(t *testing.T) {
+	set := testBundles(t)
+	host := &fakeHost{active: ActiveState{Version: VersionV011, ComposeSHA256: "deadbeef", Image: set[VersionV011].Image, SchemaVersion: 3, Healthy: true}}
+	controller, _, _, _ := newTestController(t, host)
+	record, err := controller.Deploy(context.Background(), request("22", VersionV020, VersionV011))
+	if !errors.Is(err, ErrRecoveryRequired) {
+		t.Fatalf("error = %v, want ErrRecoveryRequired", err)
+	}
+	if record.State != StateRecoveryRequired || len(host.activateCalls) != 0 {
+		t.Fatalf("unexpected record/calls: %#v %#v", record, host.activateCalls)
+	}
+}
+
+func TestPreSwitchUnhealthyActiveBlocksDeploy(t *testing.T) {
+	set := testBundles(t)
+	host := &fakeHost{active: ActiveState{Version: VersionV011, ComposeSHA256: set[VersionV011].ComposeSHA256, Image: set[VersionV011].Image, SchemaVersion: 3, Healthy: false}}
+	controller, _, _, _ := newTestController(t, host)
+	record, err := controller.Deploy(context.Background(), request("23", VersionV020, VersionV011))
+	if !errors.Is(err, ErrRecoveryRequired) {
+		t.Fatalf("error = %v, want ErrRecoveryRequired", err)
+	}
+	if record.State != StateRecoveryRequired || len(host.activateCalls) != 0 {
+		t.Fatalf("unexpected record/calls: %#v %#v", record, host.activateCalls)
+	}
+}
+
+func TestActiveTargetUnhealthyBlocksDeploy(t *testing.T) {
+	set := testBundles(t)
+	host := &fakeHost{active: ActiveState{Version: VersionV020, ComposeSHA256: set[VersionV020].ComposeSHA256, Image: set[VersionV020].Image, SchemaVersion: 3, Healthy: false}}
+	controller, _, _, _ := newTestController(t, host)
+	record, err := controller.Deploy(context.Background(), request("24", VersionV020, VersionV020))
+	if !errors.Is(err, ErrRecoveryRequired) {
+		t.Fatalf("error = %v, want ErrRecoveryRequired", err)
+	}
+	if record.State != StateRecoveryRequired {
+		t.Fatalf("state = %s", record.State)
+	}
+}
+
+func TestRollbackSchemaMismatchRequiresRecovery(t *testing.T) {
+	set := testBundles(t)
+	wrongSchema := Evidence{Version: VersionV011, ComposeSHA256: set[VersionV011].ComposeSHA256, Image: set[VersionV011].Image, SchemaVersion: 2, Healthy: true, Digest: "evidence"}
+	host := &fakeHost{active: ActiveState{Version: VersionV020, ComposeSHA256: set[VersionV020].ComposeSHA256, Image: set[VersionV020].Image, SchemaVersion: 3, Healthy: true}, rollbackVerify: &wrongSchema}
+	controller, _, _, _ := newTestController(t, host)
+	record, err := controller.Rollback(context.Background(), request("25", VersionV011, VersionV020))
+	if !errors.Is(err, ErrRecoveryRequired) {
+		t.Fatalf("error = %v, want ErrRecoveryRequired", err)
+	}
+	if record.State != StateRecoveryRequired {
+		t.Fatalf("state = %s", record.State)
+	}
+}
+
+func TestDeployVerifyMissingDigestCompensates(t *testing.T) {
+	set := testBundles(t)
+	missingDigest := Evidence{Version: VersionV020, ComposeSHA256: set[VersionV020].ComposeSHA256, Image: set[VersionV020].Image, SchemaVersion: 3, Healthy: true}
+	host := &fakeHost{active: ActiveState{Version: VersionV011, ComposeSHA256: set[VersionV011].ComposeSHA256, Image: set[VersionV011].Image, SchemaVersion: 3, Healthy: true}, verifyEvidence: &missingDigest}
+	controller, _, _, _ := newTestController(t, host)
+	record, err := controller.Deploy(context.Background(), request("26", VersionV020, VersionV011))
+	if err == nil || record.State != StateActive || record.ActiveVersion != VersionV011 {
+		t.Fatalf("record=%#v err=%v", record, err)
+	}
+}
+
+func TestCompensateSchemaMismatchRequiresRecovery(t *testing.T) {
+	set := testBundles(t)
+	wrongTarget := Evidence{Version: VersionV020, ComposeSHA256: "deadbeef", Image: set[VersionV020].Image, SchemaVersion: 3, Healthy: true, Digest: "e"}
+	wrongRollback := Evidence{Version: VersionV011, ComposeSHA256: set[VersionV011].ComposeSHA256, Image: set[VersionV011].Image, SchemaVersion: 2, Healthy: true, Digest: "e"}
+	host := &fakeHost{active: ActiveState{Version: VersionV011, ComposeSHA256: set[VersionV011].ComposeSHA256, Image: set[VersionV011].Image, SchemaVersion: 3, Healthy: true}, verifyEvidence: &wrongTarget, rollbackVerify: &wrongRollback}
+	controller, _, _, _ := newTestController(t, host)
+	record, err := controller.Deploy(context.Background(), request("27", VersionV020, VersionV011))
+	if !errors.Is(err, ErrRecoveryRequired) || record.State != StateRecoveryRequired {
+		t.Fatalf("record=%#v err=%v", record, err)
+	}
+}
+
+func TestRollbackPostReadImageMismatchRequiresRecovery(t *testing.T) {
+	set := testBundles(t)
+	bad := ActiveState{Version: VersionV011, ComposeSHA256: set[VersionV011].ComposeSHA256, Image: "sha256:deadbeef", SchemaVersion: 3, Healthy: true}
+	host := &fakeHost{active: ActiveState{Version: VersionV020, ComposeSHA256: set[VersionV020].ComposeSHA256, Image: set[VersionV020].Image, SchemaVersion: 3, Healthy: true}, activeAfterRollback: &bad}
+	controller, _, _, _ := newTestController(t, host)
+	record, err := controller.Rollback(context.Background(), request("28", VersionV011, VersionV020))
+	if !errors.Is(err, ErrRecoveryRequired) || record.State != StateRecoveryRequired {
+		t.Fatalf("record=%#v err=%v", record, err)
+	}
+}
+
+func TestFinalActivePersistFailureRemainsNonActive(t *testing.T) {
+	set := testBundles(t)
+	host := &fakeHost{active: ActiveState{Version: VersionV011, ComposeSHA256: set[VersionV011].ComposeSHA256, Image: set[VersionV011].Image, SchemaVersion: 3, Healthy: true}}
+	controller, _, store, _ := newTestController(t, host)
+	store.failAt = 4
+	record, err := controller.Deploy(context.Background(), request("29", VersionV020, VersionV011))
+	if err == nil {
+		t.Fatal("expected final persistence failure")
+	}
+	if record.State != StateVerifying || store.record.State == StateActive {
+		t.Fatalf("record=%#v persisted=%#v", record, store.record)
+	}
+}
+
+func TestReplayRevalidatesRealHost(t *testing.T) {
+	set := testBundles(t)
+	host := &fakeHost{active: ActiveState{Version: VersionV011, ComposeSHA256: set[VersionV011].ComposeSHA256, Image: set[VersionV011].Image, SchemaVersion: 3, Healthy: true}}
+	controller, _, _, _ := newTestController(t, host)
+	if _, err := controller.Deploy(context.Background(), request("30", VersionV020, VersionV011)); err != nil {
+		t.Fatal(err)
+	}
+	host.active = ActiveState{Version: VersionV011, ComposeSHA256: set[VersionV011].ComposeSHA256, Image: set[VersionV011].Image, SchemaVersion: 3, Healthy: true}
+	if _, err := controller.Deploy(context.Background(), request("30", VersionV020, VersionV011)); !errors.Is(err, ErrRecoveryRequired) {
+		t.Fatalf("replay error = %v, want ErrRecoveryRequired", err)
+	}
+}
+
+func TestResumeActiveRevalidatesRealHost(t *testing.T) {
+	set := testBundles(t)
+	host := &fakeHost{active: ActiveState{Version: VersionV011, ComposeSHA256: set[VersionV011].ComposeSHA256, Image: set[VersionV011].Image, SchemaVersion: 3, Healthy: true}}
+	controller, _, store, _ := newTestController(t, host)
+	store.record = Record{Format: RecordFormat, Operation: "deploy", RunID: "31", Attempt: "1", TargetVersion: VersionV020, ActiveVersion: VersionV020, ActiveComposeSHA256: set[VersionV020].ComposeSHA256, ActiveImage: set[VersionV020].Image, SchemaVersion: 3, State: StateActive}
+	store.exists = true
+	if _, err := controller.Resume(context.Background(), "31", "1"); !errors.Is(err, ErrRecoveryRequired) {
+		t.Fatalf("resume error = %v, want ErrRecoveryRequired", err)
+	}
+}
+
+func TestFileStoreRoundTripAndCorruptRecord(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	store := FileStore{Path: path}
+	record := Record{Format: RecordFormat, RunID: "1", Attempt: "1", Operation: "deploy", State: StateActive, ActiveVersion: VersionV020}
+	if err := store.Save(context.Background(), record); err != nil {
+		t.Fatal(err)
+	}
+	loaded, ok, err := store.Load(context.Background())
+	if err != nil || !ok || loaded.ActiveVersion != VersionV020 {
+		t.Fatalf("loaded=%#v ok=%v err=%v", loaded, ok, err)
+	}
+	if err := os.WriteFile(path, []byte("{not-json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.Load(context.Background()); err == nil {
+		t.Fatal("corrupt state was accepted")
 	}
 }

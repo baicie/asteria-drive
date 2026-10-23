@@ -114,9 +114,19 @@ func TestStagingBootstrapAllowsOnlyTwoReviewedReleasePairs(t *testing.T) {
 		`expected_deploy_script_sha256="007eb3a34bc5eff5bdff1db247ef9ed2b396814eac8231a0df71579a3f79138f"`,
 		`legacy_deploy_script_sha256="cd200fa32fdc2314817308479c99fe6425a481ff3bcd7384a60e145b2ad45044"`,
 		"receive_release_file",
+		"ASTERIA_STAGING_CONTROLLER_B64",
+		"controller_path=",
+		"expected_controller_sha256",
+		"staging-releases.json",
+		"\"$controller_path\" deploy",
 		"compose_actual=",
 		"script_actual=",
-		"flock -n /run/asteria-drive-staging.lock",
+		`lock_path="${lock_dir}/staging.lock"`,
+		`install -d -m 0750 -o root -g "$deploy_group" "$lock_dir"`,
+		`install -m 0660 -o root -g "$deploy_group" /dev/null "$lock_path"`,
+		"/etc/tmpfiles.d/asteria-drive-staging.conf",
+		"validate_lock",
+		`exec flock -n "$lock_path"`,
 	} {
 		if !strings.Contains(text, required) {
 			t.Errorf("bootstrap is missing %q", required)

@@ -107,20 +107,8 @@ jobs:
           selected_compose=""
           selected_image=""
           probe_exit=1
-          for candidate in v0.2.0 v0.1.1; do
-            case "$candidate" in
-              v0.2.0)
-                candidate_sha="$RECOVERY_SCRIPT_SHA256_V020"
-                candidate_compose="$EXPECTED_COMPOSE_SHA256_V020"
-                candidate_image="$EXPECTED_IMAGE_V020"
-                ;;
-              v0.1.1)
-                candidate_sha="$RECOVERY_SCRIPT_SHA256_V011"
-                candidate_compose="$EXPECTED_COMPOSE_SHA256_V011"
-                candidate_image="$EXPECTED_IMAGE_V011"
-                ;;
-              *) exit 1 ;;
-            esac
+          run_probe() {
+            local candidate="$1" candidate_sha="$2"
             set +e
             ssh \
               -F none -i "$RUNNER_TEMP/ssh/key" -p "$DEPLOY_PORT" \
@@ -130,24 +118,61 @@ jobs:
               "$DEPLOY_USER@$DEPLOY_HOST" \
               "recovery $GITHUB_RUN_ID $GITHUB_RUN_ATTEMPT $GITHUB_SHA $candidate_sha" \
               >"$raw_evidence" 2>"$remote_stderr"
-            probe_exit="$?"
+            local code="$?"
             set -e
-            printf '%s probe_exit=%s\n' "$candidate" "$probe_exit" >>"$RUNNER_TEMP/staging-recovery-attempts.log"
-            if [[ "$probe_exit" -eq 0 ]]; then
-              selected_version="$candidate"
-              selected_sha="$candidate_sha"
-              selected_compose="$candidate_compose"
-              selected_image="$candidate_image"
-              printf '%s\n' "$selected_version" >"$evidence_dir/selected-release.txt"
-              cp "$RUNNER_TEMP/staging-recovery-attempts.log" "$evidence_dir/probe-attempts.txt"
-              break
+            printf '%s probe_exit=%s\n' "$candidate" "$code" >>"$RUNNER_TEMP/staging-recovery-attempts.log"
+            return "$code"
+          }
+          fallback_allowed() {
+            if [[ -s "$remote_stderr" ]] && grep -Fxq 'staging deploy command rejected' "$remote_stderr"; then
+              return 0
             fi
-            cp "$remote_stderr" "$RUNNER_TEMP/staging-recovery-${candidate}.stderr" 2>/dev/null || true
-            : >"$raw_evidence"
-          done
+            python3 - "$raw_evidence" <<'PY'
+          import json
+          import sys
+          try:
+              with open(sys.argv[1], encoding="utf-8") as handle:
+                  report = json.load(handle)
+          except (OSError, ValueError):
+              raise SystemExit(1)
+          raise SystemExit(0 if report.get("status") == "failed" and report.get("last_phase") == "source-identity" else 1)
+          PY
+          }
+          if run_probe v0.2.0 "$RECOVERY_SCRIPT_SHA256_V020"; then
+            probe_exit=0
+            selected_version="v0.2.0"
+            selected_sha="$RECOVERY_SCRIPT_SHA256_V020"
+            selected_compose="$EXPECTED_COMPOSE_SHA256_V020"
+            selected_image="$EXPECTED_IMAGE_V020"
+            printf 'selected v0.2.0\n' >"$evidence_dir/fallback-decision.txt"
+          else
+            cp "$remote_stderr" "$RUNNER_TEMP/staging-recovery-v0.2.0.stderr" 2>/dev/null || true
+            if fallback_allowed; then
+              printf 'fallback: v0.2.0 recovery probe proved version mismatch or dispatcher rejection\n' >"$evidence_dir/fallback-decision.txt"
+              : >"$raw_evidence"
+              : >"$remote_stderr"
+              if run_probe v0.1.1 "$RECOVERY_SCRIPT_SHA256_V011"; then
+                probe_exit=0
+                selected_version="v0.1.1"
+                selected_sha="$RECOVERY_SCRIPT_SHA256_V011"
+                selected_compose="$EXPECTED_COMPOSE_SHA256_V011"
+                selected_image="$EXPECTED_IMAGE_V011"
+                printf 'selected v0.1.1 after fallback\n' >>"$evidence_dir/fallback-decision.txt"
+              else
+                probe_exit="$?"
+              fi
+            else
+              printf 'fallback denied: v0.2.0 recovery failure was not a version mismatch\n' >"$evidence_dir/fallback-decision.txt"
+              probe_exit=1
+            fi
+          fi
           if [[ -z "$selected_version" ]]; then
-            printf 'no approved staging recovery probe succeeded\n' >&2
+            printf 'no approved staging recovery probe succeeded without masking a real failure\n' >&2
             probe_exit=1
+          fi
+          cp "$RUNNER_TEMP/staging-recovery-attempts.log" "$evidence_dir/probe-attempts.txt" 2>/dev/null || true
+          if [[ -n "$selected_version" ]]; then
+            printf '%s\n' "$selected_version" >"$evidence_dir/selected-release.txt"
           fi
           export SELECTED_VERSION="$selected_version"
           export SELECTED_RECOVERY_SHA256="$selected_sha"

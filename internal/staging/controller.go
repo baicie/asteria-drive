@@ -36,6 +36,11 @@ var (
 	ErrInProgress        = errors.New("another staging operation is in progress")
 	ErrInvalidRequest    = errors.New("invalid staging controller request")
 	ErrInvalidTransition = errors.New("invalid staging state transition")
+	ErrActiveUnreadable  = errors.New("active staging state is unreadable")
+	ErrActiveUnapproved  = errors.New("active version is not approved")
+	ErrActiveDrifted     = errors.New("active version does not match its approved bundle")
+	ErrActiveUnhealthy   = errors.New("active version is unhealthy")
+	ErrCurrentMismatch   = errors.New("expected current version does not match active version")
 )
 
 var transitionTable = map[State]map[State]bool{
@@ -216,6 +221,9 @@ func (c *Controller) Deploy(ctx context.Context, request Request) (Record, error
 		return Record{}, err
 	}
 	if existing, done, err := replay(record, "deploy", request); done || err != nil {
+		if done && existing.State == StateActive && err == nil {
+			return c.revalidateActiveRecord(ctx, existing)
+		}
 		return existing, err
 	}
 	if record.State == StateRecoveryRequired {
@@ -228,21 +236,17 @@ func (c *Controller) Deploy(ctx context.Context, request Request) (Record, error
 	if inProgress(record) {
 		return record, ErrInProgress
 	}
-	active, err := c.Host.ReadActive(ctx)
+	active, current, err := c.readValidatedActive(ctx)
 	if err != nil {
-		return c.markFailed(ctx, record, "read active state: "+err.Error(), err)
+		return c.markRecovery(ctx, record, "pre-switch active validation failed: "+err.Error(), err)
 	}
 	if request.ExpectedCurrentVersion != "" && active.Version != request.ExpectedCurrentVersion {
-		return c.markFailed(ctx, record, "expected current version "+request.ExpectedCurrentVersion+" but found "+active.Version, fmt.Errorf("active version mismatch"))
+		return c.markRecovery(ctx, record, "expected current version "+request.ExpectedCurrentVersion+" but found "+active.Version, ErrCurrentMismatch)
 	}
 	if active.Version == bundle.Version {
-		if err := bundle.ValidateActive(active); err != nil {
-			return c.markFailed(ctx, record, "active target is unhealthy: "+err.Error(), err)
-		}
 		return c.markActive(ctx, record, bundle, "deploy", request)
 	}
 
-	previous, previousOK := c.Bundles[active.Version]
 	record.Operation = "deploy"
 	record.RunID = request.RunID
 	record.Attempt = request.Attempt
@@ -258,32 +262,19 @@ func (c *Controller) Deploy(ctx context.Context, request Request) (Record, error
 		return record, err
 	}
 	if _, err := c.Host.Activate(ctx, bundle); err != nil {
-		return c.compensate(ctx, record, previous, previousOK, "activate failed: "+err.Error(), err)
+		return c.compensate(ctx, record, current, true, "activate failed: "+err.Error(), err)
 	}
 	if err := c.save(ctx, &record, StateVerifying); err != nil {
 		return record, err
 	}
 	evidence, err := c.Host.Verify(ctx, bundle)
 	if err != nil {
-		return c.compensate(ctx, record, previous, previousOK, "verify failed: "+err.Error(), err)
+		return c.compensate(ctx, record, current, true, "verify failed: "+err.Error(), err)
 	}
-	if !evidence.Healthy || evidence.Version != bundle.Version ||
-		evidence.ComposeSHA256 != bundle.ComposeSHA256 || evidence.Image != bundle.Image ||
-		evidence.SchemaVersion != bundle.SchemaVersion {
-		return c.compensate(ctx, record, previous, previousOK, "verification evidence does not match target bundle", fmt.Errorf("verification mismatch"))
+	if err := validateEvidence(bundle, evidence); err != nil {
+		return c.compensate(ctx, record, current, true, "verification evidence does not match target bundle: "+err.Error(), err)
 	}
-	record.EvidenceDigest = evidence.Digest
-	if err := c.save(ctx, &record, StateActive); err != nil {
-		return record, err
-	}
-	record.ActiveVersion = bundle.Version
-	record.ActiveComposeSHA256 = bundle.ComposeSHA256
-	record.ActiveImage = bundle.Image
-	record.SchemaVersion = bundle.SchemaVersion
-	if err := c.Store.Save(ctx, record); err != nil {
-		return record, fmt.Errorf("persist active state: %w", err)
-	}
-	return record, nil
+	return c.commitActive(ctx, record, bundle, evidence)
 }
 
 func (c *Controller) Rollback(ctx context.Context, request Request) (Record, error) {
@@ -305,6 +296,9 @@ func (c *Controller) Rollback(ctx context.Context, request Request) (Record, err
 		return Record{}, err
 	}
 	if existing, done, err := replay(record, "rollback", request); done || err != nil {
+		if done && existing.State == StateActive && err == nil {
+			return c.revalidateActiveRecord(ctx, existing)
+		}
 		return existing, err
 	}
 	if record.State == StateRecoveryRequired {
@@ -317,22 +311,15 @@ func (c *Controller) Rollback(ctx context.Context, request Request) (Record, err
 	if inProgress(record) {
 		return record, ErrInProgress
 	}
-	active, err := c.Host.ReadActive(ctx)
+	active, _, err := c.readValidatedActive(ctx)
 	if err != nil {
-		return c.markFailed(ctx, record, "read active state: "+err.Error(), err)
+		return c.markRecovery(ctx, record, "pre-rollback active validation failed: "+err.Error(), err)
 	}
 	if request.ExpectedCurrentVersion != "" && active.Version != request.ExpectedCurrentVersion {
-		return c.markFailed(ctx, record, "expected current version "+request.ExpectedCurrentVersion+" but found "+active.Version, fmt.Errorf("active version mismatch"))
+		return c.markRecovery(ctx, record, "expected current version "+request.ExpectedCurrentVersion+" but found "+active.Version, ErrCurrentMismatch)
 	}
 	if active.Version == bundle.Version {
-		if err := bundle.ValidateActive(active); err != nil {
-			return c.markFailed(ctx, record, "active target is unhealthy: "+err.Error(), err)
-		}
 		return c.markActive(ctx, record, bundle, "rollback", request)
-	}
-	_, previousOK := c.Bundles[active.Version]
-	if !previousOK {
-		return c.markRecovery(ctx, record, "unknown active version "+active.Version, fmt.Errorf("unknown active version"))
 	}
 	record.Operation = "rollback"
 	record.RunID = request.RunID
@@ -345,32 +332,26 @@ func (c *Controller) Rollback(ctx context.Context, request Request) (Record, err
 		return record, err
 	}
 	if _, err := c.Host.Rollback(ctx, bundle); err != nil {
-		return c.markRecovery(ctx, record, "rollback execution failed: "+err.Error(), err)
+		return c.markRecovery(ctx, record, "rollback execution failed: "+err.Error(), fmt.Errorf("%w: %v", ErrRecoveryRequired, err))
 	}
 	if err := c.save(ctx, &record, StateRollbackVerifying); err != nil {
 		return record, err
 	}
 	evidence, err := c.Host.VerifyRollback(ctx, bundle)
-	if err != nil || !evidence.Healthy || evidence.Version != bundle.Version ||
-		evidence.ComposeSHA256 != bundle.ComposeSHA256 || evidence.Image != bundle.Image {
-		message := "rollback verification failed"
-		if err != nil {
-			message += ": " + err.Error()
-		}
-		return c.markRecovery(ctx, record, message, fmt.Errorf("rollback verification failed"))
+	if err != nil {
+		return c.markRecovery(ctx, record, "rollback evidence unavailable: "+err.Error(), fmt.Errorf("rollback evidence unavailable: %w", err))
 	}
-	record.EvidenceDigest = evidence.Digest
-	record.ActiveVersion = bundle.Version
-	record.ActiveComposeSHA256 = bundle.ComposeSHA256
-	record.ActiveImage = bundle.Image
-	record.SchemaVersion = bundle.SchemaVersion
-	if err := c.save(ctx, &record, StateActive); err != nil {
-		return record, err
+	if err := validateEvidence(bundle, evidence); err != nil {
+		return c.markRecovery(ctx, record, "rollback evidence invalid: "+err.Error(), fmt.Errorf("rollback evidence invalid: %w", err))
 	}
-	if err := c.Store.Save(ctx, record); err != nil {
-		return record, fmt.Errorf("persist active state: %w", err)
+	actual, err := c.Host.ReadActive(ctx)
+	if err != nil {
+		return c.markRecovery(ctx, record, "rollback post-read failed: "+err.Error(), ErrActiveUnreadable)
 	}
-	return record, nil
+	if err := validateActiveBundle(bundle, actual); err != nil {
+		return c.markRecovery(ctx, record, "rollback post-read mismatch: "+err.Error(), err)
+	}
+	return c.commitActive(ctx, record, bundle, evidence)
 }
 
 // Monitor validates that the real active version is in the approved allowlist
@@ -416,7 +397,7 @@ func (c *Controller) Resume(ctx context.Context, runID, attempt string) (Record,
 		return record, fmt.Errorf("resume request does not match persisted run identity")
 	}
 	if record.State == StateActive {
-		return record, nil
+		return c.revalidateActiveRecord(ctx, record)
 	}
 	if !inProgress(record) && record.State != StateFailed {
 		return record, nil
@@ -430,7 +411,7 @@ func (c *Controller) Resume(ctx context.Context, runID, attempt string) (Record,
 		return record, ErrRecoveryRequired
 	}
 	target, targetOK := c.Bundles[record.TargetVersion]
-	if targetOK && active.Version == target.Version && target.ValidateActive(active) == nil {
+	if targetOK && active.Version == target.Version && validateActiveBundle(target, active) == nil {
 		record.State = StateActive
 		record.ActiveVersion = active.Version
 		record.ActiveComposeSHA256 = active.ComposeSHA256
@@ -443,7 +424,7 @@ func (c *Controller) Resume(ctx context.Context, runID, attempt string) (Record,
 		return record, nil
 	}
 	previous, previousOK := c.Bundles[record.PreviousVersion]
-	if previousOK && active.Version == previous.Version && previous.ValidateActive(active) == nil {
+	if previousOK && active.Version == previous.Version && validateActiveBundle(previous, active) == nil {
 		record.State = StateActive
 		record.ActiveVersion = active.Version
 		record.ActiveComposeSHA256 = active.ComposeSHA256
@@ -460,6 +441,79 @@ func (c *Controller) Resume(ctx context.Context, runID, attempt string) (Record,
 	record.UpdatedAt = c.now().Format(time.RFC3339)
 	_ = c.Store.Save(ctx, record)
 	return record, ErrRecoveryRequired
+}
+
+func validateActiveBundle(bundle Bundle, active ActiveState) error {
+	if active.Version != bundle.Version {
+		return fmt.Errorf("%w: active=%s bundle=%s", ErrActiveUnapproved, active.Version, bundle.Version)
+	}
+	if !active.Healthy {
+		return fmt.Errorf("%w: %s", ErrActiveUnhealthy, active.Version)
+	}
+	if active.ComposeSHA256 != bundle.ComposeSHA256 || active.Image != bundle.Image || active.SchemaVersion != bundle.SchemaVersion {
+		return fmt.Errorf("%w: active identity does not match %s", ErrActiveDrifted, bundle.Version)
+	}
+	return nil
+}
+
+func (c *Controller) readValidatedActive(ctx context.Context) (ActiveState, Bundle, error) {
+	active, err := c.Host.ReadActive(ctx)
+	if err != nil {
+		return ActiveState{}, Bundle{}, fmt.Errorf("%w: %v", ErrActiveUnreadable, err)
+	}
+	bundle, ok := c.Bundles[active.Version]
+	if !ok {
+		return active, Bundle{}, fmt.Errorf("%w: %s", ErrActiveUnapproved, active.Version)
+	}
+	if err := validateActiveBundle(bundle, active); err != nil {
+		return active, bundle, err
+	}
+	return active, bundle, nil
+}
+
+func validateEvidence(bundle Bundle, evidence Evidence) error {
+	if evidence.Digest == "" {
+		return fmt.Errorf("evidence digest is empty")
+	}
+	return validateActiveBundle(bundle, ActiveState{
+		Version: evidence.Version, ComposeSHA256: evidence.ComposeSHA256,
+		Image: evidence.Image, SchemaVersion: evidence.SchemaVersion, Healthy: evidence.Healthy,
+	})
+}
+
+func (c *Controller) commitActive(ctx context.Context, record Record, bundle Bundle, evidence Evidence) (Record, error) {
+	previousState := record.State
+	record.State = StateActive
+	record.ActiveVersion = bundle.Version
+	record.ActiveComposeSHA256 = bundle.ComposeSHA256
+	record.ActiveImage = bundle.Image
+	record.SchemaVersion = bundle.SchemaVersion
+	record.EvidenceDigest = evidence.Digest
+	record.LastError = ""
+	record.UpdatedAt = c.now().Format(time.RFC3339)
+	if err := c.Store.Save(ctx, record); err != nil {
+		record.State = previousState
+		return record, fmt.Errorf("persist complete active state: %w", err)
+	}
+	return record, nil
+}
+
+func (c *Controller) revalidateActiveRecord(ctx context.Context, record Record) (Record, error) {
+	bundle, ok := c.Bundles[record.ActiveVersion]
+	if !ok {
+		return c.markRecovery(ctx, record, "recorded active version is not approved", ErrActiveUnapproved)
+	}
+	active, err := c.Host.ReadActive(ctx)
+	if err != nil {
+		return c.markRecovery(ctx, record, "replay cannot read active state: "+err.Error(), ErrActiveUnreadable)
+	}
+	if err := validateActiveBundle(bundle, active); err != nil {
+		return c.markRecovery(ctx, record, "replay active mismatch: "+err.Error(), err)
+	}
+	if record.ActiveComposeSHA256 != active.ComposeSHA256 || record.ActiveImage != active.Image || record.SchemaVersion != active.SchemaVersion {
+		return c.markRecovery(ctx, record, "persisted active identity does not match host", ErrActiveDrifted)
+	}
+	return record, nil
 }
 
 func replay(record Record, operation string, request Request) (Record, bool, error) {
@@ -542,21 +596,24 @@ func (c *Controller) compensate(ctx context.Context, record Record, previous Bun
 		return record, err
 	}
 	evidence, err := c.Host.VerifyRollback(ctx, previous)
-	if err != nil || !evidence.Healthy || evidence.Version != previous.Version ||
-		evidence.ComposeSHA256 != previous.ComposeSHA256 || evidence.Image != previous.Image {
-		return c.markRecovery(ctx, record, message+"; rollback verification failed", ErrRecoveryRequired)
+	if err != nil {
+		return c.markRecovery(ctx, record, message+"; rollback evidence unavailable: "+err.Error(), ErrRecoveryRequired)
 	}
-	record.State = StateActive
-	record.ActiveVersion = previous.Version
-	record.ActiveComposeSHA256 = previous.ComposeSHA256
-	record.ActiveImage = previous.Image
-	record.SchemaVersion = previous.SchemaVersion
-	record.EvidenceDigest = evidence.Digest
-	record.UpdatedAt = c.now().Format(time.RFC3339)
-	if err := c.Store.Save(ctx, record); err != nil {
-		return record, err
+	if err := validateEvidence(previous, evidence); err != nil {
+		return c.markRecovery(ctx, record, message+"; rollback evidence invalid: "+err.Error(), ErrRecoveryRequired)
 	}
-	return record, cause
+	actual, err := c.Host.ReadActive(ctx)
+	if err != nil {
+		return c.markRecovery(ctx, record, message+"; rollback post-read failed: "+err.Error(), ErrRecoveryRequired)
+	}
+	if err := validateActiveBundle(previous, actual); err != nil {
+		return c.markRecovery(ctx, record, message+"; rollback post-read mismatch: "+err.Error(), ErrRecoveryRequired)
+	}
+	committed, err := c.commitActive(ctx, record, previous, evidence)
+	if err != nil {
+		return committed, err
+	}
+	return committed, cause
 }
 
 // FileStore persists state next to the active deployment root. Writes are
@@ -576,6 +633,9 @@ func (store FileStore) Load(ctx context.Context) (Record, bool, error) {
 	var record Record
 	if err := json.Unmarshal(contents, &record); err != nil {
 		return Record{}, false, fmt.Errorf("decode staging state: %w", err)
+	}
+	if record.Format != RecordFormat || record.State == "" {
+		return Record{}, false, fmt.Errorf("staging state record is incomplete or has an unsupported format")
 	}
 	return record, true, nil
 }
@@ -606,11 +666,18 @@ func (store FileStore) Save(ctx context.Context, record Record) error {
 		temporary.Close()
 		return fmt.Errorf("write staging state: %w", err)
 	}
+	if err := temporary.Sync(); err != nil {
+		temporary.Close()
+		return fmt.Errorf("sync staging state: %w", err)
+	}
 	if err := temporary.Close(); err != nil {
 		return fmt.Errorf("close staging state: %w", err)
 	}
 	if err := os.Rename(name, store.Path); err != nil {
 		return fmt.Errorf("publish staging state: %w", err)
+	}
+	if err := syncDirectory(filepath.Dir(store.Path)); err != nil {
+		return fmt.Errorf("sync staging state directory: %w", err)
 	}
 	return nil
 }
