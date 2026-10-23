@@ -54,7 +54,7 @@ JSON
 	// Rebuild the manifest with the actual hashes of the fixture files.
 	composeHash := sha256FileForTest(t, compose)
 	scriptHash := sha256FileForTest(t, script)
-	manifest := map[string]map[string]string{
+	manifest := map[string]map[string]any{
 		"v0.1.1": {"compose_sha256": strings.Repeat("a", 64), "deploy_script_sha256": strings.Repeat("b", 64), "image": "ghcr.io/baicie/asteria-drive@sha256:" + strings.Repeat("c", 64)},
 		"v0.2.0": {"compose_sha256": composeHash, "deploy_script_sha256": scriptHash, "schema_version": 3, "image": "ghcr.io/baicie/asteria-drive@sha256:" + strings.Repeat("f", 64)},
 	}
