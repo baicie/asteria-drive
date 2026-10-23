@@ -259,6 +259,20 @@ sha256sum /usr/local/libexec/asteria-staging-* \
    - `.github/workflows/deploy-staging.yml` 的 tag/source/API digest/Compose SHA 和 confirmation；
    - 对应的 `scripts/validate`/cicheck 契约。
    参考旧基线提交 `2dc40b92e621cee3f05cb6d21cebda00070eee6e` 的 staging 固定点。
+
+   旧 v0.1.1 固定点（回滚 PR 必须逐项核对）：
+
+   | 项目 | 旧值 |
+   | --- | --- |
+   | Release / source | `v0.1.1` / `e8d26ded6e9138bbfdeac60f2487c5f835ab61a5` |
+   | API image digest | `sha256:2b73f8a7a271c0d7d6c7f73e15987b5e29290437146f07a57b57b9aef031d842` |
+   | Compose SHA-256 | `aa4336dc8914faaccc304266cba715b8212d10722adb4afd7aeea5d40f4c9637` |
+   | Deploy script SHA-256 | `cd200fa32fdc2314817308479c99fe6425a481ff3bcd7384a60e145b2ad45044` |
+   | Monitor script SHA-256 | `3ef39670c2a5a90b9aee4bf926c7dd6b40938038d861457b0ed92ba48765c279` |
+   | Recovery script SHA-256 | `3b2bb836852893548f1f1d64602745c67b02a307f0c8ad5fcf17c9c5a41f459a` |
+   | Deploy confirmation | `deploy-v0.1.1` |
+
+   注意：v0.1.1 的 tag object 为 `1b0a4b3e79f38b3b8f6b5a6f2bbeacc2f4533994`，peeled source 为 `e8d26de...`；不要用错 tag object。
 4. **回滚 PR 必须走正常 branch protection、required checks 和人工审批**；不得直接 push main、不得绕过 Environment、不得修改 ruleset。
 5. **恢复运行态**：
    - 若 deployment 自动回滚已恢复 v0.1.1 active Compose/image，直接进入监控恢复；
