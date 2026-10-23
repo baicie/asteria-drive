@@ -104,3 +104,21 @@ test('closes the pre-opened download window when authorization fails', async ({ 
   const closed = await page.evaluate(() => (window as unknown as { __downloadPopup: { closed: boolean } }).__downloadPopup.closed)
   expect(closed).toBe(true)
 })
+
+test('reports a blocked popup without requesting a download authorization', async ({ page }) => {
+  const file = { id: fileId, parent_id: rootId, kind: 'file', name: 'blocked.txt', size: 8, revision: 1 }
+  let authorizationCalls = 0
+  await page.addInitScript(() => {
+    window.open = (() => null) as typeof window.open
+  })
+  await serveBase(page, file)
+  await page.route(`**/api/v1/files/${fileId}/download-authorizations`, async (route) => {
+    authorizationCalls += 1
+    await route.fulfill({ json: { data: { url: 'https://signed.example/blocked.txt' } } })
+  })
+
+  await logIn(page)
+  await page.getByRole('button', { name: '下载' }).click()
+  await expect(page.getByText('浏览器拦截了下载窗口，请允许弹窗后重试')).toBeVisible()
+  expect(authorizationCalls).toBe(0)
+})

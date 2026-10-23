@@ -9,7 +9,12 @@ export interface DownloadWindow {
 }
 
 export function openDownloadWindow(): DownloadWindow | null {
-  const popup = window.open('about:blank', '_blank')
+  let popup: Window | null
+  try {
+    popup = window.open('about:blank', '_blank')
+  } catch {
+    return null
+  }
   if (!popup) return null
   popup.opener = null
   return {

@@ -35,6 +35,7 @@ export function useUploadTask({
   async function start(file: File) {
     const parent = getParent()
     if (!parent) return
+    if (abort.value) return
     if (file.size < 1) {
       notify('不能上传空文件', 'error')
       return
