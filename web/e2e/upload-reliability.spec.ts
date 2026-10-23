@@ -128,6 +128,7 @@ test('cancels an active upload and aborts its multipart session', async ({ page 
   const files: Record<string, unknown>[] = []
   let aborted = false
   let completed = false
+  let created = false
   await page.route('**/s3/upload/**', async (route) => {
     await route.fulfill({ status: 503, body: 'temporary failure' })
   })
@@ -137,6 +138,7 @@ test('cancels an active upload and aborts its multipart session', async ({ page 
     const base = serveBase(route, url, files)
     if (base) { await base; return }
     if (url.pathname === '/api/v1/uploads' && request.method() === 'POST') {
+      created = true
       await route.fulfill({ status: 201, json: { data: { id: uploadId, status: 'created', part_size: 8, expected_size: 12 } } })
     } else if (url.pathname.endsWith('/parts/sign')) {
       const part = (request.postDataJSON() as { part_number: number }).part_number
@@ -158,6 +160,7 @@ test('cancels an active upload and aborts its multipart session', async ({ page 
     mimeType: 'text/plain',
     buffer: Buffer.from('twelve-bytes'),
   })
+  await expect.poll(() => created).toBe(true)
   await page.getByRole('button', { name: '取消上传' }).click()
   await expect(page.getByText('上传已取消')).toBeVisible()
   expect(aborted).toBe(true)
