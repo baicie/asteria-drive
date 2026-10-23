@@ -10,10 +10,10 @@ dispatcher_path="/usr/local/libexec/asteria-staging-dispatch"
 dispatcher_config="/etc/asteria-drive/staging-dispatch.conf"
 monitor_path="/usr/local/libexec/asteria-staging-monitor"
 recovery_path="/usr/local/libexec/asteria-staging-recovery"
-expected_compose_sha256="aa4336dc8914faaccc304266cba715b8212d10722adb4afd7aeea5d40f4c9637"
-expected_deploy_script_sha256="cd200fa32fdc2314817308479c99fe6425a481ff3bcd7384a60e145b2ad45044"
-expected_monitor_script_sha256="3ef39670c2a5a90b9aee4bf926c7dd6b40938038d861457b0ed92ba48765c279"
-expected_recovery_script_sha256="3b2bb836852893548f1f1d64602745c67b02a307f0c8ad5fcf17c9c5a41f459a"
+expected_compose_sha256="cba2ba284a8f17231976ca40b99e77c4233f7948992372d703203cd98bdd3005"
+expected_deploy_script_sha256="007eb3a34bc5eff5bdff1db247ef9ed2b396814eac8231a0df71579a3f79138f"
+expected_monitor_script_sha256="d1e186cb375bf22fb910118e122d6003a6904c4345134d503e212aa051916d69"
+expected_recovery_script_sha256="91c45a195b773b98e0dc70f3843f8f4af8efc05e2c6f66c7811cccabc633c1b4"
 
 if [[ "$(id -u)" -ne 0 ]]; then
   printf 'bootstrap-staging-host.sh must run as root\n' >&2

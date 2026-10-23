@@ -1,6 +1,6 @@
 name: asteria-drive-staging
 
-x-asteria-image: &asteria-image ghcr.io/baicie/asteria-drive@sha256:2b73f8a7a271c0d7d6c7f73e15987b5e29290437146f07a57b57b9aef031d842
+x-asteria-image: &asteria-image ghcr.io/baicie/asteria-drive@sha256:964e71a496e0800a48aaeb9d513f3927d175927a7e271dde37e0570532dc4853
 x-asteria-environment: &asteria-environment
   ASTERIA_ENV: development
   ASTERIA_AUTH_MODE: trusted-dev
@@ -175,8 +175,8 @@ services:
     mem_limit: 512m
     labels:
       com.baicie.asteria.boundary: staging-not-production
-      com.baicie.asteria.release: v0.1.1
-      com.baicie.asteria.source: e8d26ded6e9138bbfdeac60f2487c5f835ab61a5
+      com.baicie.asteria.release: v0.2.0
+      com.baicie.asteria.source: 5169da638beac679c9cfed66757159474de879dc
     logging:
       driver: json-file
       options:
