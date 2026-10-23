@@ -41,7 +41,7 @@ sha256sum \
 预期：
 
 ```text
-92b4ad1682f42365f5da6939f599e3a51785991ba6d58030f062c7a6c0c04eeb  scripts/bootstrap-staging-host.sh
+3d01fca63f7b10d6a0b9ffa2c13a8c558b6466bb9057b95f648de61b3d191229  scripts/bootstrap-staging-host.sh
 d1e186cb375bf22fb910118e122d6003a6904c4345134d503e212aa051916d69  scripts/monitor-staging.sh
 91c45a195b773b98e0dc70f3843f8f4af8efc05e2c6f66c7811cccabc633c1b4  scripts/recover-staging.sh
 007eb3a34bc5eff5bdff1db247ef9ed2b396814eac8231a0df71579a3f79138f  scripts/deploy-staging.sh
@@ -253,7 +253,7 @@ sha256sum /usr/local/libexec/asteria-staging-* \
   /etc/asteria-drive/staging-dispatch.conf
 ```
 
-4. **恢复旧 root-owned 文件并不等于恢复 GitHub monitor。** main 上的 monitor workflow 仍发送 v0.2.0 的 `MONITOR_SCRIPT_SHA256`；旧 dispatcher 只接受旧摘要，因此仍会拒绝。必须同时完成 9.3 的 workflow 摘要回滚。
+4. **恢复旧 root-owned 文件后，monitor 选择由 PR #83 的版本感知逻辑决定。** 如果 workflow 已包含版本感知 fallback，它会尝试 v0.2.0 失败后使用 v0.1.1 的精确 script/compose/image 三元组；如果仍是旧版固定 v0.2.0 的 workflow，才需要按 9.3 的 legacy 路径临时回滚 workflow pin。
 
 ### 9.2 部署失败且自动回滚到 v0.1.1
 
@@ -261,17 +261,17 @@ sha256sum /usr/local/libexec/asteria-staging-* \
 
 1. 核对 deployment artifact：`rollback_attempted=true`、`rollback_succeeded=true`、`deployed_image_ref`/`deployed_image_id` 回到旧值。
 2. 不删除 `postgres-data`、`seaweedfs-data` 或任何 secret volume。
-3. 恢复第 3 节旧 root-owned 文件备份。此时旧主机脚本已就位，但 monitor 仍不会恢复，因为 GitHub workflow 仍固定 v0.2.0 摘要。
-4. 执行 9.3 的 GitHub workflow 摘要回滚；在完成前，monitor/recovery 继续 fail-closed。
+3. 恢复第 3 节旧 root-owned 文件备份。PR #83 的版本感知 monitor/recovery 会从 v0.2.0 失败后回退到 v0.1.1；不需要为了 monitor 再回滚 workflow pin。
+4. 若 workflow 还没有版本感知逻辑（PR #83 未合并），才执行 9.3 的 legacy workflow pin 回滚；在完成前 monitor/recovery 继续 fail-closed。
 5. 如果 active Compose 已回到 v0.1.1，不需要再运行 deploy；如果 rollback 未成功，停止并标记 `FAILED`，不得用任意 SSH Docker 命令绕过 workflow。
 
-### 9.3 完整回滚：同时恢复主机与 GitHub 摘要契约
+### 9.3 完整回滚：固定 bundle + 版本感知监控（优先路径）
 
-完整回滚不是单一步骤。最小权限、可审核、不绕过 SHA-256 的路线：
+PR #83 之后，优先路径不再需要把 main 的 monitor/recovery pin 改回旧版本。最小权限、可审核、不绕过 SHA-256 的路线：
 
 1. **冻结新变更**：停止继续部署，保留 deployment 失败 evidence 和 artifact digest。
-2. **恢复主机 root-owned 文件**：用第 3 节备份恢复旧 dispatcher/config/monitor/recovery 和 authorized_keys；校验旧摘要。
-3. **准备受保护 main 的回滚 PR**：只回滚 staging 固定点，不动产品代码；至少恢复：
+2. **确认主机 bootstrap 已安装双版本 monitor/recovery**：新 dispatcher 同时接受 v0.1.1/v0.2.0 的精确 pair；不需要恢复旧 dispatcher 才能监控旧版本。若尚未执行新 bootstrap，先按第 3 节备份并在维护窗口完成。
+3. **LEGACY fallback（仅在 PR #83 之前）**：若 dispatcher/workflow 仍是旧架构，才需要受保护 main 的回滚 PR 恢复以下固定点；PR #83 合并后不需要这一步：
    - `.github/workflows/monitor-staging.yml` 的 `MONITOR_SCRIPT_SHA256`、Compose SHA、API digest；
    - `.github/workflows/drill-staging-recovery.yml` 的 `RECOVERY_SCRIPT_SHA256`、Compose SHA、API digest；
    - `.github/workflows/deploy-staging.yml` 的 tag/source/API digest/Compose SHA 和 confirmation；
@@ -291,25 +291,25 @@ sha256sum /usr/local/libexec/asteria-staging-* \
    | Deploy confirmation | `deploy-v0.1.1` |
 
    注意：v0.1.1 的 tag object 为 `1b0a4b3e79f38b3b8f6b5a6f2bbeacc2f4533994`，peeled source 为 `e8d26de...`；不要用错 tag object。
-4. **回滚 PR 必须走正常 branch protection、required checks 和人工审批**；不得直接 push main、不得绕过 Environment、不得修改 ruleset。
-5. **恢复运行态**：
+4. **运行 `Rollback staging`**：手动 dispatch，输入 `rollback-v0.1.1`，使用固定 v0.1.1 bundle；严格 host key、OCI provenance、Compose/script SHA 和 evidence 校验全部保留。不得用 SSH 直接改 Docker。
+5. **核对运行态**：
    - 若 deployment 自动回滚已恢复 v0.1.1 active Compose/image，直接进入监控恢复；
    - 若运行态仍是 v0.2.0，只能在回滚 PR 合并后，通过受控的旧版 deploy workflow/经批准的回滚 workflow 部署 v0.1.1；不得用 SSH 直接改 Docker。
-6. **验证摘要三元组同时匹配**：旧 host monitor SHA + 旧 workflow `MONITOR_SCRIPT_SHA256` + 旧 active Compose SHA。任一不匹配，monitor 仍会拒绝或失败。
+6. **验证活动版本属于 allowlist**：host 上 v0.1.1 monitor/recovery 的精确 SHA、active Compose SHA 和 image digest 必须与 bundle 一致；版本感知 workflow 必须选中 v0.1.1。任一不匹配，monitor/recovery 仍会失败。
 7. **验证监控/恢复**：手工触发 monitor/recovery（不是依赖 cron），保存 artifact；确认没有删除或重建活动数据卷。
-8. **记录证据**：host 文件摘要、workflow PR/commit、run ID、artifact digest、active Compose/image digest、restore 结果。
+8. **记录证据**：host 文件摘要、`Rollback staging` run ID、artifact digest、active Compose/image digest、restore 结果；只有走 legacy 路径才记录 workflow pin PR。
 
 当前限制：
 
 - PR #83 已加入 `Rollback staging` workflow；成功部署后走固定 v0.1.1 bundle 的受控回滚路径。
-- 回滚 PR 尚未创建；本次只准备审批材料，不创建代码 PR。
+- PR #83 的版本感知路径不需要 workflow pin 回滚 PR；只有旧架构 legacy fallback 才需要单独的 pin PR。
 - 因此仓库侧状态为 **`READY_FOR_HOST_VALIDATION`**；真实主机回滚未执行前不得宣称 `ROLLBACK_VERIFIED` 或“自动回滚安全”。
-- 失败尝试内的自动回滚仅覆盖 previous active Compose 存在的 runtime 恢复；它不覆盖 GitHub workflow pins，也不覆盖成功部署后的回滚。
+- 失败尝试内的自动回滚仅覆盖 previous active Compose 存在的 runtime 恢复；成功部署后的回滚由 `Rollback staging` 的固定 bundle 路径覆盖。
 
 ### 9.4 监控连续性
 
 - 不依赖 cron 精确时间：GitHub Actions 调度可能延迟 1 小时以上；升级原子性必须由维护窗口和人工检查保证。
-- bootstrap 完成后、deployment 完成前，monitor 可能 fail-closed；记录为预期摘要不匹配。
+- bootstrap 完成后、deployment 完成前，monitor 会按 allowlist 选择 v0.1.1；若两个版本都不匹配则 fail-closed，记录为摘要/版本不匹配。
 - 完整回滚后，只通过 workflow 手工触发 monitor/recovery；不要用任意 SSH 命令验证或修改服务。
 
 ## 10. 过渡窗口规则
@@ -317,8 +317,8 @@ sha256sum /usr/local/libexec/asteria-staging-* \
 - 不暂停、不修改 monitor/recovery workflow；不以禁用监控换取窗口。
 - 维护窗口必须同时覆盖 Phase B 和 Phase C；窗口开始前完成只读基线、备份和审批。
 - 不依赖 `:23Z` 作为硬边界；观测到 run 创建于 07:42:43Z，但无法证明对应哪一次 cron occurrence。窗口以人工开始/结束和状态检查为准。
-- 窗口内 monitor 触发时，预期因旧 active Compose/旧 image 与 v0.2.0 pin 不匹配而 fail-closed；这是预期信号，不是数据故障。
-- 若窗口内无法完成 deployment，执行第 9 节回滚，恢复旧 host 文件并完成 workflow 摘要回滚；不留下半升级 host。
+- 窗口内 monitor 触发时，版本感知 workflow 会选择 v0.1.1 的精确 pair；若两个版本都不匹配或 host 正在锁内执行，才 fail-closed，并记录为预期信号而不是数据故障。
+- 若窗口内无法完成 deployment，执行第 9 节的 `Rollback staging` 固定 bundle 回滚；不留下半升级 host。
 - recovery 每周 `17 4 * * 1`，避开该窗口。
 
 ## 11. 审批输出要求

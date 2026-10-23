@@ -98,7 +98,7 @@ v0.2.0 source：`5169da638beac679c9cfed66757159474de879dc`
 | v0.1.1 API 兼容新 schema | PASS（schema 和 drive 代码均未变化） |
 | 失败尝试自动回滚旧镜像的 DB 契约 | PASS（无不可逆 schema 变化） |
 
-限制：该结论只适用于 v0.1.1→v0.2.0 这一对不可变产物，不推广到未来 migration。完整回滚仍需主机和 workflow 摘要回滚。
+限制：该结论只适用于 v0.1.1→v0.2.0 这一对不可变产物，不推广到未来 migration。完整回滚由 PR #83 的固定 bundle workflow 和版本感知 monitor/recovery 覆盖；仍需真实主机演练。
 
 ## Phase B：Root bootstrap
 
@@ -161,13 +161,13 @@ Phase C 审批材料：[staging-v0.2.0-phase-c-approval.md](staging-v0.2.0-phase
 | S3 multipart 上传/下载/字节校验 | `NOT_RUN` | 需要新 deployment artifact |
 | 失败尝试内自动回滚代码 | PASS（代码审查） | previous Compose + `--pull never`，不删除数据卷 |
 | 成功部署后的完整回滚 | `READY_FOR_HOST_VALIDATION` | PR #83 已加入 `Rollback staging` 固定 bundle workflow；仍需主机演练 |
-| 旧 dispatcher 恢复 = 监控恢复 | **错误，已修复** | 旧 dispatcher 只接受旧 SHA；main 仍发送 v0.2.0 SHA 时会继续拒绝 |
+| 旧 dispatcher 恢复 = 监控恢复 | **旧架构错误，已由 PR #83 修复** | 旧架构下 main 只发送 v0.2.0 SHA；版本感知 workflow 现在接受两个精确 allowlist pair |
 | 实际回滚演练 | `NOT_RUN` | 未部署，无法验证 |
 
 ## 遗留风险与缺失证据
 
 1. `staging` GitHub Environment 只有 branch policy，没有 required reviewers；部署门是手动 dispatch + confirmation，不是独立 Environment reviewer gate。
-2. 恢复旧 dispatcher 不会恢复 GitHub monitor；必须同时回滚 workflow 摘要。
+2. PR #83 之后，版本感知 monitor/recovery 会按 allowlist 选择 active 版本；旧架构下恢复旧 dispatcher 不会恢复 GitHub monitor。
 3. PR #83 已加入受控的 `Rollback staging` workflow；仓库侧路径可验证，但真实主机回滚尚未执行，不能宣称 `ROLLBACK_VERIFIED`。
 4. 没有真实主机基线，无法确认 installed dispatcher/monitor/recovery 摘要和所有权。
 5. 没有 root bootstrap 备份 SHA-256、主机证据、操作者/复核人。
@@ -199,4 +199,4 @@ Phase C 审批材料：[staging-v0.2.0-phase-c-approval.md](staging-v0.2.0-phase
 3. active Compose/image 恢复到 v0.1.1 的受控路径；
 4. monitor/recovery artifact 验证。
 
-在完整回滚契约获批前，Phase B 可准备但不得执行 Phase C；不得宣称 staging 已升级。
+在真实主机回滚演练和独立批准前，Phase B 可准备但不得执行 Phase C；不得宣称 staging 已升级。

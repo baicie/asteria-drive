@@ -44,7 +44,7 @@
 - 活动 postgres-data、seaweedfs-data、secret volumes 均存在，未被修改；
 - PostgreSQL TLS 证书链、SAN、SCRAM、HBA 只读检查通过；
 - `staging` Environment 约束已人工确认（当前只有 branch policy，没有 required reviewers）；
-- 完整回滚契约已批准：主机文件恢复 + GitHub workflow 摘要回滚 + 受控运行态恢复。
+- 完整回滚契约已批准：固定 v0.1.1 bundle 的 `Rollback staging` + 版本感知 monitor/recovery + 受控运行态恢复；不再要求 workflow pin 回滚 PR。
 
 任何一项不满足：`ABORT`，不触发部署。
 
@@ -110,7 +110,7 @@ confirmation: deploy-v0.2.0
 - health/readiness 失败；
 - TLS/S3/metrics/容量门禁失败；
 - 任何数据卷、Secret、PKI 被意外修改；
-- 完整回滚契约未获批准。
+- 完整回滚仓库侧已实现；真实主机演练和独立批准尚未完成。
 
 不得删除数据卷；不得用任意 SSH Docker 命令绕过。
 

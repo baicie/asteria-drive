@@ -28,7 +28,7 @@
 
 | 文件 | SHA-256 |
 | --- | --- |
-| `scripts/bootstrap-staging-host.sh` | `92b4ad1682f42365f5da6939f599e3a51785991ba6d58030f062c7a6c0c04eeb` |
+| `scripts/bootstrap-staging-host.sh` | `3d01fca63f7b10d6a0b9ffa2c13a8c558b6466bb9057b95f648de61b3d191229` |
 | `scripts/monitor-staging.sh` | `d1e186cb375bf22fb910118e122d6003a6904c4345134d503e212aa051916d69` |
 | `scripts/recover-staging.sh` | `91c45a195b773b98e0dc70f3843f8f4af8efc05e2c6f66c7811cccabc633c1b4` |
 | `scripts/deploy-staging.sh` | `007eb3a34bc5eff5bdff1db247ef9ed2b396814eac8231a0df71579a3f79138f` |
@@ -131,7 +131,7 @@ Phase B 失败不授权 Phase C。
 1. 不删除 volume；
 2. 恢复第 4 节备份；
 3. 校验旧 dispatcher/monitor/recovery/config/authorized_keys 的摘要和 owner/mode；
-4. **不得宣称旧 dispatcher 恢复即恢复 GitHub monitor**；main 仍固定 v0.2.0 摘要时，monitor 会继续拒绝。完整回滚见 Runbook 9.3；
+4. **不得宣称旧 dispatcher 恢复即恢复 GitHub monitor**；PR #83 的版本感知 monitor/recovery 才会按 allowlist 选择 active 版本。完整回滚见 Runbook 9.3；
 5. 若无法恢复，标记 `FAILED` 并停止。
 
 ## 9. 监控/恢复交接

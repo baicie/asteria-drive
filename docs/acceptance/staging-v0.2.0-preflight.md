@@ -88,7 +88,7 @@ Release 页面：<https://github.com/baicie/asteria-drive/releases/tag/v0.2.0>
 | `scripts/deploy-staging.sh` | `007eb3a34bc5eff5bdff1db247ef9ed2b396814eac8231a0df71579a3f79138f` | PASS |
 | `scripts/monitor-staging.sh` | `d1e186cb375bf22fb910118e122d6003a6904c4345134d503e212aa051916d69` | PASS |
 | `scripts/recover-staging.sh` | `91c45a195b773b98e0dc70f3843f8f4af8efc05e2c6f66c7811cccabc633c1b4` | PASS |
-| `scripts/bootstrap-staging-host.sh` | `92b4ad1682f42365f5da6939f599e3a51785991ba6d58030f062c7a6c0c04eeb` | 本次 bootstrap 输入 |
+| `scripts/bootstrap-staging-host.sh` | `3d01fca63f7b10d6a0b9ffa2c13a8c558b6466bb9057b95f648de61b3d191229` | 本次 bootstrap 输入 |
 
 交叉核对：
 
@@ -134,9 +134,9 @@ Release 页面：<https://github.com/baicie/asteria-drive/releases/tag/v0.2.0>
 
 - 这是针对 **v0.1.1→v0.2.0 这一对不可变产物** 的结论，不推广到未来 migration。
 - “自动失败回滚”只在部署尝试失败且 previous active Compose 存在时发生；它不是“成功部署后的通用回滚”。
-- 完整回滚还涉及主机 dispatcher/monitor/recovery 和 GitHub Workflow 摘要契约，见 A5b；该部分仍为 `READY_FOR_HOST_VALIDATION`。
+- 完整回滚由 PR #83 的固定 bundle `Rollback staging` 和版本感知 monitor/recovery 覆盖，见 A5b；真实主体验证仍待执行。
 
-结论：DB/API 前向兼容 PASS；完整回滚契约 BLOCKED。
+结论：DB/API 前向兼容 PASS；完整回滚仓库侧实现 READY_FOR_HOST_VALIDATION，真实主机演练未执行。
 
 ## A4. 回滚与破坏性清理
 
@@ -163,23 +163,23 @@ Release 页面：<https://github.com/baicie/asteria-drive/releases/tag/v0.2.0>
 1. 不暂停、不绕过、不修改 monitor/recovery workflow 或 dispatcher。
 2. 在受控维护窗口内先完成 Phase B bootstrap，再立即执行 Phase C deployment；不以 cron 时刻作为原子性保证。
 3. 在 bootstrap 完成到 deployment 完成之间，monitor 可能 fail-closed；这是预期摘要不匹配，不是服务不可用的证明。
-4. 失败后不得只恢复旧 dispatcher 就宣称监控恢复；完整回滚必须同时恢复主机运行态和 GitHub Workflow 摘要契约（A5b）。
+4. 失败后不得只恢复旧 dispatcher 就宣称监控恢复；PR #83 的版本感知路径应通过固定 bundle 和 allowlist 验证 active 版本，真实主机仍须演练（A5b）。
 5. 如果不能在窗口内完成，恢复旧 root-owned 文件并保持 v0.1.1 运行态；不得留下半升级 host。
 
 状态：分析 PASS；实际过渡执行 `BLOCKED_APPROVAL`。
 
 ## A5b. 完整回滚契约
 
-**错误判断已修复**：仅恢复旧 dispatcher/monitor/recovery 文件，不足以恢复 GitHub monitor。
-main 上的 `.github/workflows/monitor-staging.yml` 仍会发送 v0.2.0 的 `MONITOR_SCRIPT_SHA256`；旧 dispatcher 只接受旧摘要，因此仍会拒绝。同样，recovery workflow 会发送 v0.2.0 recovery 摘要。
+**旧错误判断已修复**：旧架构下仅恢复旧 dispatcher/monitor/recovery 文件，不足以恢复 GitHub monitor；PR #83 通过版本感知 monitor/recovery 和双 pair dispatcher 解决该根因。
+旧架构下 main 只发送 v0.2.0 摘要，旧 dispatcher 会拒绝；PR #83 改为依次尝试 v0.2.0/v0.1.1 的精确 pair，并由新 dispatcher 按请求 SHA 选择版本化脚本。
 
 完整回滚至少需要同时满足：
 
 | 维度 | 回滚目标 | 当前是否有受控自动化 |
 | --- | --- | --- |
 | 主机 root-owned 文件 | 旧 dispatcher/config/monitor/recovery | 有备份，需 root 手工恢复 |
-| 主机运行态 | 旧 active Compose + v0.1.1 image + 兼容 schema | 仅“部署尝试失败且 previous Compose 存在”时自动；成功后回滚没有 workflow |
-| GitHub Workflow 摘要契约 | monitor/recovery/deploy 的旧 env 和输入 | 无；需要受保护 main 上的回滚 PR |
+| 主机运行态 | 旧 active Compose + v0.1.1 image + 兼容 schema | 失败尝试自动补偿；成功后用 PR #83 `Rollback staging` 固定 bundle |
+| GitHub Workflow 摘要契约 | 版本感知 monitor/recovery 接受两个精确 allowlist pair | PR #83 已实现；无需 workflow pin 回滚 PR |
 | 监控连续性 | 旧 host 摘要 + 旧 workflow 摘要 + 旧 active Compose 同时匹配 | 非原子，需要维护窗口 |
 | 活动数据卷 | 保持 postgres-data、seaweedfs-data、secret volumes | 不允许删除/重建 |
 
@@ -187,9 +187,9 @@ main 上的 `.github/workflows/monitor-staging.yml` 仍会发送 v0.2.0 的 `MON
 
 - **失败尝试内的自动回滚**：DB/API 契约 PASS，因为 migration 未变化；不删除数据卷。
 - **成功部署后的完整回滚**：`READY_FOR_HOST_VALIDATION`。PR #83 已加入受控的 `Rollback staging` workflow 和静态 v0.1.1 bundle；仍缺真实主机回滚演练，不能标记 `ROLLBACK_VERIFIED`。
-- 不得宣称“自动回滚安全”；不得以旧 dispatcher 恢复代替 GitHub workflow 摘要回滚。
+- 不得宣称“自动回滚安全”；真实主机回滚演练完成前不得标记 `ROLLBACK_VERIFIED`。
 
-最小权限、可审核、不绕过 SHA-256 的候选路线见 Runbook 第 9 节；该路线需要新的受保护 PR/审批，不在本次 PR #82 内实施。
+最小权限、可审核、不绕过 SHA-256 的路线见 Runbook 第 9 节；仓库实现位于 PR #83，真实主机执行仍需 Phase B/C/D 审批。
 
 ## A6. 生产边界
 
@@ -251,4 +251,4 @@ Phase B 的实际 root 操作未执行，状态 `BLOCKED_APPROVAL`。精确操�
 
 `READY_FOR_HOST_VALIDATION`：Phase A 仓库核查 PASS；DB/API 前向兼容 PASS；失败尝试内自动回滚的数据库契约 PASS；PR #83 已实现固定 bundle 的 rollback workflow 和版本感知 monitor/recovery；**真实主机回滚和监控恢复仍未执行**，不能标记 `ROLLBACK_VERIFIED` 或 `STAGING_DEPLOYED`。
 
-下一步唯一最优先动作：先评审并批准“主机运行态 + GitHub Workflow 摘要契约”的完整回滚路线（Runbook 第 9 节），再批准 Phase B；在该路线获批前不得执行 Phase C。
+下一步唯一最优先动作：评审 PR #83 的固定 bundle 回滚与版本感知 monitor/recovery，并在维护窗口完成主机验证；未验证前不得标记 `ROLLBACK_VERIFIED` 或 `STAGING_DEPLOYED`。
