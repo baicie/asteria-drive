@@ -589,6 +589,7 @@ async function uploadFile(event: Event) {
   const controller = new AbortController()
   uploadAbort.value = controller
   const uploadToken = token.value
+  const uploadDirectoryGeneration = directoryGeneration
   // Always use the initiating session for upload/abort requests, even during logout.
   const uploadHeaders = (headers: Record<string, string> = {}) => ({
     ...headers, Authorization: `Bearer ${uploadToken}`,
@@ -640,8 +641,11 @@ async function uploadFile(event: Event) {
       },
     })
     if (uploadAbort.value !== controller) return
-    await refresh()
-    if (uploadAbort.value === controller) setNotice(`已上传「${file.name}」`)
+    const sameDirectory = currentDirectory.value?.id === parent.id && directoryGeneration === uploadDirectoryGeneration
+    if (sameDirectory) await refresh()
+    if (uploadAbort.value === controller) {
+      setNotice(sameDirectory ? `已上传「${file.name}」` : `已上传「${file.name}」到「${parent.name}」`)
+    }
   } catch (error) {
     if (uploadAbort.value === controller) {
       setNotice(error instanceof Error ? error.message : '上传失败', 'error')

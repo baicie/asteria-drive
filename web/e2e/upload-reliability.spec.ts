@@ -255,3 +255,55 @@ test('logout aborts an active upload using its original credential', async ({ pa
   expect(completeCalls).toBe(0)
   await expect(page.getByRole('heading', { name: '文件空间' })).toHaveCount(0)
 })
+
+test('does not refresh or misreport when the directory changes during upload', async ({ page }) => {
+  const folder = {
+    id: '55555555-5555-4555-8555-555555555555',
+    parent_id: rootId,
+    kind: 'directory',
+    name: 'Destination',
+    revision: 1,
+  }
+  const files: Record<string, unknown>[] = [folder]
+  let releasePut!: () => void
+  let markPutStarted!: () => void
+  const putStarted = new Promise<void>((resolve) => { markPutStarted = resolve })
+  const putGate = new Promise<void>((resolve) => { releasePut = resolve })
+
+  await page.route('**/s3/upload/**', async (route) => {
+    markPutStarted()
+    await putGate
+    await route.fulfill({ status: 200, headers: { ETag: '"navigated-etag"' } })
+  })
+
+  await page.route('**/api/v1/**', async (route) => {
+    const request = route.request()
+    const url = new URL(request.url())
+    const base = serveBase(route, url, files)
+    if (base) { await base; return }
+    if (url.pathname === `/api/v1/directories/${folder.id}`) {
+      await route.fulfill({ json: { data: folder } })
+    } else if (url.pathname === `/api/v1/directories/${folder.id}/children`) {
+      await route.fulfill({ json: { data: [], page: { next_cursor: null } } })
+    } else if (url.pathname === '/api/v1/uploads' && request.method() === 'POST') {
+      await route.fulfill({ status: 201, json: { data: { id: uploadId, status: 'created', part_size: 8, expected_size: 4 } } })
+    } else if (url.pathname.endsWith('/parts/sign')) {
+      await route.fulfill({ json: { data: { part_number: 1, method: 'PUT', url: '/s3/upload/1' } } })
+    } else if (url.pathname.endsWith('/complete')) {
+      await route.fulfill({ status: 201, json: { data: { upload: { status: 'committed' } } } })
+    } else {
+      await route.fulfill({ status: 404, json: { error: { message: 'unexpected route' } } })
+    }
+  })
+
+  await login(page)
+  await page.locator('input[type="file"]').setInputFiles({
+    name: 'navigated.bin', mimeType: 'application/octet-stream', buffer: Buffer.from('data'),
+  })
+  await putStarted
+  await page.locator('.file-row').filter({ hasText: folder.name }).getByRole('button', { name: '打开' }).click()
+  await expect(page.locator('.state-message.empty-state')).toBeVisible()
+  releasePut()
+  await expect(page.getByText('已上传「navigated.bin」到「根目录」')).toBeVisible()
+  await expect(page.locator('.file-row')).toHaveCount(0)
+})
