@@ -78,6 +78,10 @@ IDLE -> PREPARED -> ACTIVATING -> VERIFYING -> ACTIVE
 - `Monitor` 只接受 allowlist 中的活动版本，并校验该版本对应的 Compose、image
   和 schema；未知版本或摘要不匹配直接失败。
 
+边界：`internal/staging` 是仓库侧控制面/状态机模型，主机执行仍由固定的
+deploy/rollback scripts 和 `flock` 完成；跨 GitHub Actions 与主机不构成原子事务。
+真实 host state adapter 和 state-file 持久化需要在主机 bootstrap 验证阶段接入。
+
 ## 4. Rollback Workflow
 
 新增 `.github/workflows/rollback-staging.yml`：
