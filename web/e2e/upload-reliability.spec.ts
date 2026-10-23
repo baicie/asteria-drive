@@ -168,6 +168,49 @@ test('reconciles lost completion response without aborting an already committed 
   expect(aborted).toBe(false)
 })
 
+test('does not abort when the completion outcome remains unknown', async ({ page }) => {
+  const files: Record<string, unknown>[] = []
+  let completeCalls = 0
+  let readCalls = 0
+  let aborted = false
+
+  await page.route('**/s3/upload/**', async (route) => {
+    await route.fulfill({ status: 200, headers: { ETag: '"unknown-etag"' } })
+  })
+
+  await page.route('**/api/v1/**', async (route) => {
+    const request = route.request()
+    const url = new URL(request.url())
+    const base = serveBase(route, url, files)
+    if (base) { await base; return }
+    if (url.pathname === '/api/v1/uploads' && request.method() === 'POST') {
+      await route.fulfill({ status: 201, json: { data: { id: uploadId, status: 'created', part_size: 8, expected_size: 4 } } })
+    } else if (url.pathname.endsWith('/parts/sign')) {
+      await route.fulfill({ json: { data: { part_number: 1, method: 'PUT', url: '/s3/upload/1' } } })
+    } else if (url.pathname.endsWith('/complete')) {
+      completeCalls += 1
+      await route.fulfill({ status: 503, json: { error: { message: 'completion unavailable' } } })
+    } else if (url.pathname === `/api/v1/uploads/${uploadId}` && request.method() === 'GET') {
+      readCalls += 1
+      await route.fulfill({ json: { data: { id: uploadId, status: 'uploading', part_size: 8, expected_size: 4 } } })
+    } else if (url.pathname === `/api/v1/uploads/${uploadId}` && request.method() === 'DELETE') {
+      aborted = true
+      await route.fulfill({ status: 204, body: '' })
+    } else {
+      await route.fulfill({ status: 404, json: { error: { message: 'unexpected route' } } })
+    }
+  })
+
+  await login(page)
+  await page.locator('input[type="file"]').setInputFiles({
+    name: 'unknown.txt', mimeType: 'text/plain', buffer: Buffer.from('data'),
+  })
+  await expect(page.getByText('文件提交结果暂时无法确认')).toBeVisible()
+  expect(completeCalls).toBe(3)
+  expect(readCalls).toBe(3)
+  expect(aborted).toBe(false)
+})
+
 test('cancels an active upload and aborts its multipart session', async ({ page }) => {
   const files: Record<string, unknown>[] = []
   let aborted = false
