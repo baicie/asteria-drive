@@ -27,7 +27,7 @@ expected_monitor_script_sha256="d1e186cb375bf22fb910118e122d6003a6904c4345134d50
 expected_monitor_v011_script_sha256="3ef39670c2a5a90b9aee4bf926c7dd6b40938038d861457b0ed92ba48765c279"
 expected_recovery_script_sha256="91c45a195b773b98e0dc70f3843f8f4af8efc05e2c6f66c7811cccabc633c1b4"
 expected_recovery_v011_script_sha256="3b2bb836852893548f1f1d64602745c67b02a307f0c8ad5fcf17c9c5a41f459a"
-expected_controller_sha256="79f84d2c923db0f0cff8499990bb5863bf7739d6da87b10996b6fd55b3cde88d"
+expected_controller_sha256="c1bcb6c62315f0e78e08d832b1046934a00d763b60580692069126818d5bada5"
 
 if [[ "$(id -u)" -ne 0 ]]; then
   printf 'bootstrap-staging-host.sh must run as root\n' >&2

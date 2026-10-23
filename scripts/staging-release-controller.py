@@ -33,18 +33,25 @@ def atomic_write(path: Path, value: dict) -> None:
     data = json.dumps(value, indent=2, sort_keys=True).encode() + b"\n"
     descriptor, temporary = tempfile.mkstemp(prefix=".controller-state-", dir=path.parent)
     try:
-        os.fchmod(descriptor, 0o600)
+        os.chmod(temporary, 0o600)
         with os.fdopen(descriptor, "wb") as handle:
+            descriptor = -1
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary, path)
-        directory = os.open(path.parent, os.O_RDONLY)
         try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
+            directory = os.open(path.parent, os.O_RDONLY)
+        except OSError:
+            directory = -1
+        if directory >= 0:
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
     finally:
+        if descriptor >= 0:
+            os.close(descriptor)
         try:
             os.unlink(temporary)
         except FileNotFoundError:
@@ -172,8 +179,12 @@ def main() -> int:
     result = subprocess.run(
         ["bash", str(deploy_script), str(compose), str(evidence), run_id, attempt, workflow_sha],
         env=environment,
+        capture_output=True,
+        text=True,
     )
     if result.returncode != 0:
+        if result.stderr:
+            print(result.stderr[-4096:], file=sys.stderr)
         if evidence.is_file():
             _, report = evidence_digest(evidence)
             if report.get("rollback_succeeded") is True:

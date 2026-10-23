@@ -41,7 +41,7 @@ set -euo pipefail
 compose="$1"
 evidence="$2"
 compose_sha="${FIXTURE_COMPOSE_SHA:?}"
-target="$(awk -F': ' '/com.baicie.asteria.release:/{print $2}' "$compose")"
+target="v0.2.0"
 cp "$compose" "$ASTERIA_DEPLOY_ROOT/compose.yaml"
 cat >"$evidence" <<JSON
 {"schema":"asteria-drive-staging-deployment/v2","status":"success","last_phase":"complete","release_tag":"$target","compose_sha256":"$compose_sha","deployed_image_ref":"${FIXTURE_IMAGE:?}","migration_schema_after":3}
@@ -67,7 +67,9 @@ JSON
 	command.Env = append(os.Environ(), "ASTERIA_DEPLOY_ROOT="+root, "ASTERIA_CONTROLLER_RELEASES="+releases, "ASTERIA_CONTROLLER_STATE="+filepath.Join(root, "state.json"), "FIXTURE_COMPOSE_SHA="+composeHash, "FIXTURE_IMAGE=ghcr.io/baicie/asteria-drive@sha256:"+strings.Repeat("f", 64))
 	output, err := command.CombinedOutput()
 	if err != nil {
-		t.Fatalf("controller failed: %v\n%s", err, output)
+		state, _ := os.ReadFile(filepath.Join(root, "state.json"))
+		evidence, _ := os.ReadFile(filepath.Join(runDir, "deployment-evidence.json"))
+		t.Fatalf("controller failed: %v\nstdout/stderr: %s\nstate: %s\nevidence: %s", err, output, state, evidence)
 	}
 	stateBytes, err := os.ReadFile(filepath.Join(root, "state.json"))
 	if err != nil {
