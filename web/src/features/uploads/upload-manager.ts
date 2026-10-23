@@ -180,12 +180,22 @@ export async function uploadMultipart(
     ensureNotAborted(controller.signal)
     completing = true
     options.onPhase?.('completing')
-    try {
-      await gateway.complete(session.id, completed)
-    } catch {
-      // Never abort a session that may already have committed in PostgreSQL and S3.
-      const remote = await gateway.read(session.id).catch(() => null)
-      if (remote?.status !== 'committed') throw new UploadCompletionUnknownError(session.id)
+    // The Go control plane can safely replay completion with the SAME ordered parts:
+    // this handles the object_completed -> committed recovery path after a lost response.
+    // Do not abort once completion may have reached the server.
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        await gateway.complete(session.id, completed)
+        return
+      } catch {
+        const remote = await gateway.read(session.id).catch(() => null)
+        if (remote?.status === 'committed') return
+        if (remote && ['failed', 'aborted', 'expired'].includes(remote.status)) {
+          throw new Error(`上传已终止（服务端状态：${remote.status}）`)
+        }
+        if (attempt === 2) throw new UploadCompletionUnknownError(session.id)
+        await new Promise<void>((resolve) => setTimeout(resolve, 200 * (attempt + 1)))
+      }
     }
   } catch (error) {
     if (session && !completing) {
