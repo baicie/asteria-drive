@@ -294,6 +294,9 @@ async function switchView(mode: ViewMode) {
   if (mode === 'recycle') {
     await loadRecycleBin()
   } else {
+    recycleGeneration += 1
+    recycleLoading.value = false
+    recycleLoadingMore.value = false
     await refresh()
   }
 }
