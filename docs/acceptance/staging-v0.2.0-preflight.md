@@ -2,6 +2,7 @@
 
 - 核查时间：2026-10-23T06:26:43Z；最终修订：2026-10-23T10:31:00Z
 - 实现 PR：[#83](https://github.com/baicie/asteria-drive/pull/83)
+- 代码审查状态：P0/P1 `IMPLEMENTED` / `VERIFIED_LOCAL` / `VERIFIED_CI`
 - 仓库：`https://github.com/baicie/asteria-drive`
 - 起始 HEAD：`cf63a93480ba26c449ee2d0f93d3ea74df307c06`
 - 产品 main HEAD：`cf63a93480ba26c449ee2d0f93d3ea74df307c06`; 实现 PR #83 HEAD 见 GitHub
