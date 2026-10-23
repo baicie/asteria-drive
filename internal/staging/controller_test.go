@@ -365,6 +365,43 @@ func TestRollbackUnknownActiveVersionRequiresRecovery(t *testing.T) {
 	}
 }
 
+func TestVerifyImageMismatchCompensatesToPrevious(t *testing.T) {
+	set := testBundles(t)
+	wrong := Evidence{Version: VersionV020, ComposeSHA256: set[VersionV020].ComposeSHA256, Image: "sha256:deadbeef", SchemaVersion: 3, Healthy: true}
+	host := &fakeHost{active: ActiveState{Version: VersionV011, ComposeSHA256: set[VersionV011].ComposeSHA256, Image: set[VersionV011].Image, SchemaVersion: 3, Healthy: true}, verifyEvidence: &wrong}
+	controller, _, _, _ := newTestController(t, host)
+	record, err := controller.Deploy(context.Background(), request("15", VersionV020, VersionV011))
+	if err == nil {
+		t.Fatal("expected image verification failure")
+	}
+	if record.State != StateActive || record.ActiveVersion != VersionV011 {
+		t.Fatalf("expected compensated ACTIVE v0.1.1, got %#v", record)
+	}
+}
+
+func TestRollbackEvidenceMissingRequiresRecovery(t *testing.T) {
+	set := testBundles(t)
+	missing := Evidence{}
+	host := &fakeHost{active: ActiveState{Version: VersionV020, ComposeSHA256: set[VersionV020].ComposeSHA256, Image: set[VersionV020].Image, SchemaVersion: 3, Healthy: true}, rollbackVerify: &missing}
+	controller, _, _, _ := newTestController(t, host)
+	record, err := controller.Rollback(context.Background(), request("16", VersionV011, VersionV020))
+	if !errors.Is(err, ErrRecoveryRequired) {
+		t.Fatalf("error = %v, want ErrRecoveryRequired", err)
+	}
+	if record.State != StateRecoveryRequired {
+		t.Fatalf("state = %s, want RECOVERY_REQUIRED", record.State)
+	}
+}
+
+func TestMonitorRejectsImageMismatch(t *testing.T) {
+	set := testBundles(t)
+	host := &fakeHost{active: ActiveState{Version: VersionV011, ComposeSHA256: set[VersionV011].ComposeSHA256, Image: "sha256:deadbeef", SchemaVersion: 3, Healthy: true}}
+	controller, _, _, _ := newTestController(t, host)
+	if _, err := controller.Monitor(context.Background()); err == nil {
+		t.Fatal("monitor accepted a mismatched image")
+	}
+}
+
 func TestLoadBundlesMatchesFiles(t *testing.T) {
 	set := testBundles(t)
 	if len(set) != 2 {
