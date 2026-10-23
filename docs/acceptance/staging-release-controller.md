@@ -135,6 +135,9 @@ bootstrap 同时安装两个版本的 monitor/recovery，并允许两个精确 S
   bootstrap 双 pair、monitor/recovery 版本感知、无任意 SHA / secret / bypass。
 - Shell：`bash -n` 覆盖 bootstrap、deploy、monitor、recovery。
 - CI：Go test/race/vet/build、action-validator、OpenAPI、Security。
+- `action-validator` 的 schema 尚不支持 deploy/rollback workflow 使用的
+  `permissions.attestations`，因此这两个 workflow 由 `internal/cicheck` 的 YAML
+  解析和固定点断言覆盖；`npm run lint:actions` 覆盖 ci/security/monitor/recovery。
 
 ## 8. 尚未执行 / 需要主机验证
 
