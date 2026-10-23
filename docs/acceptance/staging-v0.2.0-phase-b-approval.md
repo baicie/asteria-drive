@@ -5,7 +5,9 @@
 - 关联 PR：#82
 - 操作 Runbook：[staging-v0.2.0-bootstrap-runbook.md](staging-v0.2.0-bootstrap-runbook.md)
 
-准备时间：2026-10-23T08:55:00Z`n`n本材料不包含 SSH 私钥、数据库密码、应用 Secret、PKI 私钥或 Docker volume 内容。
+准备时间：2026-10-23T08:55:00Z
+
+本材料不包含 SSH 私钥、数据库密码、应用 Secret、PKI 私钥或 Docker volume 内容。
 
 ## 1. 审批字段
 
