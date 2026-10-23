@@ -88,7 +88,7 @@ Release 页面：<https://github.com/baicie/asteria-drive/releases/tag/v0.2.0>
 | `scripts/deploy-staging.sh` | `007eb3a34bc5eff5bdff1db247ef9ed2b396814eac8231a0df71579a3f79138f` | PASS |
 | `scripts/monitor-staging.sh` | `d1e186cb375bf22fb910118e122d6003a6904c4345134d503e212aa051916d69` | PASS |
 | `scripts/recover-staging.sh` | `91c45a195b773b98e0dc70f3843f8f4af8efc05e2c6f66c7811cccabc633c1b4` | PASS |
-| `scripts/bootstrap-staging-host.sh` | `3d01fca63f7b10d6a0b9ffa2c13a8c558b6466bb9057b95f648de61b3d191229` | 本次 bootstrap 输入 |
+| `scripts/bootstrap-staging-host.sh` | `2128f1a67fd5e21b9ce0b89ee5b7e56e97693c154c05e3828c48670af1322b56` | 本次 bootstrap 输入 |
 
 交叉核对：
 

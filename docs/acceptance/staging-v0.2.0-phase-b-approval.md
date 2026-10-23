@@ -28,7 +28,7 @@
 
 | 文件 | SHA-256 |
 | --- | --- |
-| `scripts/bootstrap-staging-host.sh` | `3d01fca63f7b10d6a0b9ffa2c13a8c558b6466bb9057b95f648de61b3d191229` |
+| `scripts/bootstrap-staging-host.sh` | `2128f1a67fd5e21b9ce0b89ee5b7e56e97693c154c05e3828c48670af1322b56` |
 | `scripts/monitor-staging.sh` | `d1e186cb375bf22fb910118e122d6003a6904c4345134d503e212aa051916d69` |
 | `scripts/recover-staging.sh` | `91c45a195b773b98e0dc70f3843f8f4af8efc05e2c6f66c7811cccabc633c1b4` |
 | `scripts/deploy-staging.sh` | `007eb3a34bc5eff5bdff1db247ef9ed2b396814eac8231a0df71579a3f79138f` |
@@ -37,6 +37,7 @@
 | `infra/docker/staging/releases/v0.1.1/deploy-staging.sh` | `cd200fa32fdc2314817308479c99fe6425a481ff3bcd7384a60e145b2ad45044` |
 | `infra/docker/staging/releases/v0.1.1/monitor-staging.sh` | `3ef39670c2a5a90b9aee4bf926c7dd6b40938038d861457b0ed92ba48765c279` |
 | `infra/docker/staging/releases/v0.1.1/recover-staging.sh` | `3b2bb836852893548f1f1d64602745c67b02a307f0c8ad5fcf17c9c5a41f459a` |
+| `scripts/staging-release-controller.py` | `ebc339f407f704f72c72bf85769f2c8818e4e288c3600e86d2332aacf80eb751` |
 
 ## 3. 只读基线（执行前必须记录）
 
@@ -45,7 +46,8 @@
 - `hostname`、`date -u`、`id`
 - Docker Engine / Compose 版本
 - active Compose 路径和 SHA-256
-- `/usr/local/libexec/asteria-staging-{dispatch,monitor,recovery}` 摘要、owner、mode
+- `/usr/local/libexec/asteria-staging-{dispatch,monitor,recovery,controller}` 摘要、owner、mode
+- `/run/asteria-drive` 和 `staging.lock` 的 owner/group/mode，以及 tmpfiles.d 配置
 - `/usr/local/libexec/asteria-staging-monitor-v0.1.1` 和
   `asteria-staging-recovery-v0.1.1` 的存在性、摘要、owner、mode（若已安装）
 - `/etc/asteria-drive/staging-dispatch.conf` 摘要、owner、mode

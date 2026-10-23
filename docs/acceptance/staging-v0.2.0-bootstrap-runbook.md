@@ -28,6 +28,7 @@ git rev-parse HEAD
 
 sha256sum \
   scripts/bootstrap-staging-host.sh \
+  scripts/staging-release-controller.py \
   scripts/monitor-staging.sh \
   scripts/recover-staging.sh \
   scripts/deploy-staging.sh \
@@ -41,7 +42,8 @@ sha256sum \
 预期：
 
 ```text
-3d01fca63f7b10d6a0b9ffa2c13a8c558b6466bb9057b95f648de61b3d191229  scripts/bootstrap-staging-host.sh
+2128f1a67fd5e21b9ce0b89ee5b7e56e97693c154c05e3828c48670af1322b56  scripts/bootstrap-staging-host.sh
+ebc339f407f704f72c72bf85769f2c8818e4e288c3600e86d2332aacf80eb751  scripts/staging-release-controller.py
 d1e186cb375bf22fb910118e122d6003a6904c4345134d503e212aa051916d69  scripts/monitor-staging.sh
 91c45a195b773b98e0dc70f3843f8f4af8efc05e2c6f66c7811cccabc633c1b4  scripts/recover-staging.sh
 007eb3a34bc5eff5bdff1db247ef9ed2b396814eac8231a0df71579a3f79138f  scripts/deploy-staging.sh
@@ -72,7 +74,10 @@ sha256sum \
   /usr/local/libexec/asteria-staging-dispatch \
   /usr/local/libexec/asteria-staging-monitor \
   /usr/local/libexec/asteria-staging-recovery \
-  /etc/asteria-drive/staging-dispatch.conf
+  /usr/local/libexec/asteria-staging-controller \
+  /etc/asteria-drive/staging-dispatch.conf \
+  /etc/asteria-drive/staging-releases.json \
+  /run/asteria-drive/staging.lock
 
 # 所有权/权限
 stat -c '%U:%G %a %n' \
@@ -81,9 +86,19 @@ stat -c '%U:%G %a %n' \
   /usr/local/libexec/asteria-staging-dispatch \
   /usr/local/libexec/asteria-staging-monitor \
   /usr/local/libexec/asteria-staging-recovery \
+  /usr/local/libexec/asteria-staging-controller \
   /etc/asteria-drive/staging-dispatch.conf \
+  /etc/asteria-drive/staging-releases.json \
+  /run/asteria-drive \
+  /run/asteria-drive/staging.lock \
+  /etc/tmpfiles.d/asteria-drive-staging.conf \
   /etc/asteria-drive/staging-postgres-pki \
   /etc/asteria-drive/staging-postgres-pki/issuer
+
+锁的固定契约：`/run/asteria-drive` 为 `root:<deploy_group> 0750`，
+`/run/asteria-drive/staging.lock` 为 `root:<deploy_group> 0660`；`controller-state.json` 为 `root:root 0600`；
+`/etc/tmpfiles.d/asteria-drive-staging.conf` 为 `root:root 0644`。任何
+symlink、非 root owner、非 0660 mode 或错误 group 都必须 fail-closed。
 
 # 当前运行身份（只读）
 docker compose -p asteria-drive-staging -f /opt/asteria-drive/staging/compose.yaml ps
@@ -141,12 +156,14 @@ install -m 0600 /root/transfer/monitor-staging.sh "$stage/"
 install -m 0600 /root/transfer/recover-staging.sh "$stage/"
 install -m 0600 /root/transfer/monitor-staging-v0.1.1.sh "$stage/"
 install -m 0600 /root/transfer/recover-staging-v0.1.1.sh "$stage/"
+install -m 0600 /root/transfer/staging-release-controller.py "$stage/"
 
 sha256sum "$stage/bootstrap-staging-host.sh" \
           "$stage/monitor-staging.sh" \
           "$stage/recover-staging.sh" \
           "$stage/monitor-staging-v0.1.1.sh" \
-          "$stage/recover-staging-v0.1.1.sh"
+          "$stage/recover-staging-v0.1.1.sh" \
+          "$stage/staging-release-controller.py"
 ```
 
 必须与第 1 节摘要一致；两个 v0.1.1 文件来自
@@ -176,10 +193,12 @@ export ASTERIA_STAGING_MONITOR_B64="$(base64 -w0 "$stage/monitor-staging.sh")"
 export ASTERIA_STAGING_RECOVERY_B64="$(base64 -w0 "$stage/recover-staging.sh")"
 export ASTERIA_STAGING_MONITOR_V011_B64="$(base64 -w0 "$stage/monitor-staging-v0.1.1.sh")"
 export ASTERIA_STAGING_RECOVERY_V011_B64="$(base64 -w0 "$stage/recover-staging-v0.1.1.sh")"
+export ASTERIA_STAGING_CONTROLLER_B64="$(base64 -w0 "$stage/staging-release-controller.py")"
 test -n "$ASTERIA_STAGING_MONITOR_B64"
 test -n "$ASTERIA_STAGING_RECOVERY_B64"
 test -n "$ASTERIA_STAGING_MONITOR_V011_B64"
 test -n "$ASTERIA_STAGING_RECOVERY_V011_B64"
+test -n "$ASTERIA_STAGING_CONTROLLER_B64"
 ```
 
 若系统 `base64` 不支持 `-w0`，使用 `base64 "$file" | tr -d '\n'`。
