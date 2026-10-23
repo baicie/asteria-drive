@@ -95,7 +95,7 @@ backup="/root/asteria-staging-bootstrap-backup-$(date -u +%Y%m%dT%H%M%SZ)"
 3. 备份 root-owned 文件；
 4. 准备新 bootstrap/monitor/recovery；
 5. 从现有 authorized_keys 提取 deploy 公钥；
-6. 生成 monitor/recovery base64 输入；
+6. 生成 monitor/recovery v0.1.1/v0.2.0 与 controller 的 base64 输入；
 7. 运行 `bootstrap-staging-host.sh`；
 8. 只读验证安装摘要、owner、mode 和 dispatcher config。
 
