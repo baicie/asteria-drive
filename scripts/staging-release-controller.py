@@ -205,8 +205,21 @@ def main() -> int:
         record.update({"state": RECOVERY_REQUIRED, "last_error": "deployment evidence did not prove success", "evidence_sha256": digest})
         atomic_write(state_path, record)
         return 1
-    if report.get("release_tag") != target_version or report.get("deployed_image_ref") != releases[target_version].get("image") or report.get("compose_sha256") != releases[target_version].get("compose_sha256") or int(report.get("migration_schema_after", -1)) != int(releases[target_version].get("schema_version", -1)):
+    expected = releases[target_version]
+    if report.get("release_tag") != target_version:
         record.update({"state": RECOVERY_REQUIRED, "last_error": "deployment evidence target mismatch", "evidence_sha256": digest})
+        atomic_write(state_path, record)
+        return 1
+    if report.get("deployed_image_ref") != expected.get("image"):
+        record.update({"state": RECOVERY_REQUIRED, "last_error": "deployment evidence image mismatch", "evidence_sha256": digest})
+        atomic_write(state_path, record)
+        return 1
+    if report.get("compose_sha256") != expected.get("compose_sha256"):
+        record.update({"state": RECOVERY_REQUIRED, "last_error": "deployment evidence compose mismatch", "evidence_sha256": digest})
+        atomic_write(state_path, record)
+        return 1
+    if int(report.get("migration_schema_after", -1)) != int(expected.get("schema_version", -1)):
+        record.update({"state": RECOVERY_REQUIRED, "last_error": "deployment evidence schema mismatch", "evidence_sha256": digest})
         atomic_write(state_path, record)
         return 1
     current, digest_active = active_version(Path(environment["ASTERIA_DEPLOY_ROOT"]) / "compose.yaml", releases)
