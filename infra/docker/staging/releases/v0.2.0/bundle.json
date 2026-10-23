@@ -1,0 +1,15 @@
+{
+  "format": "asteria-drive-staging-release/v1",
+  "version": "v0.2.0",
+  "source_commit": "5169da638beac679c9cfed66757159474de879dc",
+  "image": "ghcr.io/baicie/asteria-drive@sha256:964e71a496e0800a48aaeb9d513f3927d175927a7e271dde37e0570532dc4853",
+  "compose_sha256": "cba2ba284a8f17231976ca40b99e77c4233f7948992372d703203cd98bdd3005",
+  "deploy_script_sha256": "007eb3a34bc5eff5bdff1db247ef9ed2b396814eac8231a0df71579a3f79138f",
+  "monitor_script_sha256": "d1e186cb375bf22fb910118e122d6003a6904c4345134d503e212aa051916d69",
+  "recovery_script_sha256": "91c45a195b773b98e0dc70f3843f8f4af8efc05e2c6f66c7811cccabc633c1b4",
+  "schema_version": 3,
+  "deployment_evidence_schema": "asteria-drive-staging-deployment/v2",
+  "monitor_evidence_schema": "asteria-drive-staging-monitor/v2",
+  "recovery_evidence_schema": "asteria-drive-staging-recovery/v2",
+  "operations": ["deploy", "rollback", "monitor", "recovery"]
+}

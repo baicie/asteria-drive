@@ -5,15 +5,23 @@ deploy_user="${ASTERIA_DEPLOY_USER:-asteria-deploy}"
 deploy_root="${ASTERIA_DEPLOY_ROOT:-/opt/asteria-drive/staging}"
 public_key_b64="${ASTERIA_DEPLOY_PUBLIC_KEY_B64:-}"
 monitor_source_b64="${ASTERIA_STAGING_MONITOR_B64:-}"
+monitor_v011_source_b64="${ASTERIA_STAGING_MONITOR_V011_B64:-}"
 recovery_source_b64="${ASTERIA_STAGING_RECOVERY_B64:-}"
+recovery_v011_source_b64="${ASTERIA_STAGING_RECOVERY_V011_B64:-}"
 dispatcher_path="/usr/local/libexec/asteria-staging-dispatch"
 dispatcher_config="/etc/asteria-drive/staging-dispatch.conf"
 monitor_path="/usr/local/libexec/asteria-staging-monitor"
 recovery_path="/usr/local/libexec/asteria-staging-recovery"
+monitor_v011_path="/usr/local/libexec/asteria-staging-monitor-v0.1.1"
+recovery_v011_path="/usr/local/libexec/asteria-staging-recovery-v0.1.1"
 expected_compose_sha256="cba2ba284a8f17231976ca40b99e77c4233f7948992372d703203cd98bdd3005"
 expected_deploy_script_sha256="007eb3a34bc5eff5bdff1db247ef9ed2b396814eac8231a0df71579a3f79138f"
+legacy_compose_sha256="aa4336dc8914faaccc304266cba715b8212d10722adb4afd7aeea5d40f4c9637"
+legacy_deploy_script_sha256="cd200fa32fdc2314817308479c99fe6425a481ff3bcd7384a60e145b2ad45044"
 expected_monitor_script_sha256="d1e186cb375bf22fb910118e122d6003a6904c4345134d503e212aa051916d69"
+expected_monitor_v011_script_sha256="3ef39670c2a5a90b9aee4bf926c7dd6b40938038d861457b0ed92ba48765c279"
 expected_recovery_script_sha256="91c45a195b773b98e0dc70f3843f8f4af8efc05e2c6f66c7811cccabc633c1b4"
+expected_recovery_v011_script_sha256="3b2bb836852893548f1f1d64602745c67b02a307f0c8ad5fcf17c9c5a41f459a"
 
 if [[ "$(id -u)" -ne 0 ]]; then
   printf 'bootstrap-staging-host.sh must run as root\n' >&2
@@ -31,6 +39,14 @@ if [[ -z "$recovery_source_b64" || ! "$recovery_source_b64" =~ ^[A-Za-z0-9+/=]+$
   printf 'ASTERIA_STAGING_RECOVERY_B64 is invalid\n' >&2
   exit 1
 fi
+if [[ -z "$monitor_v011_source_b64" || ! "$monitor_v011_source_b64" =~ ^[A-Za-z0-9+/=]+$ || "${#monitor_v011_source_b64}" -gt 1048576 ]]; then
+  printf 'ASTERIA_STAGING_MONITOR_V011_B64 is invalid\n' >&2
+  exit 1
+fi
+if [[ -z "$recovery_v011_source_b64" || ! "$recovery_v011_source_b64" =~ ^[A-Za-z0-9+/=]+$ || "${#recovery_v011_source_b64}" -gt 2097152 ]]; then
+  printf 'ASTERIA_STAGING_RECOVERY_V011_B64 is invalid\n' >&2
+  exit 1
+fi
 if [[ ! "$deploy_user" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]]; then
   printf 'ASTERIA_DEPLOY_USER is invalid\n' >&2
   exit 1
@@ -43,7 +59,7 @@ if ! command -v docker >/dev/null || ! docker compose version >/dev/null 2>&1; t
   printf 'Docker Engine and Docker Compose are required\n' >&2
   exit 1
 fi
-for command in awk base64 cmp grep openssl python3 sha256sum; do
+for command in awk base64 cmp flock grep openssl python3 sha256sum; do
   command -v "$command" >/dev/null || { printf '%s is required\n' "$command" >&2; exit 1; }
 done
 
@@ -335,9 +351,11 @@ PY
 dispatcher_tmp="$(mktemp /tmp/asteria-staging-dispatch.XXXXXXXX)"
 config_tmp="$(mktemp /tmp/asteria-staging-dispatch-config.XXXXXXXX)"
 monitor_tmp="$(mktemp /tmp/asteria-staging-monitor.XXXXXXXX)"
+monitor_v011_tmp="$(mktemp /tmp/asteria-staging-monitor-v011.XXXXXXXX)"
 recovery_tmp="$(mktemp /tmp/asteria-staging-recovery.XXXXXXXX)"
+recovery_v011_tmp="$(mktemp /tmp/asteria-staging-recovery-v011.XXXXXXXX)"
 cleanup_bootstrap() {
-  rm -f -- "$dispatcher_tmp" "$config_tmp" "$monitor_tmp" "$recovery_tmp"
+  rm -f -- "$dispatcher_tmp" "$config_tmp" "$monitor_tmp" "$monitor_v011_tmp" "$recovery_tmp" "$recovery_v011_tmp"
 }
 trap cleanup_bootstrap EXIT
 
@@ -348,12 +366,26 @@ printf '%s' "$monitor_source_b64" | base64 -d >"$monitor_tmp"
 }
 bash -n "$monitor_tmp"
 
+printf '%s' "$monitor_v011_source_b64" | base64 -d >"$monitor_v011_tmp"
+[[ "$(sha256sum "$monitor_v011_tmp" | awk '{print $1}')" == "$expected_monitor_v011_script_sha256" ]] || {
+  printf 'staging v0.1.1 monitor script digest mismatch\n' >&2
+  exit 1
+}
+bash -n "$monitor_v011_tmp"
+
 printf '%s' "$recovery_source_b64" | base64 -d >"$recovery_tmp"
 [[ "$(sha256sum "$recovery_tmp" | awk '{print $1}')" == "$expected_recovery_script_sha256" ]] || {
   printf 'staging recovery script digest mismatch\n' >&2
   exit 1
 }
 bash -n "$recovery_tmp"
+
+printf '%s' "$recovery_v011_source_b64" | base64 -d >"$recovery_v011_tmp"
+[[ "$(sha256sum "$recovery_v011_tmp" | awk '{print $1}')" == "$expected_recovery_v011_script_sha256" ]] || {
+  printf 'staging v0.1.1 recovery script digest mismatch\n' >&2
+  exit 1
+}
+bash -n "$recovery_v011_tmp"
 
 cat >"$dispatcher_tmp" <<'DISPATCHER'
 #!/usr/bin/env bash
@@ -383,8 +415,9 @@ require_run_dir() {
   [[ -d "$run_dir" && ! -L "$run_dir" && -O "$run_dir" ]] || fail
 }
 
-receive_file() {
-  local destination="$1" expected_sha="$2" limit="$3" temporary size actual_sha
+receive_release_file() {
+  local destination="$1" limit="$2" temporary size actual_sha
+  shift 2
   temporary="${destination}.tmp"
   rm -f -- "$temporary"
   umask 077
@@ -392,9 +425,16 @@ receive_file() {
   size="$(stat -c '%s' "$temporary")"
   [[ "$size" -gt 0 && "$size" -le "$limit" ]] || fail
   actual_sha="$(sha256sum "$temporary" | awk '{print $1}')"
-  [[ "$actual_sha" == "$expected_sha" ]] || fail
-  mv -f -- "$temporary" "$destination"
-  chmod 0600 "$destination"
+  local allowed
+  for allowed in "$@"; do
+    if [[ "$actual_sha" == "$allowed" ]]; then
+      mv -f -- "$temporary" "$destination"
+      chmod 0600 "$destination"
+      return 0
+    fi
+  done
+  rm -f -- "$temporary"
+  fail
 }
 
 case "$action" in
@@ -408,13 +448,13 @@ case "$action" in
     [[ "${#fields[@]}" -eq 3 ]] || fail
     validate_run
     require_run_dir
-    receive_file "$run_dir/compose.yaml" "$compose_sha256" 262144
+    receive_release_file "$run_dir/compose.yaml" 262144 "$compose_sha256" "$legacy_compose_sha256"
     ;;
   upload-script)
     [[ "${#fields[@]}" -eq 3 ]] || fail
     validate_run
     require_run_dir
-    receive_file "$run_dir/deploy-staging.sh" "$deploy_script_sha256" 524288
+    receive_release_file "$run_dir/deploy-staging.sh" 524288 "$deploy_script_sha256" "$legacy_deploy_script_sha256"
     ;;
   deploy)
     [[ "${#fields[@]}" -eq 4 ]] || fail
@@ -424,9 +464,16 @@ case "$action" in
     [[ "$workflow_sha" =~ ^[0-9a-f]{40}$ ]] || fail
     [[ -f "$run_dir/compose.yaml" && ! -L "$run_dir/compose.yaml" ]] || fail
     [[ -f "$run_dir/deploy-staging.sh" && ! -L "$run_dir/deploy-staging.sh" ]] || fail
-    [[ "$(sha256sum "$run_dir/compose.yaml" | awk '{print $1}')" == "$compose_sha256" ]] || fail
-    [[ "$(sha256sum "$run_dir/deploy-staging.sh" | awk '{print $1}')" == "$deploy_script_sha256" ]] || fail
-    exec env ASTERIA_DEPLOY_ROOT="$deploy_root" bash "$run_dir/deploy-staging.sh" \
+    compose_actual="$(sha256sum "$run_dir/compose.yaml" | awk '{print $1}')"
+    script_actual="$(sha256sum "$run_dir/deploy-staging.sh" | awk '{print $1}')"
+    if [[ "$compose_actual" == "$compose_sha256" && "$script_actual" == "$deploy_script_sha256" ]]; then
+      :
+    elif [[ "$compose_actual" == "$legacy_compose_sha256" && "$script_actual" == "$legacy_deploy_script_sha256" ]]; then
+      :
+    else
+      fail
+    fi
+    exec flock -n /run/asteria-drive-staging.lock env ASTERIA_DEPLOY_ROOT="$deploy_root" bash "$run_dir/deploy-staging.sh" \
       "$run_dir/compose.yaml" "$run_dir/deployment-evidence.json" \
       "$run_id" "$run_attempt" "$workflow_sha"
     ;;
@@ -437,12 +484,16 @@ case "$action" in
     requested_monitor_sha="${fields[4]}"
     [[ "$workflow_sha" =~ ^[0-9a-f]{40}$ ]] || fail
     [[ "$requested_monitor_sha" =~ ^[0-9a-f]{64}$ ]] || fail
-    [[ "$requested_monitor_sha" == "$monitor_script_sha256" ]] || fail
-    [[ -f "$monitor_path" && ! -L "$monitor_path" ]] || fail
-    [[ "$(stat -c '%u:%g:%a' "$monitor_path")" == "0:0:755" ]] || fail
-    [[ "$(sha256sum "$monitor_path" | awk '{print $1}')" == "$monitor_script_sha256" ]] || fail
-    exec env ASTERIA_DEPLOY_ROOT="$deploy_root" \
-      "$monitor_path" "$run_id" "$run_attempt" "$workflow_sha" "$requested_monitor_sha"
+    case "$requested_monitor_sha" in
+      "$monitor_script_sha256") selected_monitor_path="$monitor_path" ;;
+      "$monitor_v011_script_sha256") selected_monitor_path="$monitor_v011_path" ;;
+      *) fail ;;
+    esac
+    [[ -f "$selected_monitor_path" && ! -L "$selected_monitor_path" ]] || fail
+    [[ "$(stat -c '%u:%g:%a' "$selected_monitor_path")" == "0:0:755" ]] || fail
+    [[ "$(sha256sum "$selected_monitor_path" | awk '{print $1}')" == "$requested_monitor_sha" ]] || fail
+    exec flock -n /run/asteria-drive-staging.lock env ASTERIA_DEPLOY_ROOT="$deploy_root" \
+      "$selected_monitor_path" "$run_id" "$run_attempt" "$workflow_sha" "$requested_monitor_sha"
     ;;
   recovery)
     [[ "${#fields[@]}" -eq 5 ]] || fail
@@ -451,12 +502,16 @@ case "$action" in
     requested_recovery_sha="${fields[4]}"
     [[ "$workflow_sha" =~ ^[0-9a-f]{40}$ ]] || fail
     [[ "$requested_recovery_sha" =~ ^[0-9a-f]{64}$ ]] || fail
-    [[ "$requested_recovery_sha" == "$recovery_script_sha256" ]] || fail
-    [[ -f "$recovery_path" && ! -L "$recovery_path" ]] || fail
-    [[ "$(stat -c '%u:%g:%a' "$recovery_path")" == "0:0:755" ]] || fail
-    [[ "$(sha256sum "$recovery_path" | awk '{print $1}')" == "$recovery_script_sha256" ]] || fail
-    exec env ASTERIA_DEPLOY_ROOT="$deploy_root" \
-      "$recovery_path" "$run_id" "$run_attempt" "$workflow_sha"
+    case "$requested_recovery_sha" in
+      "$recovery_script_sha256") selected_recovery_path="$recovery_path" ;;
+      "$recovery_v011_script_sha256") selected_recovery_path="$recovery_v011_path" ;;
+      *) fail ;;
+    esac
+    [[ -f "$selected_recovery_path" && ! -L "$selected_recovery_path" ]] || fail
+    [[ "$(stat -c '%u:%g:%a' "$selected_recovery_path")" == "0:0:755" ]] || fail
+    [[ "$(sha256sum "$selected_recovery_path" | awk '{print $1}')" == "$requested_recovery_sha" ]] || fail
+    exec flock -n /run/asteria-drive-staging.lock env ASTERIA_DEPLOY_ROOT="$deploy_root" \
+      "$selected_recovery_path" "$run_id" "$run_attempt" "$workflow_sha"
     ;;
   fetch)
     [[ "${#fields[@]}" -eq 4 ]] || fail
@@ -486,11 +541,17 @@ DISPATCHER
 {
   printf 'compose_sha256=%q\n' "$expected_compose_sha256"
   printf 'deploy_script_sha256=%q\n' "$expected_deploy_script_sha256"
+  printf 'legacy_compose_sha256=%q\n' "$legacy_compose_sha256"
+  printf 'legacy_deploy_script_sha256=%q\n' "$legacy_deploy_script_sha256"
   printf 'monitor_script_sha256=%q\n' "$expected_monitor_script_sha256"
+  printf 'monitor_v011_script_sha256=%q\n' "$expected_monitor_v011_script_sha256"
   printf 'recovery_script_sha256=%q\n' "$expected_recovery_script_sha256"
+  printf 'recovery_v011_script_sha256=%q\n' "$expected_recovery_v011_script_sha256"
   printf 'deploy_root=%q\n' "$deploy_root"
   printf 'monitor_path=%q\n' "$monitor_path"
+  printf 'monitor_v011_path=%q\n' "$monitor_v011_path"
   printf 'recovery_path=%q\n' "$recovery_path"
+  printf 'recovery_v011_path=%q\n' "$recovery_v011_path"
 } >"$config_tmp"
 
 install -d -m 0755 -o root -g root /usr/local/libexec
@@ -503,7 +564,9 @@ for directory in /usr/local/libexec /etc/asteria-drive; do
 done
 install -m 0644 -o root -g root "$config_tmp" "$dispatcher_config"
 install -m 0755 -o root -g root "$monitor_tmp" "$monitor_path"
+install -m 0755 -o root -g root "$monitor_v011_tmp" "$monitor_v011_path"
 install -m 0755 -o root -g root "$recovery_tmp" "$recovery_path"
+install -m 0755 -o root -g root "$recovery_v011_tmp" "$recovery_v011_path"
 install -m 0755 -o root -g root "$dispatcher_tmp" "$dispatcher_path"
 install -d -m 0700 -o "$deploy_user" -g "$deploy_group" "$deploy_home/.ssh"
 printf 'restrict,command="%s" %s\n' "$dispatcher_path" "$public_key" >"$deploy_home/.ssh/authorized_keys"
