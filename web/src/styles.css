@@ -69,6 +69,10 @@ button { cursor: pointer; }
 .notice { margin: 10px 0; padding: 10px 13px; border-radius: 8px; font-size: 12px; }
 .notice.success { color: #177245; background: #eaf8f0; }
 .notice.error { color: #ad2e2e; background: #fff0f0; }
+.page-more { display: flex; justify-content: center; padding: 15px; border-top: 1px solid #eef1f5; background: #fcfdff; }
+.page-more button { border: 1px solid #dbe4f3; border-radius: 8px; padding: 8px 16px; color: #30447f; background: #fff; font-size: 12px; font-weight: 600; }
+.page-more button:hover:not(:disabled) { border-color: #8198d5; background: #f3f6ff; }
+.page-more button:disabled { opacity: .6; cursor: wait; }
 .file-card { overflow: hidden; border: 1px solid #e2e8f1; border-radius: 14px; background: #fff; box-shadow: 0 12px 35px #2539630a; }
 .file-card-header, .file-row { display: grid; grid-template-columns: minmax(240px, 1.8fr) minmax(130px, .75fr) minmax(100px, .6fr) 86px; align-items: center; gap: 16px; padding: 0 23px; }
 .file-card-header { height: 45px; border-bottom: 1px solid #eef1f5; color: #98a2b2; background: #fcfdfe; font-size: 11px; font-weight: 700; letter-spacing: .09em; text-transform: uppercase; }
