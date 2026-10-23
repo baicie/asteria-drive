@@ -180,7 +180,7 @@ async function loadDirectory(id: string, nextBreadcrumbs: Breadcrumb[]): Promise
     ])
     if (generation !== directoryGeneration) return false
     currentDirectory.value = directory
-    entries.value = children.data
+    entries.value = appendUnique([], children.data, (node) => node.id)
     directoryCursor.value = children.page.next_cursor
     breadcrumbs.value = nextBreadcrumbs
     return true
@@ -263,6 +263,12 @@ function logout() {
   moveLoading.value = false
   moveLoadingMore.value = false
   moveTarget.value = null
+  renameTarget.value = null
+  renameValue.value = ''
+  movePath.value = []
+  moveDirectories.value = []
+  moveError.value = ''
+  busy.value = ''
   viewMode.value = 'files'
   localStorage.removeItem('asteria.token')
   clearNotice()
@@ -310,7 +316,7 @@ async function loadRecycleBin() {
   try {
     const page = await apiPage<RecycleEntry>('/api/v1/recycle-bin?limit=100')
     if (generation !== recycleGeneration) return
-    recycleEntries.value = page.data
+    recycleEntries.value = appendUnique([], page.data, (entry) => entry.node.id)
     recycleCursor.value = page.page.next_cursor
   } catch (error) {
     if (generation === recycleGeneration) setNotice(error instanceof Error ? error.message : '无法读取回收站', 'error')
@@ -439,7 +445,7 @@ async function loadMoveDirectories(path: Breadcrumb[]) {
   try {
     const page = await apiPage<Node>(`/api/v1/directories/${encodeURIComponent(current.id)}/children?limit=200`)
     if (generation !== moveGeneration || !moveTarget.value) return
-    moveDirectories.value = page.data.filter((item) => item.kind === 'directory')
+    moveDirectories.value = appendUnique([], page.data.filter((item) => item.kind === 'directory'), (node) => node.id)
     moveCursor.value = page.page.next_cursor
   } catch (error) {
     if (generation !== moveGeneration) return
