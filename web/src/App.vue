@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { uploadMultipart, type UploadGateway } from './features/uploads/upload-manager'
 
 type NodeKind = 'directory' | 'file'
 
@@ -18,25 +19,7 @@ interface Node {
   revision: number
 }
 
-interface UploadSession {
-  id: string
-  status: string
-  part_size: number
-  expected_size: number
-}
 
-interface SignedPart {
-  part_number: number
-  method: string
-  url: string
-  required_headers?: Record<string, string>
-}
-
-interface CompletedPart {
-  part_number: number
-  etag: string
-  size: number
-}
 
 interface Breadcrumb {
   id: string
@@ -68,6 +51,9 @@ const fileInput = ref<HTMLInputElement | null>(null)
 const loading = ref(false)
 const busy = ref('')
 const uploadProgress = ref(0)
+const uploadAbort = ref<AbortController | null>(null)
+const uploadPhase = ref<'uploading' | 'completing' | null>(null)
+const uploadCancelling = ref(false)
 const loginError = ref('')
 const notice = ref<Notice>(null)
 const viewMode = ref<ViewMode>('files')
@@ -571,6 +557,12 @@ function chooseFile() {
   fileInput.value?.click()
 }
 
+function cancelUpload() {
+  if (uploadPhase.value !== 'uploading' || !uploadAbort.value) return
+  uploadCancelling.value = true
+  uploadAbort.value.abort()
+}
+
 async function uploadFile(event: Event) {
   const input = event.target as HTMLInputElement
   const file = input.files?.[0]
@@ -584,58 +576,53 @@ async function uploadFile(event: Event) {
 
   busy.value = 'upload'
   uploadProgress.value = 0
+  uploadCancelling.value = false
+  uploadPhase.value = 'uploading'
+  const controller = new AbortController()
+  uploadAbort.value = controller
   clearNotice()
-  let uploadId = ''
-  try {
-    const upload = await api<UploadSession>('/api/v1/uploads', {
-      method: 'POST',
-      headers: { 'Idempotency-Key': newIdempotencyKey() },
-      body: JSON.stringify({
-        parent_id: parent.id,
-        name: file.name,
-        size: file.size,
-        mime_type: file.type || 'application/octet-stream',
-      }),
-    })
-    uploadId = upload.id
-    if (!Number.isInteger(upload.part_size) || upload.part_size < 1) {
-      throw new Error('服务端返回了无效的分片大小')
-    }
 
-    const partCount = Math.ceil(file.size / upload.part_size)
-    if (partCount > 10000) throw new Error('文件过大，超过单次上传的 10000 个分片上限')
-    const completedParts: CompletedPart[] = []
-    for (let index = 0; index < partCount; index += 1) {
-      const partNumber = index + 1
-      const start = index * upload.part_size
-      const chunk = file.slice(start, Math.min(start + upload.part_size, file.size))
-      const signed = await api<SignedPart>(`/api/v1/uploads/${upload.id}/parts/sign`, {
-        method: 'POST',
-        body: JSON.stringify({ part_number: partNumber }),
-      })
-      const objectResponse = await fetch(signed.url, {
-        method: signed.method,
-        headers: signed.required_headers ?? {},
-        body: chunk,
-      })
-      if (!objectResponse.ok) throw new Error(`对象存储上传失败（HTTP ${objectResponse.status}）`)
-      const etag = objectResponse.headers.get('ETag') ?? objectResponse.headers.get('etag') ?? ''
-      if (!etag) throw new Error(`分片 ${partNumber} 未返回 ETag`)
-      completedParts.push({ part_number: signed.part_number, etag, size: chunk.size })
-      uploadProgress.value = Math.round((partNumber / partCount) * 100)
-    }
-    await api(`/api/v1/uploads/${upload.id}/complete`, {
+  const gateway: UploadGateway = {
+    create: (uploadFile, parentId, key) => api('/api/v1/uploads', {
       method: 'POST',
-      body: JSON.stringify({ parts: completedParts }),
+      headers: { 'Idempotency-Key': key },
+      body: JSON.stringify({
+        parent_id: parentId,
+        name: uploadFile.name,
+        size: uploadFile.size,
+        mime_type: uploadFile.type || 'application/octet-stream',
+      }),
+    }),
+    sign: (uploadId, partNumber) => api(`/api/v1/uploads/${encodeURIComponent(uploadId)}/parts/sign`, {
+      method: 'POST',
+      body: JSON.stringify({ part_number: partNumber }),
+    }),
+    complete: async (uploadId, parts) => {
+      await api(`/api/v1/uploads/${encodeURIComponent(uploadId)}/complete`, {
+        method: 'POST',
+        body: JSON.stringify({ parts }),
+      })
+    },
+    read: (uploadId) => api(`/api/v1/uploads/${encodeURIComponent(uploadId)}`),
+    abort: async (uploadId) => {
+      await api(`/api/v1/uploads/${encodeURIComponent(uploadId)}`, { method: 'DELETE' })
+    },
+  }
+
+  try {
+    await uploadMultipart(gateway, file, parent.id, newIdempotencyKey(), {
+      signal: controller.signal,
+      onProgress: (progress) => { uploadProgress.value = progress },
+      onPhase: (phase) => { uploadPhase.value = phase },
     })
     await refresh()
     setNotice(`已上传「${file.name}」`)
   } catch (error) {
-    if (uploadId) {
-      await api(`/api/v1/uploads/${uploadId}`, { method: 'DELETE' }).catch(() => undefined)
-    }
     setNotice(error instanceof Error ? error.message : '上传失败', 'error')
   } finally {
+    uploadAbort.value = null
+    uploadPhase.value = null
+    uploadCancelling.value = false
     busy.value = ''
     uploadProgress.value = 0
   }
@@ -767,7 +754,10 @@ onMounted(() => {
             <input ref="fileInput" type="file" hidden @change="uploadFile" />
             <zw-button variant="primary" :disabled="busy !== ''" @click="chooseFile">
               <span class="upload-icon">↑</span>
-              {{ busy === 'upload' ? `上传中 ${uploadProgress}%` : '上传文件' }}
+              {{ busy === 'upload' ? (uploadPhase === 'completing' ? '正在提交…' : `上传中 ${uploadProgress}%`) : '上传文件' }}
+            </zw-button>
+            <zw-button v-if="busy === 'upload' && uploadPhase === 'uploading'" variant="secondary" :disabled="uploadCancelling" @click="cancelUpload">
+              {{ uploadCancelling ? '取消中…' : '取消上传' }}
             </zw-button>
           </div>
         </div>
