@@ -1,6 +1,6 @@
 # Staging Root Bootstrap 最小权限 Runbook（v0.2.0）
 
-- 状态：`BLOCKED_APPROVAL`，尚未执行
+- 状态：Phase B `BLOCKED_APPROVAL`，尚未执行；Phase C 因完整回滚契约未闭合为 `BLOCKED_ROLLBACK_CONTRACT`
 - 源提交：`cf63a93480ba26c449ee2d0f93d3ea74df307c06`
 - 目标：把 root-owned dispatcher / monitor / recovery / 配置更新到 v0.2.0 固定点
 - 不在本 Runbook 中读取、导出或写入任何应用 Secret、数据库密码、PKI 私钥或 SSH 私钥
@@ -223,7 +223,7 @@ cat /etc/asteria-drive/staging-dispatch.conf
 
 ## 9. 失败与回滚
 
-### Bootstrap 失败
+### 9.1 Bootstrap 失败
 
 1. 不删除任何 volume。
 2. 优先重新运行同一 bootstrap；脚本对已完整存在的 secret/PKI 不做隐式轮换，对部分状态 fail-closed。
@@ -235,21 +235,58 @@ sha256sum /usr/local/libexec/asteria-staging-* \
   /etc/asteria-drive/staging-dispatch.conf
 ```
 
-4. 恢复旧 dispatcher/monitor/recovery 后，旧 monitor 应重新可用；验证一次只读 monitor 后再继续。
+4. **恢复旧 root-owned 文件并不等于恢复 GitHub monitor。** main 上的 monitor workflow 仍发送 v0.2.0 的 `MONITOR_SCRIPT_SHA256`；旧 dispatcher 只接受旧摘要，因此仍会拒绝。必须同时完成 9.3 的 workflow 摘要回滚。
 
-### 部署失败且自动回滚到 v0.1.1
+### 9.2 部署失败且自动回滚到 v0.1.1
 
-1. 确认部署证据显示 `rollback_succeeded=true`。
-2. 立即恢复第 3 节旧 root-owned 文件备份，使旧 monitor/recovery 摘要重新匹配。
-3. 不删除 `postgres-data`、`seaweedfs-data` 或任何 secret volume。
-4. 如果备份恢复失败，停止并标记 `FAILED`，不继续重试 deployment。
+适用前提：deployment 证据显示 `rollback_succeeded=true`，active runtime 已由部署脚本恢复到 previous v0.1.1。
+
+1. 核对 deployment artifact：`rollback_attempted=true`、`rollback_succeeded=true`、`deployed_image_ref`/`deployed_image_id` 回到旧值。
+2. 不删除 `postgres-data`、`seaweedfs-data` 或任何 secret volume。
+3. 恢复第 3 节旧 root-owned 文件备份。此时旧主机脚本已就位，但 monitor 仍不会恢复，因为 GitHub workflow 仍固定 v0.2.0 摘要。
+4. 执行 9.3 的 GitHub workflow 摘要回滚；在完成前，monitor/recovery 继续 fail-closed。
+5. 如果 active Compose 已回到 v0.1.1，不需要再运行 deploy；如果 rollback 未成功，停止并标记 `FAILED`，不得用任意 SSH Docker 命令绕过 workflow。
+
+### 9.3 完整回滚：同时恢复主机与 GitHub 摘要契约
+
+完整回滚不是单一步骤。最小权限、可审核、不绕过 SHA-256 的路线：
+
+1. **冻结新变更**：停止继续部署，保留 deployment 失败 evidence 和 artifact digest。
+2. **恢复主机 root-owned 文件**：用第 3 节备份恢复旧 dispatcher/config/monitor/recovery 和 authorized_keys；校验旧摘要。
+3. **准备受保护 main 的回滚 PR**：只回滚 staging 固定点，不动产品代码；至少恢复：
+   - `.github/workflows/monitor-staging.yml` 的 `MONITOR_SCRIPT_SHA256`、Compose SHA、API digest；
+   - `.github/workflows/drill-staging-recovery.yml` 的 `RECOVERY_SCRIPT_SHA256`、Compose SHA、API digest；
+   - `.github/workflows/deploy-staging.yml` 的 tag/source/API digest/Compose SHA 和 confirmation；
+   - 对应的 `scripts/validate`/cicheck 契约。
+   参考旧基线提交 `2dc40b92e621cee3f05cb6d21cebda00070eee6e` 的 staging 固定点。
+4. **回滚 PR 必须走正常 branch protection、required checks 和人工审批**；不得直接 push main、不得绕过 Environment、不得修改 ruleset。
+5. **恢复运行态**：
+   - 若 deployment 自动回滚已恢复 v0.1.1 active Compose/image，直接进入监控恢复；
+   - 若运行态仍是 v0.2.0，只能在回滚 PR 合并后，通过受控的旧版 deploy workflow/经批准的回滚 workflow 部署 v0.1.1；不得用 SSH 直接改 Docker。
+6. **验证摘要三元组同时匹配**：旧 host monitor SHA + 旧 workflow `MONITOR_SCRIPT_SHA256` + 旧 active Compose SHA。任一不匹配，monitor 仍会拒绝或失败。
+7. **验证监控/恢复**：手工触发 monitor/recovery（不是依赖 cron），保存 artifact；确认没有删除或重建活动数据卷。
+8. **记录证据**：host 文件摘要、workflow PR/commit、run ID、artifact digest、active Compose/image digest、restore 结果。
+
+当前限制：
+
+- 仓库没有 `Rollback staging` workflow；成功部署后没有自动回滚路径。
+- 回滚 PR 尚未创建；本次只准备审批材料，不创建代码 PR。
+- 因此完整回滚契约状态为 **`BLOCKED_ROLLBACK_CONTRACT`**，不得宣称“自动回滚安全”。
+- 失败尝试内的自动回滚仅覆盖 previous active Compose 存在的 runtime 恢复；它不覆盖 GitHub workflow pins，也不覆盖成功部署后的回滚。
+
+### 9.4 监控连续性
+
+- 不依赖 cron 精确时间：GitHub Actions 调度可能延迟 1 小时以上；升级原子性必须由维护窗口和人工检查保证。
+- bootstrap 完成后、deployment 完成前，monitor 可能 fail-closed；记录为预期摘要不匹配。
+- 完整回滚后，只通过 workflow 手工触发 monitor/recovery；不要用任意 SSH 命令验证或修改服务。
 
 ## 10. 过渡窗口规则
 
-- 不暂停、不修改 monitor/recovery workflow。
-- 在最近一次成功 monitor 后执行 bootstrap，并在下一次 `:23Z` 前完成 Phase C deployment。
+- 不暂停、不修改 monitor/recovery workflow；不以禁用监控换取窗口。
+- 维护窗口必须同时覆盖 Phase B 和 Phase C；窗口开始前完成只读基线、备份和审批。
+- 不依赖 `:23Z` 作为硬边界；cron 延迟已观察到至少 79 分钟。窗口以人工开始/结束和状态检查为准。
 - 窗口内 monitor 触发时，预期因旧 active Compose/旧 image 与 v0.2.0 pin 不匹配而 fail-closed；这是预期信号，不是数据故障。
-- 若窗口内无法完成 deployment，恢复旧 root-owned 文件并回到 v0.1.1，不留下半升级 host。
+- 若窗口内无法完成 deployment，执行第 9 节回滚，恢复旧 host 文件并完成 workflow 摘要回滚；不留下半升级 host。
 - recovery 每周 `17 4 * * 1`，避开该窗口。
 
 ## 11. 审批输出要求
@@ -262,4 +299,6 @@ sha256sum /usr/local/libexec/asteria-staging-* \
 - 第 3 节备份文件路径和 SHA-256；
 - 影响范围：仅 root-owned dispatcher/monitor/recovery/config/authorized_keys；
 - 回滚：第 9 节；
-- Phase C 需要**另一条**明确部署授权。
+- Phase C 需要**另一条**明确部署授权；
+- Phase C 在完整回滚契约（主机运行态 + GitHub workflow 摘要）获批前保持 `BLOCKED_ROLLBACK_CONTRACT`；
+- 任何人不得把“自动失败回滚”表述为“成功部署后的自动回滚”。
