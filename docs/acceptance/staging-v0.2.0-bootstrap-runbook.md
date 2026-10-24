@@ -43,8 +43,8 @@ sha256sum \
 预期：
 
 ```text
-1d0b1448d0c3a49dc6c1f1e1e5bd48a39f1767c525403ed592061563e3a87237  scripts/bootstrap-staging-host.sh
-ff1186f2f91dc4ff76aa4f8d6f4dd7c9f76a96665eb8dcc3fa97e1a8f51115dd  scripts/staging-release-controller.py
+d46abc310a0ab6bebf4ff1dd5fbb4ae8858e51e9dff2b1000c9825c3da395c1a  scripts/bootstrap-staging-host.sh
+5ccb8d18aae92d1040c20d76eb27dadd0c9ca7c04334d733b34bc4f69d9eaa38  scripts/staging-release-controller.py
 d4da4f696a5e2e1a93f0e0c4c51ecf6c09684842f665d9e620705494d837ffdc  scripts/staging_runtime_verifier.py
 d1e186cb375bf22fb910118e122d6003a6904c4345134d503e212aa051916d69  scripts/monitor-staging.sh
 91c45a195b773b98e0dc70f3843f8f4af8efc05e2c6f66c7811cccabc633c1b4  scripts/recover-staging.sh

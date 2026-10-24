@@ -28,7 +28,7 @@
 
 | 文件 | SHA-256 |
 | --- | --- |
-| `scripts/bootstrap-staging-host.sh` | `1d0b1448d0c3a49dc6c1f1e1e5bd48a39f1767c525403ed592061563e3a87237` |
+| `scripts/bootstrap-staging-host.sh` | `d46abc310a0ab6bebf4ff1dd5fbb4ae8858e51e9dff2b1000c9825c3da395c1a` |
 | `scripts/monitor-staging.sh` | `d1e186cb375bf22fb910118e122d6003a6904c4345134d503e212aa051916d69` |
 | `scripts/recover-staging.sh` | `91c45a195b773b98e0dc70f3843f8f4af8efc05e2c6f66c7811cccabc633c1b4` |
 | `scripts/deploy-staging.sh` | `007eb3a34bc5eff5bdff1db247ef9ed2b396814eac8231a0df71579a3f79138f` |
@@ -37,7 +37,7 @@
 | `infra/docker/staging/releases/v0.1.1/deploy-staging.sh` | `cd200fa32fdc2314817308479c99fe6425a481ff3bcd7384a60e145b2ad45044` |
 | `infra/docker/staging/releases/v0.1.1/monitor-staging.sh` | `3ef39670c2a5a90b9aee4bf926c7dd6b40938038d861457b0ed92ba48765c279` |
 | `infra/docker/staging/releases/v0.1.1/recover-staging.sh` | `3b2bb836852893548f1f1d64602745c67b02a307f0c8ad5fcf17c9c5a41f459a` |
-| `scripts/staging-release-controller.py` | `ff1186f2f91dc4ff76aa4f8d6f4dd7c9f76a96665eb8dcc3fa97e1a8f51115dd` |
+| `scripts/staging-release-controller.py` | `5ccb8d18aae92d1040c20d76eb27dadd0c9ca7c04334d733b34bc4f69d9eaa38` |
 | `scripts/staging_runtime_verifier.py` | `d4da4f696a5e2e1a93f0e0c4c51ecf6c09684842f665d9e620705494d837ffdc` |
 
 ## 3. 只读基线（执行前必须记录）
