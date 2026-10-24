@@ -11,9 +11,11 @@ monitor_v011_source_b64="${ASTERIA_STAGING_MONITOR_V011_B64:-}"
 recovery_source_b64="${ASTERIA_STAGING_RECOVERY_B64:-}"
 recovery_v011_source_b64="${ASTERIA_STAGING_RECOVERY_V011_B64:-}"
 controller_source_b64="${ASTERIA_STAGING_CONTROLLER_B64:-}"
+verifier_source_b64="${ASTERIA_STAGING_RUNTIME_VERIFIER_B64:-}"
 dispatcher_path="/usr/local/libexec/asteria-staging-dispatch"
 dispatcher_config="/etc/asteria-drive/staging-dispatch.conf"
 controller_path="/usr/local/libexec/asteria-staging-controller"
+verifier_path="/usr/local/libexec/staging_runtime_verifier.py"
 releases_path="/etc/asteria-drive/staging-releases.json"
 monitor_path="/usr/local/libexec/asteria-staging-monitor"
 recovery_path="/usr/local/libexec/asteria-staging-recovery"
@@ -27,7 +29,8 @@ expected_monitor_script_sha256="d1e186cb375bf22fb910118e122d6003a6904c4345134d50
 expected_monitor_v011_script_sha256="3ef39670c2a5a90b9aee4bf926c7dd6b40938038d861457b0ed92ba48765c279"
 expected_recovery_script_sha256="91c45a195b773b98e0dc70f3843f8f4af8efc05e2c6f66c7811cccabc633c1b4"
 expected_recovery_v011_script_sha256="3b2bb836852893548f1f1d64602745c67b02a307f0c8ad5fcf17c9c5a41f459a"
-expected_controller_sha256="ebc339f407f704f72c72bf85769f2c8818e4e288c3600e86d2332aacf80eb751"
+expected_controller_sha256="3692ca697f4adac60cac6f1dcdeb97472782af74029df4e241e48289a66de2b6"
+expected_verifier_sha256="d4da4f696a5e2e1a93f0e0c4c51ecf6c09684842f665d9e620705494d837ffdc"
 
 if [[ "$(id -u)" -ne 0 ]]; then
   printf 'bootstrap-staging-host.sh must run as root\n' >&2
@@ -55,6 +58,10 @@ if [[ -z "$recovery_v011_source_b64" || ! "$recovery_v011_source_b64" =~ ^[A-Za-
 fi
 if [[ -z "$controller_source_b64" || ! "$controller_source_b64" =~ ^[A-Za-z0-9+/=]+$ || "${#controller_source_b64}" -gt 1048576 ]]; then
   printf 'ASTERIA_STAGING_CONTROLLER_B64 is invalid\n' >&2
+  exit 1
+fi
+if [[ -z "$verifier_source_b64" || ! "$verifier_source_b64" =~ ^[A-Za-z0-9+/=]+$ || "${#verifier_source_b64}" -gt 1048576 ]]; then
+  printf 'ASTERIA_STAGING_RUNTIME_VERIFIER_B64 is invalid\n' >&2
   exit 1
 fi
 if [[ ! "$deploy_user" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]]; then
@@ -388,9 +395,10 @@ monitor_v011_tmp="$(mktemp /tmp/asteria-staging-monitor-v011.XXXXXXXX)"
 recovery_tmp="$(mktemp /tmp/asteria-staging-recovery.XXXXXXXX)"
 recovery_v011_tmp="$(mktemp /tmp/asteria-staging-recovery-v011.XXXXXXXX)"
 controller_tmp="$(mktemp /tmp/asteria-staging-controller.XXXXXXXX)"
+verifier_tmp="$(mktemp /tmp/asteria-staging-runtime-verifier.XXXXXXXX)"
 releases_tmp="$(mktemp /tmp/asteria-staging-releases.XXXXXXXX)"
 cleanup_bootstrap() {
-  rm -f -- "$dispatcher_tmp" "$config_tmp" "$monitor_tmp" "$monitor_v011_tmp" "$recovery_tmp" "$recovery_v011_tmp" "$controller_tmp" "$releases_tmp"
+  rm -f -- "$dispatcher_tmp" "$config_tmp" "$monitor_tmp" "$monitor_v011_tmp" "$recovery_tmp" "$recovery_v011_tmp" "$controller_tmp" "$verifier_tmp" "$releases_tmp"
 }
 trap cleanup_bootstrap EXIT
 
@@ -428,6 +436,13 @@ printf '%s' "$controller_source_b64" | base64 -d >"$controller_tmp"
   exit 1
 }
 python3 -m py_compile "$controller_tmp"
+
+printf '%s' "$verifier_source_b64" | base64 -d >"$verifier_tmp"
+[[ "$(sha256sum "$verifier_tmp" | awk '{print $1}')" == "$expected_verifier_sha256" ]] || {
+  printf 'staging runtime verifier digest mismatch\n' >&2
+  exit 1
+}
+python3 -m py_compile "$verifier_tmp"
 
 cat >"$dispatcher_tmp" <<'DISPATCHER'
 #!/usr/bin/env bash
@@ -523,6 +538,9 @@ case "$action" in
     [[ -f "$controller_path" && ! -L "$controller_path" ]] || fail
     [[ "$(stat -c '%u:%g:%a' "$controller_path")" == "0:0:755" ]] || fail
     [[ "$(sha256sum "$controller_path" | awk '{print $1}')" == "$controller_sha256" ]] || fail
+    [[ -f "$verifier_path" && ! -L "$verifier_path" ]] || fail
+    [[ "$(stat -c '%u:%g:%a' "$verifier_path")" == "0:0:644" ]] || fail
+    [[ "$(sha256sum "$verifier_path" | awk '{print $1}')" == "$verifier_sha256" ]] || fail
     validate_lock
     exec flock -n "$lock_path" env ASTERIA_DEPLOY_ROOT="$deploy_root" \
       "$controller_path" deploy "$run_id" "$run_attempt" "$workflow_sha" "$target_version" "$run_dir"
@@ -608,11 +626,13 @@ DISPATCHER
   printf 'recovery_v011_path=%q\n' "$recovery_v011_path"
   printf 'controller_path=%q\n' "$controller_path"
   printf 'controller_sha256=%q\n' "$expected_controller_sha256"
+  printf 'verifier_path=%q\n' "$verifier_path"
+  printf 'verifier_sha256=%q\n' "$expected_verifier_sha256"
   printf 'releases_path=%q\n' "$releases_path"
 } >"$config_tmp"
 
 printf '%s\n' \
-  '{"v0.1.1":{"compose_sha256":"aa4336dc8914faaccc304266cba715b8212d10722adb4afd7aeea5d40f4c9637","deploy_script_sha256":"cd200fa32fdc2314817308479c99fe6425a481ff3bcd7384a60e145b2ad45044","schema_version":3,"image":"ghcr.io/baicie/asteria-drive@sha256:2b73f8a7a271c0d7d6c7f73e15987b5e29290437146f07a57b57b9aef031d842"},"v0.2.0":{"compose_sha256":"cba2ba284a8f17231976ca40b99e77c4233f7948992372d703203cd98bdd3005","deploy_script_sha256":"007eb3a34bc5eff5bdff1db247ef9ed2b396814eac8231a0df71579a3f79138f","schema_version":3,"image":"ghcr.io/baicie/asteria-drive@sha256:964e71a496e0800a48aaeb9d513f3927d175927a7e271dde37e0570532dc4853"}}' \
+  '{"v0.1.1":{"compose_sha256":"aa4336dc8914faaccc304266cba715b8212d10722adb4afd7aeea5d40f4c9637","deploy_script_sha256":"cd200fa32fdc2314817308479c99fe6425a481ff3bcd7384a60e145b2ad45044","schema_version":3,"source_commit":"e8d26ded6e9138bbfdeac60f2487c5f835ab61a5","image":"ghcr.io/baicie/asteria-drive@sha256:2b73f8a7a271c0d7d6c7f73e15987b5e29290437146f07a57b57b9aef031d842"},"v0.2.0":{"compose_sha256":"cba2ba284a8f17231976ca40b99e77c4233f7948992372d703203cd98bdd3005","deploy_script_sha256":"007eb3a34bc5eff5bdff1db247ef9ed2b396814eac8231a0df71579a3f79138f","schema_version":3,"source_commit":"5169da638beac679c9cfed66757159474de879dc","image":"ghcr.io/baicie/asteria-drive@sha256:964e71a496e0800a48aaeb9d513f3927d175927a7e271dde37e0570532dc4853"}}' \
   >"$releases_tmp"
 
 install -d -m 0755 -o root -g root /usr/local/libexec
@@ -629,6 +649,7 @@ install -m 0755 -o root -g root "$monitor_v011_tmp" "$monitor_v011_path"
 install -m 0755 -o root -g root "$recovery_tmp" "$recovery_path"
 install -m 0755 -o root -g root "$recovery_v011_tmp" "$recovery_v011_path"
 install -m 0755 -o root -g root "$controller_tmp" "$controller_path"
+install -m 0644 -o root -g root "$verifier_tmp" "$verifier_path"
 install -m 0644 -o root -g root "$releases_tmp" "$releases_path"
 install -m 0755 -o root -g root "$dispatcher_tmp" "$dispatcher_path"
 install -d -m 0700 -o "$deploy_user" -g "$deploy_group" "$deploy_home/.ssh"

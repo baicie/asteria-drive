@@ -81,3 +81,48 @@ func TestStagingLockLifecycleAndConcurrency(t *testing.T) {
 		t.Fatalf("lock owner check failed: %v", err)
 	}
 }
+
+func TestStagingLockNonRootAccessAndReplacement(t *testing.T) {
+	t.Parallel()
+	sudo, err := exec.LookPath("sudo")
+	if err != nil {
+		t.Skip("sudo is not installed")
+	}
+	if err := exec.Command(sudo, "-n", "true").Run(); err != nil {
+		t.Skip("passwordless sudo is unavailable")
+	}
+	flock, err := exec.LookPath("flock")
+	if err != nil {
+		t.Skip("flock is not installed")
+	}
+	if err := exec.Command("id", "nobody").Run(); err != nil {
+		t.Skip("nobody account is unavailable")
+	}
+	parent, err := os.MkdirTemp("", "asteria-lock-nonroot-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(parent, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = exec.Command(sudo, "-n", "rm", "-rf", parent).Run() })
+	if output, err := exec.Command(sudo, "-n", "install", "-d", "-m", "0750", "-o", "root", "-g", "nogroup", parent+"/run").CombinedOutput(); err != nil {
+		t.Fatalf("create root lock directory: %v\n%s", err, output)
+	}
+	lock := parent + "/run/staging.lock"
+	if output, err := exec.Command(sudo, "-n", "install", "-m", "0660", "-o", "root", "-g", "nogroup", "/dev/null", lock).CombinedOutput(); err != nil {
+		t.Fatalf("create root lock file: %v\n%s", err, output)
+	}
+	if output, err := exec.Command(sudo, "-n", "-u", "nobody", flock, "-n", lock, "true").CombinedOutput(); err != nil {
+		t.Fatalf("authorized non-root lock acquisition failed: %v\n%s", err, output)
+	}
+	if err := exec.Command(sudo, "-n", "-u", "daemon", flock, "-n", lock, "true").Run(); err == nil {
+		t.Fatal("unauthorized non-root lock acquisition unexpectedly succeeded")
+	}
+	if err := exec.Command(sudo, "-n", "-u", "nobody", "ln", "-s", lock, lock+".replacement").Run(); err == nil {
+		t.Fatal("unauthorized lock replacement unexpectedly succeeded")
+	}
+	if err := exec.Command(sudo, "-n", "flock", "-n", lock, "true").Run(); err != nil {
+		t.Fatalf("root lock acquisition after non-root access failed: %v", err)
+	}
+}

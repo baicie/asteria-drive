@@ -10,3 +10,5 @@
 /scripts/monitor-staging.sh text eol=lf
 /scripts/recover-staging.sh text eol=lf
 /scripts/staging-release-controller.py text eol=lf
+/scripts/staging_runtime_verifier.py text eol=lf
+/scripts/tests/** text eol=lf
