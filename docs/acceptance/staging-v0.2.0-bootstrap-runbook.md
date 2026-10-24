@@ -77,6 +77,7 @@ sha256sum \
   /usr/local/libexec/asteria-staging-monitor \
   /usr/local/libexec/asteria-staging-recovery \
   /usr/local/libexec/asteria-staging-controller \
+  /usr/local/libexec/staging_runtime_verifier.py \
   /etc/asteria-drive/staging-dispatch.conf \
   /etc/asteria-drive/staging-releases.json \
   /run/asteria-drive/staging.lock
@@ -89,6 +90,7 @@ stat -c '%U:%G %a %n' \
   /usr/local/libexec/asteria-staging-monitor \
   /usr/local/libexec/asteria-staging-recovery \
   /usr/local/libexec/asteria-staging-controller \
+  /usr/local/libexec/staging_runtime_verifier.py \
   /etc/asteria-drive/staging-dispatch.conf \
   /etc/asteria-drive/staging-releases.json \
   /run/asteria-drive \
