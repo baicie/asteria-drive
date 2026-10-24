@@ -13,7 +13,12 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  MONITOR_SCRIPT_SHA256: d1e186cb375bf22fb910118e122d6003a6904c4345134d503e212aa051916d69
+  MONITOR_SCRIPT_SHA256_V011: 3ef39670c2a5a90b9aee4bf926c7dd6b40938038d861457b0ed92ba48765c279
+  MONITOR_SCRIPT_SHA256_V020: d1e186cb375bf22fb910118e122d6003a6904c4345134d503e212aa051916d69
+  EXPECTED_COMPOSE_SHA256_V011: aa4336dc8914faaccc304266cba715b8212d10722adb4afd7aeea5d40f4c9637
+  EXPECTED_COMPOSE_SHA256_V020: cba2ba284a8f17231976ca40b99e77c4233f7948992372d703203cd98bdd3005
+  EXPECTED_IMAGE_V011: sha256:2b73f8a7a271c0d7d6c7f73e15987b5e29290437146f07a57b57b9aef031d842
+  EXPECTED_IMAGE_V020: sha256:964e71a496e0800a48aaeb9d513f3927d175927a7e271dde37e0570532dc4853
 
 jobs:
   monitor:
@@ -68,17 +73,86 @@ jobs:
           evidence="$evidence_dir/monitor-evidence.json"
           collection_status="$evidence_dir/collection-status.json"
           trap 'rm -f -- "$raw_evidence" "$raw_stderr"' EXIT
-          set +e
-          ssh \
-            -F none -i "$RUNNER_TEMP/ssh/key" -p "$DEPLOY_PORT" \
-            -o BatchMode=yes -o ConnectTimeout=15 -o GlobalKnownHostsFile=/dev/null \
-            -o IdentitiesOnly=yes -o ProxyCommand=none -o StrictHostKeyChecking=yes \
-            -o UserKnownHostsFile="$RUNNER_TEMP/ssh/known_hosts" \
-            "$DEPLOY_USER@$DEPLOY_HOST" \
-            "status $GITHUB_RUN_ID $GITHUB_RUN_ATTEMPT $GITHUB_SHA $MONITOR_SCRIPT_SHA256" \
-            >"$raw_evidence" 2>"$raw_stderr"
-          probe_exit="$?"
-          set -e
+          selected_version=""
+          selected_sha=""
+          selected_compose=""
+          selected_image=""
+          probe_exit=1
+          run_probe() {
+            local candidate="$1" candidate_sha="$2"
+            set +e
+            ssh \
+              -F none -i "$RUNNER_TEMP/ssh/key" -p "$DEPLOY_PORT" \
+              -o BatchMode=yes -o ConnectTimeout=15 -o GlobalKnownHostsFile=/dev/null \
+              -o IdentitiesOnly=yes -o ProxyCommand=none -o StrictHostKeyChecking=yes \
+              -o UserKnownHostsFile="$RUNNER_TEMP/ssh/known_hosts" \
+              "$DEPLOY_USER@$DEPLOY_HOST" \
+              "status $GITHUB_RUN_ID $GITHUB_RUN_ATTEMPT $GITHUB_SHA $candidate_sha" \
+              >"$raw_evidence" 2>"$raw_stderr"
+            local code="$?"
+            set -e
+            printf '%s probe_exit=%s\n' "$candidate" "$code" >>"$RUNNER_TEMP/staging-monitor-attempts.log"
+            return "$code"
+          }
+          fallback_allowed() {
+            if [[ -s "$raw_stderr" ]] && grep -Fxq 'staging deploy command rejected' "$raw_stderr"; then
+              return 0
+            fi
+            python3 - "$raw_evidence" <<'PY'
+          import json
+          import sys
+          try:
+              with open(sys.argv[1], encoding="utf-8") as handle:
+                  report = json.load(handle)
+          except (OSError, ValueError):
+              raise SystemExit(1)
+          raise SystemExit(0 if report.get("status") == "failed" and report.get("last_phase") == "compose-identity" else 1)
+          PY
+          }
+          if run_probe v0.2.0 "$MONITOR_SCRIPT_SHA256_V020"; then
+            probe_exit=0
+            selected_version="v0.2.0"
+            selected_sha="$MONITOR_SCRIPT_SHA256_V020"
+            selected_compose="$EXPECTED_COMPOSE_SHA256_V020"
+            selected_image="$EXPECTED_IMAGE_V020"
+            printf 'selected v0.2.0\n' >"$evidence_dir/fallback-decision.txt"
+          else
+            cp "$raw_stderr" "$RUNNER_TEMP/staging-monitor-v0.2.0.stderr" 2>/dev/null || true
+            if fallback_allowed; then
+              printf 'fallback: v0.2.0 probe proved version mismatch or dispatcher rejection\n' >"$evidence_dir/fallback-decision.txt"
+              : >"$raw_evidence"
+              : >"$raw_stderr"
+              if run_probe v0.1.1 "$MONITOR_SCRIPT_SHA256_V011"; then
+                probe_exit=0
+                selected_version="v0.1.1"
+                selected_sha="$MONITOR_SCRIPT_SHA256_V011"
+                selected_compose="$EXPECTED_COMPOSE_SHA256_V011"
+                selected_image="$EXPECTED_IMAGE_V011"
+                printf 'selected v0.1.1 after fallback\n' >>"$evidence_dir/fallback-decision.txt"
+              else
+                probe_exit="$?"
+              fi
+            else
+              printf 'fallback denied: v0.2.0 failure was not a version mismatch\n' >"$evidence_dir/fallback-decision.txt"
+              probe_exit=1
+            fi
+          fi
+          if [[ -z "$selected_version" ]]; then
+            printf 'no approved staging monitor probe succeeded without masking a real failure\n' >&2
+            probe_exit=1
+          fi
+          cp "$RUNNER_TEMP/staging-monitor-attempts.log" "$evidence_dir/probe-attempts.txt" 2>/dev/null || true
+          if [[ -n "$selected_version" ]]; then
+            printf '%s\n' "$selected_version" >"$evidence_dir/selected-release.txt"
+          fi
+          export SELECTED_VERSION="$selected_version"
+          export SELECTED_MONITOR_SHA256="$selected_sha"
+          export SELECTED_COMPOSE_SHA256="$selected_compose"
+          export SELECTED_IMAGE="$selected_image"
+          printf 'SELECTED_VERSION=%s\n' "$selected_version" >>"$GITHUB_ENV"
+          printf 'SELECTED_MONITOR_SHA256=%s\n' "$selected_sha" >>"$GITHUB_ENV"
+          printf 'SELECTED_COMPOSE_SHA256=%s\n' "$selected_compose" >>"$GITHUB_ENV"
+          printf 'SELECTED_IMAGE=%s\n' "$selected_image" >>"$GITHUB_ENV"
           RAW_EVIDENCE="$raw_evidence" RAW_STDERR="$raw_stderr" PROBE_EXIT="$probe_exit" \
             python3 - "$collection_status" <<'PY'
           import hashlib
@@ -170,9 +244,9 @@ jobs:
               "github_run_id": os.environ["GITHUB_RUN_ID"],
               "github_run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
               "workflow_sha": os.environ["GITHUB_SHA"],
-              "monitor_script_sha256": os.environ["MONITOR_SCRIPT_SHA256"],
-              "compose_sha256": "cba2ba284a8f17231976ca40b99e77c4233f7948992372d703203cd98bdd3005",
-              "expected_image": "sha256:964e71a496e0800a48aaeb9d513f3927d175927a7e271dde37e0570532dc4853",
+              "monitor_script_sha256": os.environ["SELECTED_MONITOR_SHA256"],
+              "compose_sha256": os.environ["SELECTED_COMPOSE_SHA256"],
+              "expected_image": os.environ["SELECTED_IMAGE"],
               "claim_boundary": "staging-not-production",
               "capacity_max_disk_used_percent": 85,
               "capacity_min_disk_available_bytes": 5 * 1024 * 1024 * 1024,

@@ -265,7 +265,7 @@ func TestStagingScriptsKeepSecretsServerSideAndEmitEvidence(t *testing.T) {
 	}
 	for _, required := range []string{
 		"restrict,command=\"%s\"", "SSH_ORIGINAL_COMMAND", "upload-compose", "upload-script",
-		"receive_file", "sha256sum", "openssl rand", "docker volume create",
+		"receive_release_file", "sha256sum", "openssl rand", "docker volume create",
 		"refusing to rotate implicitly", "require_metadata", "chmod 0400",
 		"staging-postgres-pki", "database-url-tls", "postgres-ca.crt",
 		"postgres-server.crt", "postgres-server.key", "pg_hba.conf",
@@ -460,8 +460,9 @@ func TestStagingMonitorWorkflowAndScriptTrustBoundary(t *testing.T) {
 		"postgres_tls_leaf_san",
 		"postgres_tls_dsn_verified",
 		"postgres_hba_verified",
-		"MONITOR_SCRIPT_SHA256",
-		"status $GITHUB_RUN_ID $GITHUB_RUN_ATTEMPT $GITHUB_SHA $MONITOR_SCRIPT_SHA256",
+		"MONITOR_SCRIPT_SHA256_V011",
+		"MONITOR_SCRIPT_SHA256_V020",
+		"status $GITHUB_RUN_ID $GITHUB_RUN_ATTEMPT $GITHUB_SHA $candidate_sha",
 		"PostgreSQL certificate expires in under 30 days",
 		"monitor evidence fields mismatch",
 		"asteria-drive-staging-monitor-collection/v1",
@@ -567,17 +568,28 @@ func TestStagingMonitorWorkflowAndScriptTrustBoundary(t *testing.T) {
 		t.Fatal(err)
 	}
 	monitorDigest := fmt.Sprintf("%x", sha256.Sum256(monitor))
-	if workflow.Env["MONITOR_SCRIPT_SHA256"] != monitorDigest {
-		t.Errorf("monitor workflow digest = %q, want %s", workflow.Env["MONITOR_SCRIPT_SHA256"], monitorDigest)
+	if workflow.Env["MONITOR_SCRIPT_SHA256_V020"] != monitorDigest {
+		t.Errorf("monitor v0.2.0 digest = %q, want %s", workflow.Env["MONITOR_SCRIPT_SHA256_V020"], monitorDigest)
+	}
+	legacyMonitor, err := os.ReadFile("../../infra/docker/staging/releases/v0.1.1/monitor-staging.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyMonitorDigest := fmt.Sprintf("%x", sha256.Sum256(legacyMonitor))
+	if workflow.Env["MONITOR_SCRIPT_SHA256_V011"] != legacyMonitorDigest {
+		t.Errorf("monitor v0.1.1 digest = %q, want %s", workflow.Env["MONITOR_SCRIPT_SHA256_V011"], legacyMonitorDigest)
 	}
 	for _, required := range []string{
 		"ASTERIA_STAGING_MONITOR_B64",
+		"ASTERIA_STAGING_MONITOR_V011_B64",
 		"monitor_script_sha256",
+		"monitor_v011_script_sha256",
 		"requested_monitor_sha",
 		"status)",
-		`[[ "$(stat -c '%u:%g:%a' "$monitor_path")" == "0:0:755" ]]`,
-		`[[ "$(sha256sum "$monitor_path" | awk '{print $1}')" == "$monitor_script_sha256" ]]`,
+		`[[ "$(stat -c '%u:%g:%a' "$selected_monitor_path")" == "0:0:755" ]]`,
+		`[[ "$(sha256sum "$selected_monitor_path" | awk '{print $1}')" == "$requested_monitor_sha" ]]`,
 		monitorDigest,
+		"3ef39670c2a5a90b9aee4bf926c7dd6b40938038d861457b0ed92ba48765c279",
 	} {
 		if !strings.Contains(string(bootstrap), required) {
 			t.Errorf("staging bootstrap monitor contract is missing %q", required)
@@ -607,10 +619,10 @@ func TestStagingRecoveryWorkflowAndScriptTrustBoundary(t *testing.T) {
 		checkoutAction,
 		"persist-credentials: false",
 		"sha256sum --check --strict",
-		"bash -n scripts/recover-staging.sh",
+		"bash -n \"$path\"",
 		"StrictHostKeyChecking=yes",
 		"UserKnownHostsFile=",
-		"recovery $GITHUB_RUN_ID $GITHUB_RUN_ATTEMPT $GITHUB_SHA $RECOVERY_SCRIPT_SHA256",
+		"recovery $GITHUB_RUN_ID $GITHUB_RUN_ATTEMPT $GITHUB_SHA $candidate_sha",
 		"asteria-drive-staging-recovery/v2",
 		"staging-recovery-not-production",
 		"object_versions_restored",
@@ -730,8 +742,16 @@ func TestStagingRecoveryWorkflowAndScriptTrustBoundary(t *testing.T) {
 	}
 
 	recoveryDigest := fmt.Sprintf("%x", sha256.Sum256(recovery))
-	if workflow.Env["RECOVERY_SCRIPT_SHA256"] != recoveryDigest {
-		t.Errorf("recovery workflow digest = %q, want %s", workflow.Env["RECOVERY_SCRIPT_SHA256"], recoveryDigest)
+	if workflow.Env["RECOVERY_SCRIPT_SHA256_V020"] != recoveryDigest {
+		t.Errorf("recovery v0.2.0 digest = %q, want %s", workflow.Env["RECOVERY_SCRIPT_SHA256_V020"], recoveryDigest)
+	}
+	legacyRecovery, err := os.ReadFile("../../infra/docker/staging/releases/v0.1.1/recover-staging.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyRecoveryDigest := fmt.Sprintf("%x", sha256.Sum256(legacyRecovery))
+	if workflow.Env["RECOVERY_SCRIPT_SHA256_V011"] != legacyRecoveryDigest {
+		t.Errorf("recovery v0.1.1 digest = %q, want %s", workflow.Env["RECOVERY_SCRIPT_SHA256_V011"], legacyRecoveryDigest)
 	}
 	bootstrap, err := os.ReadFile("../../scripts/bootstrap-staging-host.sh")
 	if err != nil {
@@ -740,14 +760,16 @@ func TestStagingRecoveryWorkflowAndScriptTrustBoundary(t *testing.T) {
 	bootstrapText := string(bootstrap)
 	for _, required := range []string{
 		"ASTERIA_STAGING_RECOVERY_B64",
+		"ASTERIA_STAGING_RECOVERY_V011_B64",
 		"recovery_script_sha256",
+		"recovery_v011_script_sha256",
 		"recovery)",
-		`[[ "$requested_recovery_sha" == "$recovery_script_sha256" ]]`,
+		`[[ "$(stat -c '%u:%g:%a' "$selected_recovery_path")" == "0:0:755" ]]`,
+		`[[ "$(sha256sum "$selected_recovery_path" | awk '{print $1}')" == "$requested_recovery_sha" ]]`,
+		recoveryDigest,
+		"3b2bb836852893548f1f1d64602745c67b02a307f0c8ad5fcf17c9c5a41f459a",
 		"install -d -m 0755 -o root -g root /usr/local/libexec",
 		`[[ "$(stat -c '%u:%g:%a' "$directory")" == "0:0:755" ]]`,
-		`[[ "$(stat -c '%u:%g:%a' "$recovery_path")" == "0:0:755" ]]`,
-		`[[ "$(sha256sum "$recovery_path" | awk '{print $1}')" == "$recovery_script_sha256" ]]`,
-		recoveryDigest,
 	} {
 		if !strings.Contains(bootstrapText, required) {
 			t.Errorf("staging bootstrap recovery contract is missing %q", required)
