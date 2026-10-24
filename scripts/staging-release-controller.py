@@ -48,10 +48,15 @@ def atomic_write(path: Path, value: dict, deploy_root: Path) -> None:
         fail("controller state must be a direct child of the deploy root")
     if deploy_root.is_symlink() or not deploy_root.is_dir():
         fail("deploy root is missing or symlinked")
+    try:
+        if deploy_root.resolve(strict=True) != deploy_root:
+            fail("deploy root resolves through a symlink")
+    except OSError:
+        fail("deploy root cannot be resolved")
     if hasattr(os, "geteuid") and deploy_root.stat().st_uid != os.geteuid():
         fail("deploy root is not owned by the controller user")
-    if os.name == "posix" and deploy_root.stat().st_mode & 0o077:
-        fail("deploy root must not be writable by other users")
+    if os.name == "posix" and deploy_root.stat().st_mode & 0o022:
+        fail("deploy root must not be group- or world-writable")
     data = json.dumps(value, indent=2, sort_keys=True).encode() + b"\n"
     descriptor, temporary = tempfile.mkstemp(prefix=".controller-state-", dir=deploy_root)
     try:
@@ -173,6 +178,8 @@ def verify_runtime(runtime: RuntimeVerifier, version: str, compose_sha256: str, 
 def common_evidence(report: dict, run_id: str, attempt: str, workflow_sha: str, expected: dict) -> str | None:
     if report.get("schema") != "asteria-drive-staging-deployment/v2":
         return "deployment evidence schema is wrong"
+    if not isinstance(report.get("last_phase"), str) or not report.get("last_phase"):
+        return "deployment evidence has no last phase"
     if report.get("github_run_id") != run_id or report.get("github_run_attempt") != attempt:
         return "deployment evidence run identity mismatch"
     if report.get("workflow_sha") != workflow_sha:
@@ -185,6 +192,8 @@ def common_evidence(report: dict, run_id: str, attempt: str, workflow_sha: str, 
 def success_evidence(report: dict, snapshot: dict, expected: dict) -> str | None:
     if report.get("status") != "success" or report.get("last_phase") != "complete":
         return "deployment did not prove success/complete"
+    if report.get("image") != expected["image"]:
+        return "deployment evidence candidate image does not match bundle"
     if report.get("compose_sha256") != snapshot["compose_sha256"]:
         return "deployment evidence compose does not match runtime"
     if report.get("deployed_image_ref") != snapshot["image_ref"] or report.get("deployed_image_id") != snapshot["image_id"]:
