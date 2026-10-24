@@ -3,6 +3,7 @@ import importlib.util
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -119,7 +120,7 @@ class ControllerCase(unittest.TestCase):
             "schema": "asteria-drive-staging-deployment/v2",
             "status": "success", "last_phase": "complete",
             "github_run_id": "1", "github_run_attempt": "1", "workflow_sha": WORKFLOW,
-            "release_tag": V020, "source_commit": SOURCE_020,
+            "release_tag": V020, "source_commit": SOURCE_020, "image": IMAGE_020,
             "compose_sha256": self.releases[V020]["compose_sha256"],
             "deployed_image_ref": snapshot["image_ref"], "deployed_image_id": snapshot["image_id"],
             "migration_schema_after": 3,

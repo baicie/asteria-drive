@@ -82,16 +82,33 @@ IDLE -> PREPARED -> ACTIVATING -> VERIFYING -> ACTIVE
 
 ```text
 GitHub Actions deploy/rollback
-  -> forced-command dispatcher
+  -> forced-command dispatcher (asteria-deploy)
   -> /run/asteria-drive/staging.lock (flock)
-  -> /usr/local/libexec/asteria-staging-controller (root-owned python3)
+  -> /usr/local/libexec/asteria-staging-controller (root:root 0755, executed by asteria-deploy)
+  -> staging_runtime_verifier.py (root:root 0644)
   -> reviewed version-specific deploy-staging.sh
   -> deployment-evidence.json + controller-state.json
 ```
 
-控制器在主机持久化 run/attempt/target/previous/state/evidence digest；状态写入
-tmp+fsync+rename。`RECOVERY_REQUIRED` 会阻止后续变更；`ATTEMPTING` 中断会要求
-人工恢复，不会重复执行破坏性步骤。跨 GitHub Actions 与主机仍不构成原子事务。
+状态文件的真实信任边界：
+
+- 控制器进程 UID 是 `asteria-deploy`，不是 root；`controller-state.json` 由
+  deploy 用户创建并拥有，目录为 `/opt/asteria-drive/staging`（
+  `asteria-deploy:<deploy_group> 0750`），文件必须 regular、非 symlink、
+  `deploy:deploy 0600`。
+- 该文件是**可被 deploy 用户篡改的操作日志**，不是 root 可信凭据。它只用于
+  拒绝重复执行和记录中断；任何 `ACTIVE` 结论都必须由实时 Docker/DB/readiness
+  快照重新证明。
+- deploy 用户属于 `docker` 组，实际具备主机管理员等效能力，不能虚构
+  “root vs deploy”隔离。真正的边界是固定 SSH host key、forced command、固定
+  版本 bundle 和 root-owned 可执行文件；远程 workflow 不能写状态文件。
+- controller 在提交 ACTIVE、幂等重放、回滚补偿和开始新切换前调用
+  `RuntimeVerifier`：active Compose SHA-256、`docker inspect` 实际镜像与
+  镜像 ID、容器状态、`/readyz`、`/healthz`、PostgreSQL
+  `MAX(version)` 和持久化版本一致性。
+- 状态写入 tmp+fsync+rename+目录 fsync。`RECOVERY_REQUIRED` 会阻止后续变更；
+  `ATTEMPTING` 中断要求人工恢复，不会重复执行破坏性步骤。
+- 跨 GitHub Actions 与主机仍不构成原子事务。
 
 ## 4. Rollback Workflow
 
@@ -135,7 +152,8 @@ bootstrap 同时安装两个版本的 monitor/recovery，并允许两个精确 S
 `scripts/bootstrap-staging-host.sh` 新增：
 
 - 安装 `asteria-staging-monitor-v0.1.1` 和 `asteria-staging-recovery-v0.1.1`；
-- 安装 root-owned `asteria-staging-controller` 和
+- 安装 root-owned `asteria-staging-controller`、
+  root-owned `staging_runtime_verifier.py` 和
   `/etc/asteria-drive/staging-releases.json`；
 - dispatcher 按请求 SHA 选择精确版本路径，不接受任意 SHA；
 - `upload-compose`/`upload-script` 只接受两个 release bundle 的精确 pair；
@@ -145,8 +163,8 @@ bootstrap 同时安装两个版本的 monitor/recovery，并允许两个精确 S
 - `deploy`/`status`/`recovery` 使用该锁的 `flock`，先校验 owner/group/mode 和
   symlink，与 GitHub concurrency 双重串行化；
 - 新增 `ASTERIA_STAGING_MONITOR_V011_B64` /
-  `ASTERIA_STAGING_RECOVERY_V011_B64` / `ASTERIA_STAGING_CONTROLLER_B64`
-  输入，均按 SHA-256 固定。
+  `ASTERIA_STAGING_RECOVERY_V011_B64` / `ASTERIA_STAGING_CONTROLLER_B64` /
+  `ASTERIA_STAGING_RUNTIME_VERIFIER_B64` 输入，均按 SHA-256 固定。
 
 ## 7. P0/P1 审查修复
 
@@ -154,15 +172,23 @@ bootstrap 同时安装两个版本的 monitor/recovery，并允许两个精确 S
   重启重建、dispatcher `validate_lock` fail-closed；`internal/cicheck` 的 Linux
   锁集成测试覆盖获取/释放、并发、重建、symlink 拒绝。
 - **P0-B 真实执行链**：dispatcher 的 `deploy` 不再直接执行 deploy script，而是
-  在锁内调用 root-owned host controller；controller 持久化
-  `controller-state.json`，在激活前写 `ATTEMPTING`，完成后原子提交 `ACTIVE`，
+  在锁内调用 host controller（root-owned 文件，但以 deploy UID 运行）；controller
+  持久化 `controller-state.json`（deploy 所有、0600，仅操作日志），在激活前写
+  `ATTEMPTING`，完成后仅在实时 Runtime Verifier 通过后原子提交 `ACTIVE`，
   失败/证据不完整进入 `RECOVERY_REQUIRED`；`ATTEMPTING` 中断不会重复执行。
+- **P0-state 信任边界**：不声称 root:root 状态。deploy 用户属于 docker 组，
+  本就具备主机管理员等效能力；状态可由 deploy 篡改，因此只作为拒绝重复执行
+  的日志。controller 校验 state regular file、非 symlink、owner=当前 UID、
+  0600、parent=deploy root；任何 ACTIVE 都必须经真实 Docker/DB/readiness 证明。
 - **P1-A 切换前验证**：Go controller 在 Deploy/Rollback 前读取 active state，
   要求版本在 allowlist、Compose/image/schema 与 bundle 一致且健康；否则
-  进入 `RECOVERY_REQUIRED`。Host controller 同样从 active Compose 读取版本和
-  摘要，并校验 deployment evidence 的 image/Compose/schema。
-- **P1-B 回滚 Schema/Evidence**：Rollback 与 compensate 验证 schema、image、
-  Compose 和 evidence digest；回滚后重新读取 host，证据缺失/不一致进入 recovery。
+  进入 `RECOVERY_REQUIRED`。Host controller 在切换前从 active Compose 读取版本和
+  摘要，并由 Runtime Verifier 检查实际容器镜像、镜像 ID、容器状态、API
+  readiness/health 和 PostgreSQL schema。
+- **P1-B 回滚 Schema/Evidence**：Rollback 与 compensate 校验 evidence 的
+  schema/status/last_phase/run ID/attempt/workflow SHA/release source/
+  image/Compose/schema；回滚后重新读取真实 host snapshot，`rollback_succeeded=true`
+  但容器未恢复不得写 ACTIVE。
 - **P1-C 原子 ACTIVE**：ACTIVE 记录在一次 `Store.Save` 中完整提交（含 identity
   和 digest）；失败回退原状态；FileStore 使用 tmp+fsync+rename+目录 fsync，
   corrupt/incomplete 记录拒绝加载；replay/Resume 重新读取 host。
@@ -172,10 +198,13 @@ bootstrap 同时安装两个版本的 monitor/recovery，并允许两个精确 S
 
 ## 8. 测试
 
-- `internal/staging`：25+ 状态机/bundle 测试，覆盖 P1-A/B/C 负向路径。
+- `internal/staging`：38 状态机/bundle 测试，覆盖 P1-A/B/C 负向路径。
 - `internal/cicheck`：release bundle 摘要、rollback workflow 固定点、bootstrap
-  双 pair/锁/controller、monitor/recovery 版本选择分类、host controller 状态与
-  evidence 故障注入、Linux 锁生命周期。
+  双 pair/锁/controller/verifier、monitor/recovery 版本选择分类、Linux 锁生命周期、
+  非 root 锁获取与替换拒绝、Python host controller 故障注入入口。
+- `scripts/tests`：26 个隔离 Python 测试，直接驱动 Controller/RuntimeVerifier
+  分支和伪 Docker/DB 适配器：镜像漂移、API 停止、schema 错误、未恢复的假回滚、
+  错误 run/workflow、ACTIVE replay 漂移、状态权限/属主/symlink 篡改。
 - Shell：`bash -n` 覆盖 bootstrap、deploy、monitor、recovery、controller。
 - CI：Go test/race/vet/build、action-validator、OpenAPI、Security。
 - `action-validator` 的 schema 尚不支持 deploy/rollback workflow 使用的
@@ -196,7 +225,8 @@ bootstrap 同时安装两个版本的 monitor/recovery，并允许两个精确 S
 仓库实现不等于已部署。主体验证前仍然需要：
 
 1. 人工批准并在维护窗口执行新的 root bootstrap；
-2. 用真实 host 只读采集 active Compose/image/schema 和锁 metadata；
+2. 用真实 host 只读采集 active Compose/image/schema、锁 metadata，以及
+   `controller-state.json` 的 `deploy:deploy 0600` ownership/mode；
 3. 在隔离维护窗口完成 `v0.2.0` deploy；
 4. 执行 `rollback-v0.1.1` 并验证 evidence、卷保留、schema 和监控；
 5. 再执行一次 recovery drill。
