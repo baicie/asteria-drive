@@ -95,7 +95,7 @@ GitHub Actions deploy/rollback
 - 控制器进程 UID 是 `asteria-deploy`，不是 root；`controller-state.json` 由
   deploy 用户创建并拥有，目录为 `/opt/asteria-drive/staging`（
   `asteria-deploy:<deploy_group> 0750`），文件必须 regular、非 symlink、
-  `deploy:deploy 0600`。
+  `asteria-deploy:<deploy_group> 0600`。
 - 该文件是**可被 deploy 用户篡改的操作日志**，不是 root 可信凭据。它只用于
   拒绝重复执行和记录中断；任何 `ACTIVE` 结论都必须由实时 Docker/DB/readiness
   快照重新证明。
@@ -226,7 +226,7 @@ bootstrap 同时安装两个版本的 monitor/recovery，并允许两个精确 S
 
 1. 人工批准并在维护窗口执行新的 root bootstrap；
 2. 用真实 host 只读采集 active Compose/image/schema、锁 metadata，以及
-   `controller-state.json` 的 `deploy:deploy 0600` ownership/mode；
+   `controller-state.json` 的 `asteria-deploy:<deploy_group> 0600` ownership/mode；
 3. 在隔离维护窗口完成 `v0.2.0` deploy；
 4. 执行 `rollback-v0.1.1` 并验证 evidence、卷保留、schema 和监控；
 5. 再执行一次 recovery drill。
