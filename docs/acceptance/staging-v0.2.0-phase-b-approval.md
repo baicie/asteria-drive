@@ -28,7 +28,7 @@
 
 | 文件 | SHA-256 |
 | --- | --- |
-| `scripts/bootstrap-staging-host.sh` | `2128f1a67fd5e21b9ce0b89ee5b7e56e97693c154c05e3828c48670af1322b56` |
+| `scripts/bootstrap-staging-host.sh` | `1d0b1448d0c3a49dc6c1f1e1e5bd48a39f1767c525403ed592061563e3a87237` |
 | `scripts/monitor-staging.sh` | `d1e186cb375bf22fb910118e122d6003a6904c4345134d503e212aa051916d69` |
 | `scripts/recover-staging.sh` | `91c45a195b773b98e0dc70f3843f8f4af8efc05e2c6f66c7811cccabc633c1b4` |
 | `scripts/deploy-staging.sh` | `007eb3a34bc5eff5bdff1db247ef9ed2b396814eac8231a0df71579a3f79138f` |
@@ -37,7 +37,8 @@
 | `infra/docker/staging/releases/v0.1.1/deploy-staging.sh` | `cd200fa32fdc2314817308479c99fe6425a481ff3bcd7384a60e145b2ad45044` |
 | `infra/docker/staging/releases/v0.1.1/monitor-staging.sh` | `3ef39670c2a5a90b9aee4bf926c7dd6b40938038d861457b0ed92ba48765c279` |
 | `infra/docker/staging/releases/v0.1.1/recover-staging.sh` | `3b2bb836852893548f1f1d64602745c67b02a307f0c8ad5fcf17c9c5a41f459a` |
-| `scripts/staging-release-controller.py` | `ebc339f407f704f72c72bf85769f2c8818e4e288c3600e86d2332aacf80eb751` |
+| `scripts/staging-release-controller.py` | `ff1186f2f91dc4ff76aa4f8d6f4dd7c9f76a96665eb8dcc3fa97e1a8f51115dd` |
+| `scripts/staging_runtime_verifier.py` | `d4da4f696a5e2e1a93f0e0c4c51ecf6c09684842f665d9e620705494d837ffdc` |
 
 ## 3. 只读基线（执行前必须记录）
 
@@ -95,7 +96,7 @@ backup="/root/asteria-staging-bootstrap-backup-$(date -u +%Y%m%dT%H%M%SZ)"
 3. 备份 root-owned 文件；
 4. 准备新 bootstrap/monitor/recovery；
 5. 从现有 authorized_keys 提取 deploy 公钥；
-6. 生成 monitor/recovery v0.1.1/v0.2.0 与 controller 的 base64 输入；
+6. 生成 monitor/recovery v0.1.1/v0.2.0、controller 与 runtime verifier 的 base64 输入；
 7. 运行 `bootstrap-staging-host.sh`；
 8. 只读验证安装摘要、owner、mode 和 dispatcher config。
 

@@ -29,6 +29,7 @@ git rev-parse HEAD
 sha256sum \
   scripts/bootstrap-staging-host.sh \
   scripts/staging-release-controller.py \
+  scripts/staging_runtime_verifier.py \
   scripts/monitor-staging.sh \
   scripts/recover-staging.sh \
   scripts/deploy-staging.sh \
@@ -42,8 +43,9 @@ sha256sum \
 预期：
 
 ```text
-2128f1a67fd5e21b9ce0b89ee5b7e56e97693c154c05e3828c48670af1322b56  scripts/bootstrap-staging-host.sh
-ebc339f407f704f72c72bf85769f2c8818e4e288c3600e86d2332aacf80eb751  scripts/staging-release-controller.py
+1d0b1448d0c3a49dc6c1f1e1e5bd48a39f1767c525403ed592061563e3a87237  scripts/bootstrap-staging-host.sh
+ff1186f2f91dc4ff76aa4f8d6f4dd7c9f76a96665eb8dcc3fa97e1a8f51115dd  scripts/staging-release-controller.py
+d4da4f696a5e2e1a93f0e0c4c51ecf6c09684842f665d9e620705494d837ffdc  scripts/staging_runtime_verifier.py
 d1e186cb375bf22fb910118e122d6003a6904c4345134d503e212aa051916d69  scripts/monitor-staging.sh
 91c45a195b773b98e0dc70f3843f8f4af8efc05e2c6f66c7811cccabc633c1b4  scripts/recover-staging.sh
 007eb3a34bc5eff5bdff1db247ef9ed2b396814eac8231a0df71579a3f79138f  scripts/deploy-staging.sh
@@ -96,7 +98,7 @@ stat -c '%U:%G %a %n' \
   /etc/asteria-drive/staging-postgres-pki/issuer
 
 锁的固定契约：`/run/asteria-drive` 为 `root:<deploy_group> 0750`，
-`/run/asteria-drive/staging.lock` 为 `root:<deploy_group> 0660`；`controller-state.json` 为 `root:root 0600`；
+`/run/asteria-drive/staging.lock` 为 `root:<deploy_group> 0660`；`controller-state.json` 为 `asteria-deploy:<deploy_group> 0600`（deploy 可篡改日志，不是 root 凭据）；
 `/etc/tmpfiles.d/asteria-drive-staging.conf` 为 `root:root 0644`。任何
 symlink、非 root owner、非 0660 mode 或错误 group 都必须 fail-closed。
 
@@ -157,13 +159,15 @@ install -m 0600 /root/transfer/recover-staging.sh "$stage/"
 install -m 0600 /root/transfer/monitor-staging-v0.1.1.sh "$stage/"
 install -m 0600 /root/transfer/recover-staging-v0.1.1.sh "$stage/"
 install -m 0600 /root/transfer/staging-release-controller.py "$stage/"
+install -m 0600 /root/transfer/staging_runtime_verifier.py "$stage/"
 
 sha256sum "$stage/bootstrap-staging-host.sh" \
           "$stage/monitor-staging.sh" \
           "$stage/recover-staging.sh" \
           "$stage/monitor-staging-v0.1.1.sh" \
           "$stage/recover-staging-v0.1.1.sh" \
-          "$stage/staging-release-controller.py"
+          "$stage/staging-release-controller.py" \
+          "$stage/staging_runtime_verifier.py"
 ```
 
 必须与第 1 节摘要一致；两个 v0.1.1 文件来自
@@ -194,11 +198,13 @@ export ASTERIA_STAGING_RECOVERY_B64="$(base64 -w0 "$stage/recover-staging.sh")"
 export ASTERIA_STAGING_MONITOR_V011_B64="$(base64 -w0 "$stage/monitor-staging-v0.1.1.sh")"
 export ASTERIA_STAGING_RECOVERY_V011_B64="$(base64 -w0 "$stage/recover-staging-v0.1.1.sh")"
 export ASTERIA_STAGING_CONTROLLER_B64="$(base64 -w0 "$stage/staging-release-controller.py")"
+export ASTERIA_STAGING_RUNTIME_VERIFIER_B64="$(base64 -w0 "$stage/staging_runtime_verifier.py")"
 test -n "$ASTERIA_STAGING_MONITOR_B64"
 test -n "$ASTERIA_STAGING_RECOVERY_B64"
 test -n "$ASTERIA_STAGING_MONITOR_V011_B64"
 test -n "$ASTERIA_STAGING_RECOVERY_V011_B64"
 test -n "$ASTERIA_STAGING_CONTROLLER_B64"
+test -n "$ASTERIA_STAGING_RUNTIME_VERIFIER_B64"
 ```
 
 若系统 `base64` 不支持 `-w0`，使用 `base64 "$file" | tr -d '\n'`。
