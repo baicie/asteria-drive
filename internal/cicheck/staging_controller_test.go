@@ -33,6 +33,8 @@ func TestHostReleaseControllerFaultInjection(t *testing.T) {
 		"test_schema_mismatch",
 		"test_rollback_succeeded_but_runtime_not_restored",
 		"test_compensation_requires_runtime_reverification",
+		"test_compensation_accepts_early_rollback_without_deployed_image",
+		"test_compensation_with_wrong_previous_image_is_recovery",
 		"test_injected_wrong_run_id",
 		"test_injected_wrong_workflow_sha",
 		"test_replay_runtime_drift_rejected",

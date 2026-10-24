@@ -170,7 +170,7 @@ bootstrap 同时安装两个版本的 monitor/recovery，并允许两个精确 S
 
 - **P0-A 锁生命周期**：固定锁路径、root:deploy_group 目录/文件、0660、tmpfiles
   重启重建、dispatcher `validate_lock` fail-closed；`internal/cicheck` 的 Linux
-  锁集成测试覆盖获取/释放、并发、重建、symlink 拒绝。
+  锁集成测试覆盖获取/释放、并发、重建、symlink 拒绝；CI 上实际以 `nobody`/`daemon` 验证授权非 root 获取、未授权拒绝和替换拒绝。
 - **P0-B 真实执行链**：dispatcher 的 `deploy` 不再直接执行 deploy script，而是
   在锁内调用 host controller（root-owned 文件，但以 deploy UID 运行）；controller
   持久化 `controller-state.json`（deploy 所有、0600，仅操作日志），在激活前写
@@ -202,7 +202,7 @@ bootstrap 同时安装两个版本的 monitor/recovery，并允许两个精确 S
 - `internal/cicheck`：release bundle 摘要、rollback workflow 固定点、bootstrap
   双 pair/锁/controller/verifier、monitor/recovery 版本选择分类、Linux 锁生命周期、
   非 root 锁获取与替换拒绝、Python host controller 故障注入入口。
-- `scripts/tests`：26 个隔离 Python 测试，直接驱动 Controller/RuntimeVerifier
+- `scripts/tests`：28 个隔离 Python 测试，直接驱动 Controller/RuntimeVerifier
   分支和伪 Docker/DB 适配器：镜像漂移、API 停止、schema 错误、未恢复的假回滚、
   错误 run/workflow、ACTIVE replay 漂移、状态权限/属主/symlink 篡改。
 - Shell：`bash -n` 覆盖 bootstrap、deploy、monitor、recovery、controller。

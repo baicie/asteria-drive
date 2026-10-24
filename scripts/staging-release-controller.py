@@ -300,10 +300,14 @@ def main(runtime: RuntimeVerifier | None = None) -> int:
                     snapshot = verify_runtime(runtime, restored, restored_compose_sha, releases)
                     if restored != previous:
                         raise RuntimeVerificationError("restored runtime is not the previous version")
-                    if report.get("previous_image") != snapshot["image_ref"] or report.get("deployed_image_ref") != snapshot["image_ref"]:
+                    if report.get("previous_image") != snapshot["image_ref"]:
                         raise RuntimeVerificationError("rollback evidence does not match restored image")
-                    if report.get("deployed_image_id") != snapshot["image_id"]:
-                        raise RuntimeVerificationError("rollback evidence image ID does not match restored image")
+                    # deployed_image_ref is only populated after post-start identity
+                    # verification, so a legitimate early rollback records "none".
+                    if report.get("deployed_image_ref") not in ("none", snapshot["image_ref"]):
+                        raise RuntimeVerificationError("rollback deployed image is inconsistent")
+                    if report.get("deployed_image_id") not in ("none", snapshot["image_id"]):
+                        raise RuntimeVerificationError("rollback deployed image ID is inconsistent")
                     if report.get("migration_schema_after") != snapshot["schema_version"]:
                         raise RuntimeVerificationError("rollback evidence schema does not match restored schema")
                 except (RuntimeVerificationError, OSError, ValueError) as error:

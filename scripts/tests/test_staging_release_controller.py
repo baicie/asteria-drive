@@ -247,6 +247,34 @@ class ControllerCase(unittest.TestCase):
         self.assertEqual(controller.ACTIVE, value["state"])
         self.assertEqual(V011, value["active_version"])
         self.assertGreaterEqual(self.runtime.calls.count(V011), 2)
+    def test_compensation_accepts_early_rollback_without_deployed_image(self):
+        failed = self.report(
+            status="failed", last_phase="start-api", rollback_succeeded=True,
+            previous_image=IMAGE_011, deployed_image_ref="none",
+            deployed_image_id="none",
+        )
+        def execute(args, env, capture_output, text):
+            self.active.write_text(compose_text(V011), encoding="utf-8")
+            (self.run / "deployment-evidence.json").write_text(json.dumps(failed), encoding="utf-8")
+            return type("Result", (), {"returncode": 1, "stderr": ""})()
+        with mock.patch.object(controller.subprocess, "run", side_effect=execute):
+            self.assertEqual(1, controller.main(self.runtime))
+        value = self.state_value()
+        self.assertEqual(controller.ACTIVE, value["state"])
+        self.assertEqual(V011, value["active_version"])
+
+    def test_compensation_with_wrong_previous_image_is_recovery(self):
+        failed = self.report(
+            status="failed", last_phase="start-api", rollback_succeeded=True,
+            previous_image=IMAGE_020, deployed_image_ref="none", deployed_image_id="none",
+        )
+        def execute(args, env, capture_output, text):
+            self.active.write_text(compose_text(V011), encoding="utf-8")
+            (self.run / "deployment-evidence.json").write_text(json.dumps(failed), encoding="utf-8")
+            return type("Result", (), {"returncode": 1, "stderr": ""})()
+        with mock.patch.object(controller.subprocess, "run", side_effect=execute):
+            self.assertEqual(1, controller.main(self.runtime))
+        self.assertEqual(controller.RECOVERY_REQUIRED, self.state_value()["state"])
     def test_tampered_active_journal_rejected_on_replay(self):
         self.assertEqual(0, self.invoke())
         record = self.state_value()
