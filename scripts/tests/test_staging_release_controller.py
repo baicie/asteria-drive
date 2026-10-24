@@ -305,6 +305,13 @@ class ControllerCase(unittest.TestCase):
         with self.assertRaisesRegex(SystemExit, "1"):
             self.invoke()
 
+    @unittest.skipIf(os.name == "nt", "Windows does not expose POSIX ownership")
+    def test_state_owner_mismatch_rejected_directly(self):
+        self.state.write_text(json.dumps({"format": controller.FORMAT, "state": "IDLE"}), encoding="utf-8")
+        self.state.chmod(0o600)
+        with mock.patch.object(controller.os, "geteuid", return_value=os.geteuid() + 1):
+            with self.assertRaisesRegex(SystemExit, "1"):
+                controller.load_state(self.state, self.root)
     @unittest.skipUnless(os.name == "posix" and shutil.which("sudo"), "needs passwordless sudo")
     def test_state_owner_replacement_rejected(self):
         self.state.write_text(json.dumps({"format": controller.FORMAT, "state": "IDLE"}), encoding="utf-8")
