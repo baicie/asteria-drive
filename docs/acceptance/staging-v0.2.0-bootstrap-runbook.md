@@ -106,6 +106,8 @@ stat -c '%U:%G %a %n' \
 
 锁路径的任何 symlink、非 root owner、非 0660 mode 或错误 group 必须 fail-closed；
 state 必须为 regular、非 symlink、owner 为执行 controller 的 deploy 用户、mode 0600。
+若旧主机已有 root-owned `controller-state.json`，先只读留存并移走；不要 chown
+后继续把它当作可信状态，新的 deploy-owned journal 由 controller 重建。
 
 # 当前运行身份（只读）
 docker compose -p asteria-drive-staging -f /opt/asteria-drive/staging/compose.yaml ps
