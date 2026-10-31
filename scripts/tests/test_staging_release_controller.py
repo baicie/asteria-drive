@@ -209,6 +209,14 @@ class ControllerCase(unittest.TestCase):
     def test_injected_wrong_run_id(self):
         self.assert_recovery_result(self.deploy_result(report=self.report(github_run_id="999")))
 
+    def test_injected_wrong_source_commit(self):
+        self.assert_recovery_result(self.deploy_result(report=self.report(source_commit="e" * 40)))
+
+    def test_injected_wrong_evidence_image(self):
+        self.assert_recovery_result(self.deploy_result(report=self.report(image=IMAGE_011)))
+
+    def test_injected_wrong_evidence_compose(self):
+        self.assert_recovery_result(self.deploy_result(report=self.report(compose_sha256="0" * 64)))
     def test_injected_wrong_workflow_sha(self):
         self.assert_recovery_result(self.deploy_result(report=self.report(workflow_sha="d" * 40)))
 

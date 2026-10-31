@@ -202,9 +202,9 @@ bootstrap 同时安装两个版本的 monitor/recovery，并允许两个精确 S
 - `internal/cicheck`：release bundle 摘要、rollback workflow 固定点、bootstrap
   双 pair/锁/controller/verifier、monitor/recovery 版本选择分类、Linux 锁生命周期、
   非 root 锁获取与替换拒绝、Python host controller 故障注入入口。
-- `scripts/tests`：31 个隔离 Python 测试，直接驱动 Controller/RuntimeVerifier
+- `scripts/tests`：34 个隔离 Python 测试，直接驱动 Controller/RuntimeVerifier
   分支和伪 Docker/DB 适配器：镜像漂移、非 loopback 端口、超时、API 停止、schema 错误、未恢复的假回滚、
-  错误 run/workflow、ACTIVE replay 漂移、状态权限/属主/symlink 篡改。
+  错误 run/workflow/source/image/Compose evidence、ACTIVE replay 漂移、状态权限/属主/symlink 篡改。
 - Shell：`bash -n` 覆盖 bootstrap、deploy、monitor、recovery、controller。
 - CI：Go test/race/vet/build、action-validator、OpenAPI、Security。
 - `action-validator` 的 schema 尚不支持 deploy/rollback workflow 使用的
