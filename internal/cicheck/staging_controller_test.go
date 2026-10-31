@@ -28,6 +28,7 @@ func TestHostReleaseControllerFaultInjection(t *testing.T) {
 		"test_compose_switched_but_old_container_image",
 		"test_compose_correct_but_api_stopped",
 		"test_compose_correct_but_schema_mismatch",
+		"test_compose_correct_but_container_not_running",
 		"test_active_compose_drift_after_success_rejected_on_replay",
 		"test_api_stopped",
 		"test_schema_mismatch",

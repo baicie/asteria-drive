@@ -168,8 +168,14 @@ def verify_runtime(runtime: RuntimeVerifier, version: str, compose_sha256: str, 
     bundle = releases[version]
     snapshot = runtime.snapshot(version, bundle)
     snapshot["compose_sha256"] = compose_sha256
+    if snapshot.get("version") != version:
+        raise RuntimeVerificationError("runtime version does not match active Compose")
     if snapshot.get("image_ref") != bundle["image"] or snapshot.get("schema_version") != bundle["schema_version"]:
         raise RuntimeVerificationError("runtime identity does not match bundle")
+    if snapshot.get("container_state") != "running":
+        raise RuntimeVerificationError("API container is not running")
+    if snapshot.get("container_health") not in ("healthy", "none"):
+        raise RuntimeVerificationError("API container is not healthy")
     if snapshot.get("readiness") is not True:
         raise RuntimeVerificationError("API readiness is not proven")
     return snapshot

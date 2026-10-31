@@ -43,6 +43,8 @@ class FakeRuntime:
         self.schema = 3
         self.ready = True
         self.stopped = False
+        self.container_state = "running"
+        self.container_health = "healthy"
 
     def snapshot(self, version, bundle):
         self.calls.append(version)
@@ -56,8 +58,8 @@ class FakeRuntime:
             "version": version,
             "image_ref": image,
             "image_id": "sha256:" + ("a" * 64 if version == V011 else "b" * 64),
-            "container_state": "running",
-            "container_health": "healthy",
+            "container_state": self.container_state,
+            "container_health": self.container_health,
             "readiness": self.ready,
             "schema_version": self.schema,
         }
@@ -200,6 +202,9 @@ class ControllerCase(unittest.TestCase):
 
     def test_compose_correct_but_schema_mismatch(self):
         self._post_deploy_fault(lambda: setattr(self.runtime, "schema", 2))
+
+    def test_compose_correct_but_container_not_running(self):
+        self._post_deploy_fault(lambda: setattr(self.runtime, "container_state", "exited"))
 
     def test_active_compose_drift_after_success_rejected_on_replay(self):
         self.assertEqual(0, self.invoke())
@@ -354,6 +359,8 @@ class RuntimeVerifierCase(unittest.TestCase):
         self.calls = []
         self.ready = True
         self.stopped = False
+        self.container_state = "running"
+        self.container_health = "healthy"
         self.schema = "3"
         self.image = IMAGE_020
         self.published = {"8080": "127.0.0.1:18080", "9090": "127.0.0.1:19090"}
