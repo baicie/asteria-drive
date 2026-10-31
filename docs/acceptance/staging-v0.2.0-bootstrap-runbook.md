@@ -43,8 +43,8 @@ sha256sum \
 预期：
 
 ```text
-f4483d165a907388427632bf5412c5309034f1a4be9c15428238578aa2291cfa  scripts/bootstrap-staging-host.sh
-5ccb8d18aae92d1040c20d76eb27dadd0c9ca7c04334d733b34bc4f69d9eaa38  scripts/staging-release-controller.py
+66e4fe93135a851c0082a6e804986954ff86f6ea9ff8f0ee2501f06be0cbbc3b  scripts/bootstrap-staging-host.sh
+e4a88de8a16888aedd35c6a0bf89e3e58eba027fb72049056750587ff6fcc4aa  scripts/staging-release-controller.py
 77e537f7cfc8824c8558b72466161065770b4488110458c84e0246dadcf422d7  scripts/staging_runtime_verifier.py
 d1e186cb375bf22fb910118e122d6003a6904c4345134d503e212aa051916d69  scripts/monitor-staging.sh
 91c45a195b773b98e0dc70f3843f8f4af8efc05e2c6f66c7811cccabc633c1b4  scripts/recover-staging.sh
@@ -269,7 +269,7 @@ cat /etc/asteria-drive/staging-dispatch.conf
 
 - monitor SHA-256 = `d1e186cb375bf22fb910118e122d6003a6904c4345134d503e212aa051916d69`
 - recovery SHA-256 = `91c45a195b773b98e0dc70f3843f8f4af8efc05e2c6f66c7811cccabc633c1b4`
-- controller SHA-256 = `5ccb8d18aae92d1040c20d76eb27dadd0c9ca7c04334d733b34bc4f69d9eaa38`
+- controller SHA-256 = `e4a88de8a16888aedd35c6a0bf89e3e58eba027fb72049056750587ff6fcc4aa`
 - verifier SHA-256 = `77e537f7cfc8824c8558b72466161065770b4488110458c84e0246dadcf422d7`
 - controller/monitor/recovery 为 `root:root 755`，runtime verifier 为 `root:root 644`，
   配置为 `root:root 644`，authorized_keys 为 deploy 用户 `600`
