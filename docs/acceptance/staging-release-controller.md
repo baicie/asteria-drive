@@ -101,6 +101,9 @@ GitHub Actions deploy/rollback
   快照重新证明。
 - 旧实现若留下 root-owned `controller-state.json`，不能通过 `chown` 继续信任；
   主机验证时应先只读留存，再移走旧文件并由 controller 新建 deploy-owned journal。
+- Controller 不接受 `ASTERIA_CONTROLLER_STATE` / `ASTERIA_CONTROLLER_RELEASES`
+  环境覆盖；生产使用 deploy root 下的 `controller-state.json` 和固定
+  `/etc/asteria-drive/staging-releases.json`，测试通过显式函数参数注入临时路径。
 - deploy 用户属于 `docker` 组，实际具备主机管理员等效能力，不能虚构
   “root vs deploy”隔离。真正的边界是固定 SSH host key、forced command、固定
   版本 bundle 和 root-owned 可执行文件；远程 workflow 不能写状态文件。

@@ -25,6 +25,7 @@ IMAGE_020 = "ghcr.io/baicie/asteria-drive@sha256:" + "2" * 64
 SOURCE_011 = "a" * 40
 SOURCE_020 = "b" * 40
 WORKFLOW = "c" * 40
+_MISSING = object()
 
 
 def compose_text(version):
@@ -88,16 +89,8 @@ class ControllerCase(unittest.TestCase):
         self.runtime = FakeRuntime(self.root)
         self.old_argv = sys.argv
         sys.argv = ["staging-release-controller.py", "deploy", "1", "1", WORKFLOW, V020, str(self.run)]
-        self.environment = {
-            "ASTERIA_DEPLOY_ROOT": str(self.root),
-            "ASTERIA_CONTROLLER_RELEASES": str(self.manifest),
-            "ASTERIA_CONTROLLER_STATE": str(self.state),
-        }
-        self.env = mock.patch.dict(os.environ, self.environment, clear=False)
-        self.env.start()
 
     def tearDown(self):
-        self.env.stop()
         sys.argv = self.old_argv
         self.temp.cleanup()
 
@@ -134,7 +127,16 @@ class ControllerCase(unittest.TestCase):
     def invoke(self, result=None):
         result = result or self.deploy_result(report=self.report())
         with mock.patch.object(controller.subprocess, "run", side_effect=result):
-            return controller.main(self.runtime)
+            return self.run_controller()
+
+    def run_controller(self, runtime=_MISSING):
+        selected = self.runtime if runtime is _MISSING else runtime
+        return controller.main(
+            selected,
+            deploy_root=self.root,
+            state_path=self.state,
+            releases_path=self.manifest,
+        )
 
     def state_value(self):
         return json.loads(self.state.read_text(encoding="utf-8"))
@@ -155,7 +157,7 @@ class ControllerCase(unittest.TestCase):
     def test_main_constructs_default_runtime_verifier(self):
         with mock.patch.object(controller, "RuntimeVerifier", return_value=self.runtime) as factory, \
                 mock.patch.object(controller.subprocess, "run", side_effect=self.deploy_result(report=self.report())):
-            self.assertEqual(0, controller.main(None))
+            self.assertEqual(0, self.run_controller(None))
         factory.assert_called_once_with(self.root)
 
     def test_compose_changed_but_old_image(self):
@@ -186,7 +188,7 @@ class ControllerCase(unittest.TestCase):
         self.runtime.image_drift = True
         with mock.patch.object(controller.subprocess, "run") as execute:
             with self.assertRaisesRegex(SystemExit, "1"):
-                controller.main(self.runtime)
+                self.run_controller()
         execute.assert_not_called()
 
     def _post_deploy_fault(self, mutate):
@@ -197,7 +199,7 @@ class ControllerCase(unittest.TestCase):
             (self.run / "deployment-evidence.json").write_text(json.dumps(report), encoding="utf-8")
             return type("Result", (), {"returncode": 0, "stderr": ""})()
         with mock.patch.object(controller.subprocess, "run", side_effect=execute):
-            self.assertEqual(1, controller.main(self.runtime))
+            self.assertEqual(1, self.run_controller())
         self.assertEqual(controller.RECOVERY_REQUIRED, self.state_value()["state"])
 
     def test_compose_switched_but_old_container_image(self):
@@ -233,7 +235,7 @@ class ControllerCase(unittest.TestCase):
 
     def assert_recovery_result(self, result):
         with mock.patch.object(controller.subprocess, "run", side_effect=result):
-            self.assertEqual(1, controller.main(self.runtime))
+            self.assertEqual(1, self.run_controller())
         self.assertEqual(controller.RECOVERY_REQUIRED, self.state_value()["state"])
 
     def test_rollback_succeeded_but_runtime_not_restored(self):
@@ -247,7 +249,7 @@ class ControllerCase(unittest.TestCase):
             (self.run / "deployment-evidence.json").write_text(json.dumps(failed), encoding="utf-8")
             return type("Result", (), {"returncode": 1, "stderr": ""})()
         with mock.patch.object(controller.subprocess, "run", side_effect=execute):
-            self.assertEqual(1, controller.main(self.runtime))
+            self.assertEqual(1, self.run_controller())
         self.assertEqual(controller.RECOVERY_REQUIRED, self.state_value()["state"])
 
     def test_compensation_requires_runtime_reverification(self):
@@ -261,7 +263,7 @@ class ControllerCase(unittest.TestCase):
             (self.run / "deployment-evidence.json").write_text(json.dumps(failed), encoding="utf-8")
             return type("Result", (), {"returncode": 1, "stderr": ""})()
         with mock.patch.object(controller.subprocess, "run", side_effect=execute):
-            self.assertEqual(1, controller.main(self.runtime))
+            self.assertEqual(1, self.run_controller())
         value = self.state_value()
         self.assertEqual(controller.ACTIVE, value["state"])
         self.assertEqual(V011, value["active_version"])
@@ -277,7 +279,7 @@ class ControllerCase(unittest.TestCase):
             (self.run / "deployment-evidence.json").write_text(json.dumps(failed), encoding="utf-8")
             return type("Result", (), {"returncode": 1, "stderr": ""})()
         with mock.patch.object(controller.subprocess, "run", side_effect=execute):
-            self.assertEqual(1, controller.main(self.runtime))
+            self.assertEqual(1, self.run_controller())
         value = self.state_value()
         self.assertEqual(controller.ACTIVE, value["state"])
         self.assertEqual(V011, value["active_version"])
@@ -292,7 +294,7 @@ class ControllerCase(unittest.TestCase):
             (self.run / "deployment-evidence.json").write_text(json.dumps(failed), encoding="utf-8")
             return type("Result", (), {"returncode": 1, "stderr": ""})()
         with mock.patch.object(controller.subprocess, "run", side_effect=execute):
-            self.assertEqual(1, controller.main(self.runtime))
+            self.assertEqual(1, self.run_controller())
         self.assertEqual(controller.RECOVERY_REQUIRED, self.state_value()["state"])
     def test_tampered_active_journal_rejected_on_replay(self):
         self.assertEqual(0, self.invoke())

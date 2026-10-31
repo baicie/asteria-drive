@@ -211,7 +211,8 @@ def success_evidence(report: dict, snapshot: dict, expected: dict) -> str | None
     return None
 
 
-def main(runtime: RuntimeVerifier | None = None) -> int:
+def main(runtime: RuntimeVerifier | None = None, *, deploy_root: Path | None = None,
+         state_path: Path | None = None, releases_path: Path | None = None) -> int:
     if len(sys.argv) != 7:
         fail("usage: deploy <run> <attempt> <workflow_sha> <target_version> <run_dir>")
     _, operation, run_id, attempt, workflow_sha, target_version, run_dir_text = sys.argv
@@ -219,7 +220,11 @@ def main(runtime: RuntimeVerifier | None = None) -> int:
         fail("invalid run identity")
     if not re.fullmatch(r"[0-9a-f]{40}", workflow_sha):
         fail("invalid workflow identity")
-    releases_path = Path(os.environ.get("ASTERIA_CONTROLLER_RELEASES", "/etc/asteria-drive/staging-releases.json"))
+    deploy_root = Path(deploy_root) if deploy_root is not None else Path(
+        os.environ.get("ASTERIA_DEPLOY_ROOT", "/opt/asteria-drive/staging")
+    )
+    releases_path = Path(releases_path) if releases_path is not None else Path("/etc/asteria-drive/staging-releases.json")
+    state_path = Path(state_path) if state_path is not None else deploy_root / "controller-state.json"
     require_regular_file(releases_path, "release manifest")
     try:
         releases = json.loads(releases_path.read_text(encoding="utf-8"))
@@ -229,8 +234,6 @@ def main(runtime: RuntimeVerifier | None = None) -> int:
         fail("target version is not approved")
     expected = dict(releases[target_version])
     expected["version"] = target_version
-    deploy_root = Path(os.environ.get("ASTERIA_DEPLOY_ROOT", "/opt/asteria-drive/staging"))
-    state_path = Path(os.environ.get("ASTERIA_CONTROLLER_STATE", str(deploy_root / "controller-state.json")))
     run_dir = Path(run_dir_text)
     compose = run_dir / "compose.yaml"
     deploy_script = run_dir / "deploy-staging.sh"
