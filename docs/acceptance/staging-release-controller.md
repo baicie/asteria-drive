@@ -99,12 +99,14 @@ GitHub Actions deploy/rollback
 - 该文件是**可被 deploy 用户篡改的操作日志**，不是 root 可信凭据。它只用于
   拒绝重复执行和记录中断；任何 `ACTIVE` 结论都必须由实时 Docker/DB/readiness
   快照重新证明。
+- 旧实现若留下 root-owned `controller-state.json`，不能通过 `chown` 继续信任；
+  主机验证时应先只读留存，再移走旧文件并由 controller 新建 deploy-owned journal。
 - deploy 用户属于 `docker` 组，实际具备主机管理员等效能力，不能虚构
   “root vs deploy”隔离。真正的边界是固定 SSH host key、forced command、固定
   版本 bundle 和 root-owned 可执行文件；远程 workflow 不能写状态文件。
 - controller 在提交 ACTIVE、幂等重放、回滚补偿和开始新切换前调用
   `RuntimeVerifier`：active Compose SHA-256、`docker inspect` 实际镜像与
-  镜像 ID、容器状态、`/readyz`、`/healthz`、PostgreSQL
+  镜像 ID、容器状态、loopback 端口映射、`/readyz`、`/healthz`、PostgreSQL
   `MAX(version)` 和持久化版本一致性。
 - 状态写入 tmp+fsync+rename+目录 fsync。`RECOVERY_REQUIRED` 会阻止后续变更；
   `ATTEMPTING` 中断要求人工恢复，不会重复执行破坏性步骤。
