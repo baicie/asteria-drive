@@ -334,11 +334,13 @@ class ControllerCase(unittest.TestCase):
 
     def test_interrupted_attempt_blocked(self):
         self.state.write_text(json.dumps({"format": controller.FORMAT, "state": controller.ATTEMPTING, "run_id": "1", "attempt": "1", "target_version": V020}), encoding="utf-8")
+        self.state.chmod(0o600)
         with self.assertRaisesRegex(SystemExit, "1"):
             self.invoke()
 
     def test_recovery_required_blocks_new_operation(self):
         self.state.write_text(json.dumps({"format": controller.FORMAT, "state": controller.RECOVERY_REQUIRED, "run_id": "1", "attempt": "1", "target_version": V020}), encoding="utf-8")
+        self.state.chmod(0o600)
         with self.assertRaisesRegex(SystemExit, "1"):
             self.invoke()
 
