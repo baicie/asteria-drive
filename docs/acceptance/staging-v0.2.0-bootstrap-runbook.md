@@ -235,7 +235,8 @@ staging host bootstrap is ready
 影响范围：
 
 - 会覆盖上述 root-owned 文件；不会重启现有容器。
-- 会把 deploy 用户加入 `docker` 组（幂等）。
+- 会把 deploy 用户加入 `docker` 组（幂等）；docker 组等价于主机管理员，
+  `controller-state.json` 只是 deploy 可篡改日志，不能作为 root 信任凭据。
 - 不会修改应用 Secret/PKI 内容；完整存在时跳过创建，部分存在时 fail-closed。
 - 不会创建或删除持久化数据卷；缺失的 secret volume 会被创建。
 - `authorized_keys` 会被替换为单一 deploy 公钥，其他旧 key 不再被保留。
@@ -245,12 +246,16 @@ staging host bootstrap is ready
 ```bash
 sha256sum \
   /usr/local/libexec/asteria-staging-monitor \
-  /usr/local/libexec/asteria-staging-recovery
+  /usr/local/libexec/asteria-staging-recovery \
+  /usr/local/libexec/asteria-staging-controller \
+  /usr/local/libexec/staging_runtime_verifier.py
 
 stat -c '%U:%G %a %n' \
   /usr/local/libexec/asteria-staging-dispatch \
   /usr/local/libexec/asteria-staging-monitor \
   /usr/local/libexec/asteria-staging-recovery \
+  /usr/local/libexec/asteria-staging-controller \
+  /usr/local/libexec/staging_runtime_verifier.py \
   /etc/asteria-drive/staging-dispatch.conf \
   "$deploy_home/.ssh/authorized_keys"
 
@@ -261,8 +266,11 @@ cat /etc/asteria-drive/staging-dispatch.conf
 
 - monitor SHA-256 = `d1e186cb375bf22fb910118e122d6003a6904c4345134d503e212aa051916d69`
 - recovery SHA-256 = `91c45a195b773b98e0dc70f3843f8f4af8efc05e2c6f66c7811cccabc633c1b4`
-- 三个脚本为 `root:root 755`，配置为 `root:root 644`，authorized_keys 为 deploy 用户 `600`
-- 配置中的 compose/deploy/monitor/recovery 四个摘要与第 1 节一致
+- controller SHA-256 = `5ccb8d18aae92d1040c20d76eb27dadd0c9ca7c04334d733b34bc4f69d9eaa38`
+- verifier SHA-256 = `77e537f7cfc8824c8558b72466161065770b4488110458c84e0246dadcf422d7`
+- controller/monitor/recovery 为 `root:root 755`，runtime verifier 为 `root:root 644`，
+  配置为 `root:root 644`，authorized_keys 为 deploy 用户 `600`
+- 配置中的 compose/deploy/monitor/recovery/controller/verifier 摘要与第 1 节一致
 
 此时 active API 仍是 v0.1.1；monitor/recovery 会因摘要不匹配而 fail-closed，必须立即进入 Phase C。
 
