@@ -160,6 +160,18 @@ class ControllerCase(unittest.TestCase):
             self.assertEqual(0, self.run_controller(None))
         factory.assert_called_once_with(self.root)
 
+    def test_environment_path_overrides_are_ignored(self):
+        invoked = self.root / "invoked-state.json"
+        invoked_manifest = self.root / "invoked-manifest.json"
+        with mock.patch.dict(os.environ, {
+            "ASTERIA_CONTROLLER_STATE": str(invoked),
+            "ASTERIA_CONTROLLER_RELEASES": str(invoked_manifest),
+        }):
+            self.assertEqual(0, self.invoke())
+        self.assertTrue(self.state.exists())
+        self.assertFalse(invoked.exists())
+        self.assertFalse(invoked_manifest.exists())
+
     def test_compose_changed_but_old_image(self):
         self.assertEqual(0, self.invoke())
         self.runtime.image_drift = True
