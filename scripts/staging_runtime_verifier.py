@@ -26,14 +26,21 @@ class RuntimeVerifier:
         self._curl = curl or self._http
 
     def _run(self, args: list[str]) -> tuple[int, str]:
-        result = subprocess.run(args, capture_output=True, text=True, timeout=30)
+        try:
+            result = subprocess.run(args, capture_output=True, text=True, timeout=30)
+        except (OSError, subprocess.SubprocessError) as error:
+            raise RuntimeVerificationError(f"runtime probe failed: {error}") from error
         return result.returncode, result.stdout.strip()
 
     def _http(self, path: str) -> bool:
-        return subprocess.run(
-            ["curl", "--fail", "--silent", "--max-time", "3", f"http://127.0.0.1:18080{path}"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10,
-        ).returncode == 0
+        try:
+            result = subprocess.run(
+                ["curl", "--fail", "--silent", "--max-time", "3", f"http://127.0.0.1:18080{path}"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10,
+            )
+        except (OSError, subprocess.SubprocessError) as error:
+            raise RuntimeVerificationError(f"readiness probe failed: {error}") from error
+        return result.returncode == 0
 
     def _inspect(self, container: str, expression: str) -> str:
         code, output = self._runner(["docker", "inspect", "--format", expression, container])
@@ -56,6 +63,13 @@ class RuntimeVerifier:
         health = self._inspect(container, "{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}")
         if state != "running" or health not in ("healthy", "none"):
             raise RuntimeVerificationError("API container is not running and healthy")
+        for service_port, expected in (("8080", "127.0.0.1:18080"), ("9090", "127.0.0.1:19090")):
+            code, published = self._runner([
+                "docker", "compose", *COMPOSE_PROJECT_OPTION, "-f", str(self.compose),
+                "port", "api", service_port,
+            ])
+            if code != 0 or published != expected:
+                raise RuntimeVerificationError(f"API port {service_port} is not loopback-bound")
         if not self._curl("/readyz") or not self._curl("/healthz"):
             raise RuntimeVerificationError("API readiness/health probe failed")
         code, schema = self._runner([

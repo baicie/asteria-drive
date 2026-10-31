@@ -346,6 +346,7 @@ class RuntimeVerifierCase(unittest.TestCase):
         self.stopped = False
         self.schema = "3"
         self.image = IMAGE_020
+        self.published = {"8080": "127.0.0.1:18080", "9090": "127.0.0.1:19090"}
 
     def tearDown(self):
         self.temp.cleanup()
@@ -354,6 +355,8 @@ class RuntimeVerifierCase(unittest.TestCase):
         self.calls.append(args)
         if args[:2] == ["docker", "compose"] and "psql" in args:
             return 0, self.schema
+        if args[:2] == ["docker", "compose"] and "port" in args:
+            return 0, self.published[args[-1]]
         if args[-3:] == ["ps", "-q", "api"]:
             return (1, "") if self.stopped else (0, "api-id\n")
         if args[:2] == ["docker", "inspect"]:
@@ -379,6 +382,7 @@ class RuntimeVerifierCase(unittest.TestCase):
         commands = [" ".join(call) for call in self.calls]
         self.assertTrue(any("ps -q api" in command for command in commands))
         self.assertTrue(any("docker image inspect" in command for command in commands))
+        self.assertTrue(any("port api 8080" in command for command in commands))
         self.assertTrue(any("psql" in command for command in commands))
 
     def test_stopped_api_rejected(self):
@@ -400,6 +404,16 @@ class RuntimeVerifierCase(unittest.TestCase):
         self.ready = False
         with self.assertRaises(RuntimeVerificationError):
             self.verifier().snapshot(V020, self.bundle)
+
+    def test_port_binding_mismatch_rejected(self):
+        self.published["8080"] = "0.0.0.0:18080"
+        with self.assertRaises(RuntimeVerificationError):
+            self.verifier().snapshot(V020, self.bundle)
+
+    def test_command_timeout_is_verification_error(self):
+        with mock.patch("staging_runtime_verifier.subprocess.run", side_effect=subprocess.TimeoutExpired("docker", 30)):
+            with self.assertRaises(RuntimeVerificationError):
+                RuntimeVerifier(self.root).snapshot(V020, self.bundle)
 
 
 if __name__ == "__main__":

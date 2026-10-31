@@ -41,6 +41,8 @@ func TestHostReleaseControllerFaultInjection(t *testing.T) {
 		"test_state_permissions_rejected",
 		"test_interrupted_attempt_blocked",
 		"test_real_adapter_calls_docker_db_and_readiness",
+		"test_port_binding_mismatch_rejected",
+		"test_command_timeout_is_verification_error",
 	} {
 		if !strings.Contains(text, name) {
 			t.Errorf("fault-injection report is missing %s", name)
