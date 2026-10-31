@@ -142,3 +142,37 @@ func TestStagingBootstrapAllowsOnlyTwoReviewedReleasePairs(t *testing.T) {
 		t.Fatal("bootstrap contains an unsafe boundary")
 	}
 }
+
+func TestStagingBootstrapControllerAndVerifierHashesMatch(t *testing.T) {
+	t.Parallel()
+
+	bootstrap, err := os.ReadFile("../../scripts/bootstrap-staging-host.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(bootstrap)
+	for variable, path := range map[string]string{
+		"expected_controller_sha256": "../../scripts/staging-release-controller.py",
+		"expected_verifier_sha256":   "../../scripts/staging_runtime_verifier.py",
+	} {
+		prefix := variable + `="`
+		start := strings.Index(text, prefix)
+		if start < 0 {
+			t.Fatalf("bootstrap is missing %s", variable)
+		}
+		start += len(prefix)
+		end := strings.Index(text[start:], `"`)
+		if end < 0 {
+			t.Fatalf("bootstrap has an unterminated %s", variable)
+		}
+		pinned := text[start : start+end]
+		contents, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		actual := fmt.Sprintf("%x", sha256.Sum256(contents))
+		if pinned != actual {
+			t.Errorf("%s = %s, actual %s = %s", variable, pinned, path, actual)
+		}
+	}
+}
