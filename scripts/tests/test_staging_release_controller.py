@@ -152,6 +152,12 @@ class ControllerCase(unittest.TestCase):
         self.assertEqual(0, self.invoke())
         self.assertGreaterEqual(self.runtime.calls.count(V020), 2)
 
+    def test_main_constructs_default_runtime_verifier(self):
+        with mock.patch.object(controller, "RuntimeVerifier", return_value=self.runtime) as factory, \
+                mock.patch.object(controller.subprocess, "run", side_effect=self.deploy_result(report=self.report())):
+            self.assertEqual(0, controller.main(None))
+        factory.assert_called_once_with(self.root)
+
     def test_compose_changed_but_old_image(self):
         self.assertEqual(0, self.invoke())
         self.runtime.image_drift = True
