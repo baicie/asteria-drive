@@ -100,9 +100,12 @@ stat -c '%U:%G %a %n' \
   /etc/asteria-drive/staging-postgres-pki/issuer
 
 锁的固定契约：`/run/asteria-drive` 为 `root:<deploy_group> 0750`，
-`/run/asteria-drive/staging.lock` 为 `root:<deploy_group> 0660`；`controller-state.json` 为 `asteria-deploy:<deploy_group> 0600`（deploy 可篡改日志，不是 root 凭据）；
-`/etc/tmpfiles.d/asteria-drive-staging.conf` 为 `root:root 0644`。任何
-symlink、非 root owner、非 0660 mode 或错误 group 都必须 fail-closed。
+`/run/asteria-drive/staging.lock` 为 `root:<deploy_group> 0660`；
+`controller-state.json` 为 `asteria-deploy:<deploy_group> 0600`（deploy 可篡改日志，
+不是 root 凭据）；`/etc/tmpfiles.d/asteria-drive-staging.conf` 为 `root:root 0644`。
+
+锁路径的任何 symlink、非 root owner、非 0660 mode 或错误 group 必须 fail-closed；
+state 必须为 regular、非 symlink、owner 为执行 controller 的 deploy 用户、mode 0600。
 
 # 当前运行身份（只读）
 docker compose -p asteria-drive-staging -f /opt/asteria-drive/staging/compose.yaml ps
