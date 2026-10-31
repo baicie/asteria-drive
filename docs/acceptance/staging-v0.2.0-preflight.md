@@ -89,8 +89,8 @@ Release 页面：<https://github.com/baicie/asteria-drive/releases/tag/v0.2.0>
 | `scripts/deploy-staging.sh` | `007eb3a34bc5eff5bdff1db247ef9ed2b396814eac8231a0df71579a3f79138f` | PASS |
 | `scripts/monitor-staging.sh` | `d1e186cb375bf22fb910118e122d6003a6904c4345134d503e212aa051916d69` | PASS |
 | `scripts/recover-staging.sh` | `91c45a195b773b98e0dc70f3843f8f4af8efc05e2c6f66c7811cccabc633c1b4` | PASS |
-| `scripts/bootstrap-staging-host.sh` | `66e4fe93135a851c0082a6e804986954ff86f6ea9ff8f0ee2501f06be0cbbc3b` | 本次 bootstrap 输入 |
-| `scripts/staging-release-controller.py` | `e4a88de8a16888aedd35c6a0bf89e3e58eba027fb72049056750587ff6fcc4aa` | PR #83 host controller |
+| `scripts/bootstrap-staging-host.sh` | `f4ccd72ce9307968f879c1a26375e330a5c7beb84d3e3411ade9b93a1244f0bd` | 本次 bootstrap 输入 |
+| `scripts/staging-release-controller.py` | `754ba6711d8e7b67a4dc358d5f14f31099976f10cbd74d4d0e17bc808491252c` | PR #83 host controller |
 | `scripts/staging_runtime_verifier.py` | `77e537f7cfc8824c8558b72466161065770b4488110458c84e0246dadcf422d7` | PR #83 live runtime verifier |
 
 交叉核对：
