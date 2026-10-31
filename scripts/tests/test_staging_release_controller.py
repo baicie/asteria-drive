@@ -367,6 +367,8 @@ class RuntimeVerifierCase(unittest.TestCase):
         self.stopped = False
         self.container_state = "running"
         self.container_health = "healthy"
+        self.status = "running"
+        self.health = "none"
         self.schema = "3"
         self.image = IMAGE_020
         self.published = {"8080": "127.0.0.1:18080", "9090": "127.0.0.1:19090"}
@@ -389,8 +391,8 @@ class RuntimeVerifierCase(unittest.TestCase):
             if fmt == "{{.Image}}":
                 return 0, "sha256:" + "b" * 64
             if fmt == "{{.State.Status}}":
-                return 0, "running"
-            return 0, "none"
+                return 0, self.status
+            return 0, self.health
         if args[:2] == ["docker", "image"]:
             return 0, "sha256:" + "b" * 64
         raise AssertionError(args)
@@ -425,6 +427,11 @@ class RuntimeVerifierCase(unittest.TestCase):
 
     def test_readiness_rejected(self):
         self.ready = False
+        with self.assertRaises(RuntimeVerificationError):
+            self.verifier().snapshot(V020, self.bundle)
+
+    def test_unhealthy_container_rejected(self):
+        self.health = "unhealthy"
         with self.assertRaises(RuntimeVerificationError):
             self.verifier().snapshot(V020, self.bundle)
 
