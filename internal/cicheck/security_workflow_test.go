@@ -94,6 +94,10 @@ func TestSecurityWorkflowTrustBoundaryAndJobs(t *testing.T) {
 			name: "Security / codeql", timeoutMinutes: 25,
 			actions: []string{checkoutAction, setupGoAction, codeQLInitAction, codeQLAnalyzeAction},
 		},
+		"codeql-web": {
+			name: "Security / codeql-web", timeoutMinutes: 20,
+			actions: []string{checkoutAction, codeQLInitAction, codeQLAnalyzeAction},
+		},
 	}
 	if len(workflow.Jobs) != len(expectedJobs) {
 		t.Fatalf("security workflow has %d jobs, want %d", len(workflow.Jobs), len(expectedJobs))
@@ -160,10 +164,22 @@ func TestSecurityWorkflowTrustBoundaryAndJobs(t *testing.T) {
 					t.Errorf("dependency review has unexpected inputs: %#v", step.With)
 				}
 			case codeQLInitAction:
+				if jobID == "codeql-web" {
+					if fmt.Sprint(step.With["languages"]) != "javascript-typescript" || fmt.Sprint(step.With["build-mode"]) != "none" {
+						t.Errorf("web CodeQL init has unexpected inputs: %#v", step.With)
+					}
+					break
+				}
 				if fmt.Sprint(step.With["languages"]) != "go" || fmt.Sprint(step.With["build-mode"]) != "autobuild" {
 					t.Errorf("CodeQL init has unexpected inputs: %#v", step.With)
 				}
 			case codeQLAnalyzeAction:
+				if jobID == "codeql-web" {
+					if fmt.Sprint(step.With["category"]) != "/language:javascript-typescript" {
+						t.Errorf("web CodeQL analyze has unexpected inputs: %#v", step.With)
+					}
+					break
+				}
 				if fmt.Sprint(step.With["category"]) != "/language:go" {
 					t.Errorf("CodeQL analyze has unexpected inputs: %#v", step.With)
 				}
@@ -190,6 +206,14 @@ func TestSecurityWorkflowTrustBoundaryAndJobs(t *testing.T) {
 		"security-events": "write",
 	}) {
 		t.Errorf("CodeQL permissions = %#v, want read-only plus security-events: write", codeQLPermissions)
+	}
+	webCodeQLPermissions := workflow.Jobs["codeql-web"].Permissions
+	if !reflect.DeepEqual(webCodeQLPermissions, map[string]string{
+		"actions":         "read",
+		"contents":        "read",
+		"security-events": "write",
+	}) {
+		t.Errorf("web CodeQL permissions = %#v, want read-only plus security-events: write", webCodeQLPermissions)
 	}
 	dependencyPermissions := workflow.Jobs["dependency-review"].Permissions
 	if !reflect.DeepEqual(dependencyPermissions, map[string]string{
