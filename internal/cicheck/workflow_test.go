@@ -209,7 +209,7 @@ func TestCIWorkflowTrustBoundaryAndStableJobs(t *testing.T) {
 		// fixture-only job stays Docker-free and fast.
 		"web-live": {
 			name: "CI / web-live", timeoutMinutes: 30,
-			actions: []string{checkoutAction, setupGoAction, setupNodeAction, uploadArtifactAction},
+			actions:   []string{checkoutAction, setupGoAction, setupNodeAction, uploadArtifactAction},
 			goVersion: `${{ env.GO_CURRENT_VERSION }}`,
 			commands: []string{
 				"docker compose up -d --wait --wait-timeout 180",
