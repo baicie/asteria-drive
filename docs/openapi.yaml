@@ -1726,10 +1726,14 @@ components:
           $ref: "#/components/schemas/Upload"
 
     Checksum:
-      description: Empty or an explicitly declared SHA-256 value.
+      description: Empty object, explicit empty pair, or an explicitly declared SHA-256 value.
       oneOf:
         - type: object
           additionalProperties: false
+          maxProperties: 0
+        - type: object
+          additionalProperties: false
+          required: [algorithm, value]
           properties:
             algorithm:
               const: ""
