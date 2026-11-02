@@ -92,6 +92,29 @@ SIEM, paging, or capacity-planning system. Monitor evidence uses
 `asteria-drive-staging-monitor/v2` and independently repeats the PostgreSQL TLS
 session, certificate, SCRAM, and plaintext-rejection checks.
 
+The monitor and recovery workflows are version-aware. They try the exact reviewed
+`v0.2.0` pair first and fall back to the exact `v0.1.1` pair only when the other
+version's fixed script and Compose/image digests do not match. Both probes use the
+same strict SSH host-key, forced-command, and SHA-256 checks; neither accepts an
+arbitrary version or digest. This lets the host remain on `v0.1.1` while the repo
+contains `v0.2.0`, and later lets a rolled-back host be observed without weakening
+the trust boundary.
+
+## Approved release bundles
+
+`releases/v0.1.1/` and `releases/v0.2.0/` are static, code-reviewed snapshots of
+the Compose file and the three root-owned scripts. Each `bundle.json` pins the
+release tag, source commit, OCI digest, Compose/script SHA-256 values, schema, and
+evidence schema. Only those two versions are allowed; a workflow input cannot add a
+version, image, script, commit, or digest.
+
+The `Rollback staging` workflow is a separate manual entry point from protected
+`main`. It checks out the approved `v0.1.1` bundle, verifies the immutable OCI
+provenance, uploads the exact old Compose and old deploy script, and executes the
+normal forced-command deploy path. The host dispatcher accepts only the two
+reviewed Compose/deploy pairs. The old deploy script retains its own failure
+compensation and never deletes the active PostgreSQL, SeaweedFS, or secret volumes.
+
 ## Staging recovery drill
 
 The `Drill staging recovery` workflow runs weekly and can be started manually from

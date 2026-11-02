@@ -268,7 +268,7 @@ jobs:
   web:
     name: CI / web
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: web
@@ -290,6 +290,8 @@ jobs:
       - name: Build web console
         run: npm run build
       - name: Install Playwright Chromium
+        env:
+          PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT: "120000"
         run: npx playwright install --with-deps chromium
       - name: Run web browser tests
         run: npm run test:e2e
