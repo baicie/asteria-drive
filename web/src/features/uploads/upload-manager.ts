@@ -1,7 +1,22 @@
 /**
  * Browser-to-S3 multipart transport. This module never streams file bytes through the API server.
- * A session can be reconciled after an uncertain completion; cross-reload part resume is NOT supported.
+ * A session can be reconciled after an uncertain completion; cross-reload part resume is NOT supported
+ * (it needs a server-side ListParts endpoint, which does not exist yet — see ADR-0027).
  */
+import {
+  UploadError,
+  UploadFailure,
+  classifyControlPlaneError,
+  classifyFetchError,
+  classifyPartResponse,
+  type UploadCleanupFailure,
+  type UploadErrorContext,
+  type UploadErrorKind,
+} from './upload-errors'
+
+export { UploadError, UploadFailure } from './upload-errors'
+export type { UploadErrorKind, UploadErrorContext, UploadCleanupFailure } from './upload-errors'
+
 export interface UploadSession {
   id: string
   status: string
@@ -37,18 +52,34 @@ export interface UploadOptions {
   onPhase?: (phase: 'uploading' | 'completing') => void
 }
 
-export class UploadCancelledError extends Error {
+/** Explicit, exported bounds so callers and tests can assert on them. */
+export const UPLOAD_LIMITS = {
+  /** Attempts per part, including the first try. Every attempt re-signs. */
+  partAttempts: 4,
+  /** Attempts for the completion call, including the first try. */
+  completionAttempts: 3,
+  /** Upper bound on concurrent part uploads. */
+  maxConcurrency: 3,
+  /** S3 multipart hard limit. */
+  maxParts: 10000,
+} as const
+
+export class UploadCancelledError extends UploadError {
   constructor() {
-    super('上传已取消')
+    super('cancelled', '上传已取消', { retryable: false })
     this.name = 'UploadCancelledError'
   }
 }
 
-export class UploadCompletionUnknownError extends Error {
+export class UploadCompletionUnknownError extends UploadError {
   readonly uploadId: string
 
   constructor(uploadId: string) {
-    super('文件提交结果暂时无法确认，请刷新目录或联系管理员核对上传状态，勿直接重复上传')
+    super(
+      'completion-unknown',
+      '文件提交结果暂时无法确认，请刷新目录或联系管理员核对上传状态，勿直接重复上传',
+      { retryable: false, context: { uploadId } },
+    )
     this.name = 'UploadCompletionUnknownError'
     this.uploadId = uploadId
   }
@@ -73,8 +104,34 @@ async function pause(ms: number, signal: AbortSignal): Promise<void> {
   })
 }
 
-function canRetry(status: number) {
-  return status === 401 || status === 403 || status === 408 || status === 429 || status >= 500
+function partError(
+  kind: UploadErrorKind,
+  partNumber: number,
+  message: string,
+  extra: Partial<UploadErrorContext> & { retryable?: boolean; cause?: unknown } = {},
+): UploadError {
+  return new UploadError(kind, message, {
+    retryable: extra.retryable ?? false,
+    context: { partNumber, ...extra },
+    cause: extra.cause,
+  })
+}
+
+function assertSignedPart(signed: SignedPart, partNumber: number) {
+  if (signed.part_number !== partNumber || signed.method !== 'PUT') {
+    throw partError('invalid-response', partNumber, '签名返回的分片信息不匹配')
+  }
+}
+
+/**
+ * A deterministic 4xx refusal from the control plane. 408, 429 and 5xx stay retryable:
+ * their outcome is genuinely unknown or transient, which is what "completion unknown"
+ * is for. 401/403 are refusals too — retrying with the same credentials cannot help.
+ */
+function isApiRefusal(error: unknown): boolean {
+  const status = (error as { status?: unknown } | null)?.status
+  if (typeof status !== 'number') return false
+  return status >= 400 && status < 500 && status !== 408 && status !== 429
 }
 
 async function uploadPart(
@@ -87,43 +144,110 @@ async function uploadPart(
   const partNumber = index + 1
   const start = index * session.part_size
   const chunk = file.slice(start, Math.min(start + session.part_size, file.size))
-  const maxAttempts = 4
+  const maxAttempts = UPLOAD_LIMITS.partAttempts
+  let lastError: UploadError | null = null
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     ensureNotAborted(signal)
+    let retryable: UploadError | null = null
     try {
       // Always re-sign on retry: an earlier short-lived URL may have expired.
-      const signed = await gateway.sign(session.id, partNumber)
-      ensureNotAborted(signal)
-      if (signed.part_number !== partNumber || signed.method !== 'PUT') {
-        throw new Error('签名返回的分片信息不匹配')
+      let signed: SignedPart
+      try {
+        signed = await gateway.sign(session.id, partNumber)
+      } catch (error) {
+        // A failed signature request is a control-plane failure. A 401/403 must not be
+        // retried: re-signing will be denied the same way.
+        throw classifyControlPlaneError(error)
       }
-      const response = await fetch(signed.url, {
-        method: signed.method,
-        headers: signed.required_headers ?? {},
-        body: chunk,
-        signal,
-      })
-      if (!response.ok) {
-        if (!canRetry(response.status)) {
-          throw new Error(`HTTP ${response.status}（不可重试）`)
-        }
-        if (attempt === maxAttempts) throw new Error(`HTTP ${response.status}`)
-      } else {
+      ensureNotAborted(signal)
+      assertSignedPart(signed, partNumber)
+
+      let response: Response
+      try {
+        response = await fetch(signed.url, {
+          method: signed.method,
+          headers: signed.required_headers ?? {},
+          body: chunk,
+          signal,
+        })
+      } catch (error) {
+        throw classifyFetchError(error)
+      }
+
+      if (response.ok) {
         const etag = response.headers.get('ETag')
-        if (!etag) throw new Error('对象存储未返回 ETag')
+        if (!etag) {
+          throw partError('invalid-response', partNumber, '对象存储未返回 ETag')
+        }
         return { part_number: partNumber, etag, size: chunk.size }
       }
+
+      const classified = classifyPartResponse(response.status, await response.text().catch(() => ''))
+      const failure = partError(
+        classified.kind,
+        partNumber,
+        classified.retryable ? `HTTP ${response.status}（可重试）` : `HTTP ${response.status}（不可重试）`,
+        { retryable: classified.retryable, status: response.status },
+      )
+      // Authorization and expired-signature failures keep the operator-facing wording.
+      const surfaced = classified.kind === 'unauthorized' || classified.kind === 'signature-expired'
+        ? partError(classified.kind, partNumber, classified.message, {
+          status: response.status,
+          retryable: classified.retryable,
+        })
+        : failure
+      if (!classified.retryable) throw surfaced
+      // Retryable status: remember it and let the loop decide whether to retry.
+      retryable = surfaced
     } catch (error) {
       if (signal.aborted) throw new UploadCancelledError()
-      if (error instanceof Error && (error.message.includes('不可重试') || error.message.includes('不匹配'))) {
-        throw new Error(`分片 ${partNumber} 上传失败：${error.message}`)
+      // A part that already carries its own wrapping (thrown above) is re-thrown as is.
+      if (error instanceof UploadError && error.message.startsWith(`分片 ${partNumber} 上传`)) throw error
+      const classified = error instanceof UploadError ? error : classifyFetchError(error)
+      if (!classified.retryable) {
+        throw partError(classified.kind, partNumber, `分片 ${partNumber} 上传失败：${classified.message}`, {
+          status: classified.context.status,
+          attempt,
+          maxAttempts,
+          cause: classified,
+        })
       }
-      if (attempt === maxAttempts) throw new Error(`分片 ${partNumber} 上传重试耗尽`)
+      retryable = classified
+    }
+
+    if (retryable) {
+      lastError = retryable
+      if (attempt === maxAttempts) {
+        // Keep the underlying kind (network vs expired signature) so callers can act on
+        // it, but mark it non-retryable: the bound has already been reached.
+        throw partError(retryable.kind, partNumber, `分片 ${partNumber} 上传重试耗尽（${maxAttempts} 次）：${retryable.message}`, {
+          retryable: false,
+          attempt,
+          maxAttempts,
+          cause: retryable,
+        })
+      }
     }
     await pause(150 * 2 ** (attempt - 1), signal)
   }
-  throw new Error(`分片 ${partNumber} 上传失败`)
+  throw lastError ?? partError('non-retryable', partNumber, `分片 ${partNumber} 上传失败`)
+}
+
+/**
+ * Delete the remote multipart session without letting a cleanup failure replace the
+ * primary error. Returns the cleanup failure for the caller to attach.
+ */
+async function abortQuietly(
+  gateway: UploadGateway,
+  uploadId: string,
+): Promise<UploadCleanupFailure | undefined> {
+  try {
+    await gateway.abort(uploadId)
+    return undefined
+  } catch (cause) {
+    return { uploadId, cause }
+  }
 }
 
 export async function uploadMultipart(
@@ -142,18 +266,26 @@ export async function uploadMultipart(
   let completing = false
   try {
     ensureNotAborted(controller.signal)
-    session = await gateway.create(file, parentId, idempotencyKey)
+    try {
+      session = await gateway.create(file, parentId, idempotencyKey)
+    } catch (error) {
+      throw classifyControlPlaneError(error)
+    }
     ensureNotAborted(controller.signal)
     if (!Number.isInteger(session.part_size) || session.part_size < 1) {
-      throw new Error('服务端返回了无效的分片大小')
+      throw new UploadError('invalid-response', '服务端返回了无效的分片大小', {
+        context: { uploadId: session.id },
+      })
     }
     const partCount = Math.ceil(file.size / session.part_size)
-    if (!Number.isSafeInteger(partCount) || partCount < 1 || partCount > 10000) {
-      throw new Error('文件大小超出单次 Multipart 上传限制')
+    if (!Number.isSafeInteger(partCount) || partCount < 1 || partCount > UPLOAD_LIMITS.maxParts) {
+      throw new UploadError('invalid-response', '文件大小超出单次 Multipart 上传限制', {
+        context: { uploadId: session.id },
+      })
     }
 
     options.onPhase?.('uploading')
-    const concurrency = Math.max(1, Math.min(3, Math.floor(options.concurrency ?? 3)))
+    const concurrency = Math.max(1, Math.min(UPLOAD_LIMITS.maxConcurrency, Math.floor(options.concurrency ?? UPLOAD_LIMITS.maxConcurrency)))
     const completed = new Array<CompletedPart>(partCount)
     let nextIndex = 0
     let finished = 0
@@ -183,31 +315,56 @@ export async function uploadMultipart(
     // The Go control plane can safely replay completion with the SAME ordered parts:
     // this handles the object_completed -> committed recovery path after a lost response.
     // Do not abort once completion may have reached the server.
-    for (let attempt = 0; attempt < 3; attempt += 1) {
+    for (let attempt = 0; attempt < UPLOAD_LIMITS.completionAttempts; attempt += 1) {
       try {
         await gateway.complete(session.id, completed)
         return
-      } catch {
-        const remote = await gateway.read(session.id).catch(() => null)
+      } catch (completeError) {
+        let remote: UploadSession | null = null
+        try {
+          remote = await gateway.read(session.id)
+        } catch {
+          remote = null
+        }
         if (remote?.status === 'committed') return
         if (remote && ['failed', 'aborted', 'expired'].includes(remote.status)) {
-          throw new Error(`上传已终止（服务端状态：${remote.status}）`)
+          throw new UploadError('storage-rejected', `上传已终止（服务端状态：${remote.status}）`, {
+            context: { uploadId: session.id, attempt: attempt + 1 },
+            cause: completeError,
+          })
         }
-        if (attempt === 2) throw new UploadCompletionUnknownError(session.id)
+        // A 4xx from the control plane is a deterministic refusal, not an unknown outcome:
+        // retrying the identical payload cannot change it. 401/403 falls out here too, so
+        // an expired login stops immediately instead of reporting "unknown completion".
+        if (isApiRefusal(completeError)) {
+          throw new UploadError('non-retryable', `文件提交被拒绝：${(completeError as Error).message}`, {
+            context: { uploadId: session.id, attempt: attempt + 1 },
+            cause: completeError,
+          })
+        }
+        if (attempt === UPLOAD_LIMITS.completionAttempts - 1) {
+          throw new UploadCompletionUnknownError(session.id)
+        }
         await new Promise<void>((resolve) => setTimeout(resolve, 200 * (attempt + 1)))
       }
     }
   } catch (error) {
+    // The primary error always wins. Cleanup is attempted only when no completion was
+    // sent, and any cleanup failure is attached as metadata rather than thrown.
+    const primary = error instanceof UploadError ? error : classifyFetchError(error)
     if (session && !completing) {
-      // No completion was sent: this is safe to abort after workers have settled.
-      try {
-        await gateway.abort(session.id)
-      } catch {
-        throw new Error('上传失败，且清理远端 Multipart 会话未确认；请核对上传状态')
-      }
+      const cleanup = await abortQuietly(gateway, session.id)
+      if (cleanup) throw new UploadFailure(primary, cleanup)
     }
-    throw error
+    throw primary
   } finally {
     options.signal?.removeEventListener('abort', externalAbort)
   }
+}
+
+/** User-facing message for any upload rejection, preserving structured detail when present. */
+export function uploadErrorMessage(error: unknown): string {
+  if (error instanceof UploadError) return error.message
+  if (error instanceof Error) return error.message
+  return '上传失败'
 }

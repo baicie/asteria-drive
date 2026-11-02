@@ -1,12 +1,14 @@
 import { ref, type Ref } from 'vue'
 import { api } from '../../api/client'
 import type { Node } from '../../api/types'
+import type { BusyTracker } from '../../lib/busy'
 import { newIdempotencyKey } from '../../lib/idempotency'
-import { uploadMultipart, type UploadGateway } from './upload-manager'
+import { UploadError, uploadErrorMessage, uploadMultipart, type UploadGateway } from './upload-manager'
+import type { UploadErrorKind } from './upload-errors'
 
 interface UploadTaskOptions {
   token: Ref<string>
-  busy: Ref<string>
+  busy: BusyTracker
   getParent: () => Node | null
   currentDirectory: Ref<Node | null>
   directoryGeneration: () => number
@@ -14,6 +16,8 @@ interface UploadTaskOptions {
   notify: (text: string, kind?: 'success' | 'error') => void
   clearNotice: () => void
 }
+
+const UPLOAD_KEY = 'upload'
 
 type UploadPhase = 'uploading' | 'completing' | null
 
@@ -31,6 +35,8 @@ export function useUploadTask({
   const phase = ref<UploadPhase>(null)
   const cancelling = ref(false)
   const abort = ref<AbortController | null>(null)
+  const failureKind = ref<UploadErrorKind | null>(null)
+  const failureUploadId = ref<string | null>(null)
 
   async function start(file: File) {
     const parent = getParent()
@@ -41,10 +47,12 @@ export function useUploadTask({
       return
     }
 
-    busy.value = 'upload'
+    busy.begin(UPLOAD_KEY)
     progress.value = 0
     cancelling.value = false
     phase.value = 'uploading'
+    failureKind.value = null
+    failureUploadId.value = null
     const controller = new AbortController()
     abort.value = controller
     const uploadToken = token.value
@@ -101,14 +109,17 @@ export function useUploadTask({
       }
     } catch (error) {
       if (abort.value === controller) {
-        notify(error instanceof Error ? error.message : '上传失败', 'error')
+        const uploadError = error instanceof UploadError ? error : null
+        failureKind.value = uploadError?.kind ?? null
+        failureUploadId.value = uploadError?.context.uploadId ?? null
+        notify(uploadErrorMessage(error), 'error')
       }
     } finally {
       if (abort.value === controller) {
         abort.value = null
         phase.value = null
         cancelling.value = false
-        busy.value = ''
+        busy.end(UPLOAD_KEY)
         progress.value = 0
       }
     }
@@ -121,12 +132,19 @@ export function useUploadTask({
   }
 
   function cancelForLogout() {
+    const wasActive = abort.value !== null
     abort.value?.abort()
     abort.value = null
     phase.value = null
     cancelling.value = false
     progress.value = 0
+    failureKind.value = null
+    failureUploadId.value = null
+    // start()'s finally deliberately skips itself once abort.value has been replaced,
+    // so the logout path must release the busy key it started. Guard on wasActive: a
+    // logout with no upload in flight must not decrement another operation's count.
+    if (wasActive) busy.end(UPLOAD_KEY)
   }
 
-  return { progress, phase, cancelling, start, cancel, cancelForLogout }
+  return { progress, phase, cancelling, failureKind, failureUploadId, start, cancel, cancelForLogout }
 }
