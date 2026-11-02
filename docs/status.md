@@ -9,7 +9,7 @@
 | 后端 MVP P0-P4 | 已完成并合入 `main` | Namespace、直传上传、下载、回收、PostgreSQL/SeaweedFS 真实依赖验收 |
 | M2-1 身份与基础权限 | 已完成并合入 `main` | OIDC Resource Server、内部主体、租户成员和 owner/admin/editor/viewer 基础 RBAC |
 | M2-2 成员生命周期 | 已完成 | 成员列表、角色/状态更新、最后 active owner 保护、邀请、成员删除、组、ACL 和审计契约；本页所称完成指仓库代码和测试，不表示生产平台准入 |
-| 本地 Web 控制台与开发环境 | 首版与第二增量已合入 `main`；第三增量（传输可靠性）在待评审分支 | Vue 控制台、Compose 本地全栈、真实 PostgreSQL/S3 multipart 冒烟、Vite 构建和 Playwright 流程测试已通过；2026-10-22 增加回收站列表/恢复/永久删除与重命名/移动（PR #74，merge commit `ef60f9e`）。详见 [本地冒烟证据](operations/evidence/local-console-smoke-20260916.md)。2026-11-02 的 `feat/web-transfer-reliability` 增加结构化上传错误、下载 URL 加固、Vitest 单测与 App 级并发修复，尚未合入。该控制台仍不是完整产品，也未进入 release 或生产准入 |
+| 本地 Web 控制台与开发环境 | 首版与第二增量已合入 `main`；第三增量（传输可靠性 + 跨刷新恢复）在待评审分支 | Vue 控制台、Compose 本地全栈、真实 PostgreSQL/S3 multipart 冒烟、Vite 构建和 Playwright 流程测试已通过；2026-10-22 增加回收站列表/恢复/永久删除与重命名/移动（PR #74，merge commit `ef60f9e`）。详见 [本地冒烟证据](operations/evidence/local-console-smoke-20260916.md)。2026-11-02 的 `feat/web-transfer-reliability` 增加结构化上传错误、下载 URL 加固、Vitest 单测、App 级并发修复，以及 ADR-0027 的跨刷新上传恢复（只读分片端点 + 非敏感会话句柄），尚未合入。该控制台仍不是完整产品，也未进入 release 或生产准入 |
 | CI、安全门禁与分支保护 | 仓库合同与 `main` 远端保护已基本完成；独立发布治理仍不完整 | 远端已有八项 required checks（含 `CI / web`）、strict、administrator enforcement、conversation resolution，并禁止强推/删分支；required PR review（含 CODEOWNERS、旧审批失效、最后推送后审批）已于 2026-10-22 按仓库 owner 指示移除，独立 reviewer 仍未配置，因此不满足 PRD-09/PRD-10 的独立审批要求；`v*` ruleset `22372324` 已 active，创建仅允许 `baicie`，更新/删除禁止；`release` Environment 由 `baicie` 审批且允许自审 |
 | Release 与 API 加固 | 仓库门禁、tag 不可变基础和单人发布审批门已实现；生产候选仍需独立复核 | GitHub Immutable Releases 已启用，`v*` 创建仅允许 `baicie`、更新/删除已禁止，`release` Environment 要求 `baicie` reviewer 且禁止管理员 bypass；`v0.2.0` 已发布且 `isImmutable=true`，包含 API/Web 多架构镜像、Web 静态包与两份 SBOM；历史 `v0.1.1` 仍不是 immutable 证据，`v0.1.0-dev.0` 虽已 immutable 但不是生产候选；单人自审不满足独立安全/平台审批 |
 | staging 当前部署 | 主机仍运行 `v0.1.1`；`v0.2.0` 候选固定点已在仓库准备，未部署 | 历史 run `31713181762` 证明 `v0.1.1` 的迁移、鉴权读写、storage verifier、loopback、容量门禁和 PostgreSQL TLS；PR [#80](https://github.com/baicie/asteria-drive/pull/80) 已把 `v0.2.0` source commit、API OCI digest、Compose digest、deploy/monitor/recovery 脚本摘要更新到候选，但远端 bootstrap 和部署仍需明确审批 |
@@ -44,9 +44,16 @@ KMS 或 secret-controller 轮换、公网 TLS ingress、生产监控/SIEM 与外
   另一操作”导致的重复授权与重复 DELETE。
 - 新增 `Security / codeql-web`（TypeScript/Vue）；它是新增检查，**尚未成为 required
   check**，因此远端受保护分支的必需检查集合仍是八项。
-- 跨刷新恢复只有设计（[ADR-0027](adr/0027-cross-reload-upload-resume.md)）：新增只读
-  `GET /api/v1/uploads/{id}/parts` 与客户端会话句柄持久化均**未实现**，且明确禁止记录
-  presigned URL、Token 或 S3 凭据。
+- 跨刷新恢复已按 [ADR-0027](adr/0027-cross-reload-upload-resume.md) 实现：服务端
+  `StorageProvider.ListParts`（S3 分页 + memory）与只读 `GET /api/v1/uploads/{id}/parts`
+  （`files:read`、tenant 限定、`Cache-Control: no-store`），客户端会话句柄（仅
+  `sessionStorage` 非敏感字段）、加载时探测、分片对账与完成重放。**未记录** presigned
+  URL、Token 或 S3 凭据，并由针对序列化文本的单测看护；退出登录清除句柄。
+- 新增 `CI / web-live` job：在隔离的 PostgreSQL 17.5 + SeaweedFS 3.85 上启动真实控制面，
+  以 Chromium 跑 `live-stack` 上传/下载字节校验；它**尚未成为 required check**。
+- 本轮新增单测覆盖 `use-upload-task` 的会话生命周期：取消保留句柄、成功与致命失败清除
+  句柄、探测在 400/401/403/404 时丢弃而在 5xx/网络失败时保留、未知状态丢弃、并发探测
+  只发一次、重复恢复被拒绝、文件身份不符时不发请求。
 - 开发 Token 与生产 OIDC 的边界记录于
   [development-vs-oidc-auth](security/development-vs-oidc-auth.md)。
 

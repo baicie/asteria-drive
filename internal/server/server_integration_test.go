@@ -135,6 +135,10 @@ func TestLiveHTTPPostgresSeaweedFSEndToEnd(t *testing.T) {
 	liveRequireStatus(t, first.request(ctx, http.MethodPost, "/api/v1/uploads/"+upload.ID+"/parts/sign", liveTokenB,
 		map[string]any{"part_number": 1}, nil), http.StatusNotFound)
 	liveRequireStatus(t, first.request(ctx, http.MethodDelete, "/api/v1/uploads/"+upload.ID, liveTokenB, nil, nil), http.StatusNotFound)
+	// ADR-0027 resume: after uploading only the first part, a fresh client that lost every
+	// in-memory byte must be able to learn exactly which parts are already durable before
+	// it sends the rest. This runs against real PostgreSQL and real SeaweedFS.
+	liveRequireStatus(t, first.request(ctx, http.MethodGet, "/api/v1/uploads/"+upload.ID+"/parts", liveTokenB, nil, nil), http.StatusNotFound)
 	parts := make([]drive.CompletedPart, 0, 2)
 	for index, body := range [][]byte{firstPart, secondPart} {
 		partNumber := index + 1
@@ -148,6 +152,26 @@ func TestLiveHTTPPostgresSeaweedFSEndToEnd(t *testing.T) {
 		signed := liveDecodeData[liveSignedPartResponse](t, signResponse)
 		etag := livePutSignedPart(t, ctx, signed, body)
 		parts = append(parts, drive.CompletedPart{PartNumber: partNumber, ETag: etag, Checksum: partChecksum, Size: int64(len(body))})
+		if partNumber == 1 {
+			listingResponse := first.request(ctx, http.MethodGet, "/api/v1/uploads/"+upload.ID+"/parts", liveTokenA, nil, nil)
+			liveRequireStatus(t, listingResponse, http.StatusOK)
+			if got := listingResponse.header.Get("Cache-Control"); got != "no-store" {
+				t.Fatalf("part listing Cache-Control = %q, want no-store", got)
+			}
+			listing := liveDecodeData[liveUploadPartsResponse](t, listingResponse)
+			if listing.UploadID != upload.ID || listing.Status != string(drive.UploadUploading) || len(listing.Parts) != 1 {
+				t.Fatalf("resume listing after part 1 = %+v", listing)
+			}
+			if listing.Parts[0].PartNumber != 1 || listing.Parts[0].ETag != etag || listing.Parts[0].Size != int64(len(firstPart)) {
+				t.Fatalf("resume listing part 1 = %+v, want etag=%q size=%d", listing.Parts[0], etag, len(firstPart))
+			}
+			if !listing.Complete {
+				t.Fatal("a one-part listing within the limit must be complete")
+			}
+			if bytes.Contains(listingResponse.body, []byte(objectKey)) || bytes.Contains(listingResponse.body, []byte(storageUploadID)) {
+				t.Fatalf("part listing leaked storage identity: %s", listingResponse.body)
+			}
+		}
 	}
 	liveRequireStatus(t, first.request(ctx, http.MethodPost, "/api/v1/uploads/"+upload.ID+"/complete", liveTokenB,
 		map[string]any{"parts": parts}, nil), http.StatusNotFound)
@@ -536,6 +560,20 @@ type liveSignedPartResponse struct {
 type liveCompleteResponse struct {
 	Upload uploadResponse `json:"upload"`
 	File   nodeResponse   `json:"file"`
+}
+
+type liveUploadPartsResponse struct {
+	UploadID string           `json:"upload_id"`
+	Status   string           `json:"status"`
+	PartSize int64            `json:"part_size"`
+	Parts    []liveListedPart `json:"parts"`
+	Complete bool             `json:"complete"`
+}
+
+type liveListedPart struct {
+	PartNumber int    `json:"part_number"`
+	ETag       string `json:"etag"`
+	Size       int64  `json:"size"`
 }
 
 type liveDownloadResponse struct {

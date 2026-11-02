@@ -171,6 +171,27 @@ The unit tests run before the production build so a unit failure reports its
 own cause rather than a downstream bundling error. The contract test in
 `internal/cicheck` enforces that ordering and the evidence paths.
 
+### CI / web-live
+
+A separate job runs the opt-in `web/e2e/live-stack.spec.ts` against a real
+control plane instead of route fixtures:
+
+- starts the pinned PostgreSQL 17.5 and SeaweedFS 3.85 Compose services;
+- builds `asteria-server` and `asteria-migrate`, migrates, launches the API on
+  `127.0.0.1:18091` with `trusted-dev` auth and a per-run object bucket, and
+  waits for `/healthz`;
+- builds the console, installs Chromium, and runs only the `live stack` spec so
+  Chromium uploads a two-part file through the real S3 data plane and verifies
+  the downloaded bytes;
+- sanitizes the server and Compose logs, tears the stack down, and uploads
+  `web-live-evidence` with `if: always()`.
+
+The token, database URL, and S3 keys in this job are literal test-only values
+scoped to a throwaway Compose project. The job still runs without repository
+secrets or environment approvals, and its bucket is unique per run. It is not a
+required check yet: making it required is a repository-settings change outside
+this branch, and the job must first show a stable runtime across several runs.
+
 ## 4. Security workflow and dependency updates
 
 `security.yml` runs without repository secrets on pull requests, pushes to main,
@@ -274,9 +295,11 @@ Upload only short-lived, non-secret artifacts:
   `web-evidence`;
 - benchmark output when a benchmark job is explicitly requested.
 
-The web evidence contains only synthetic fixtures: the Playwright suite replaces
-`/api` with route handlers and never receives a real token or a real presigned
-URL. The opt-in live-stack spec is not part of `CI / web` for that reason.
+The `CI / web` evidence contains only synthetic fixtures: its Playwright suite
+replaces `/api` with route handlers and never receives a real token or a real
+presigned URL. The live-stack spec runs only in `CI / web-live`, where the token
+is a literal test value for a throwaway tenant and the presigned URL points at
+the per-run SeaweedFS bucket; both artifacts are sanitized before upload.
 
 Never upload environment files, Authorization headers, signed URLs, database
 URLs, or full request bodies. Required jobs must not retry failed tests

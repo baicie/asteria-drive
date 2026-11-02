@@ -531,6 +531,19 @@ func (r *Repository) AbortUpload(_ context.Context, identity drive.Identity, id 
 	return session, nil
 }
 
+func (r *Repository) UploadParts(_ context.Context, identity drive.Identity, id string) ([]drive.CompletedPart, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if _, err := r.uploadFor(identity, id); err != nil {
+		return nil, err
+	}
+	parts := r.parts[id]
+	if len(parts) == 0 {
+		return []drive.CompletedPart{}, nil
+	}
+	return append([]drive.CompletedPart(nil), parts...), nil
+}
+
 func (r *Repository) MarkUploadCleanupComplete(_ context.Context, identity drive.Identity, id string, now time.Time) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()

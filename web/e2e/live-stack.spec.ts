@@ -75,6 +75,98 @@ test.describe('live stack', () => {
       expect([204, 404]).toContain(deleted.status())
     }
   })
+
+  test('resumes an interrupted upload after a reload without re-sending uploaded parts', async ({ page }) => {
+    // The browser cannot restore a File across a reload, so the scenario is staged the way
+    // a real interruption leaves it: a live session created through the API, one part
+    // already in S3, and the non-sensitive handle the console writes before its first part.
+    const payload = Buffer.alloc(8 * 1024 * 1024 + 37)
+    for (let index = 0; index < payload.length; index += 1) payload[index] = (index * 7) % 251
+    const name = `resume-${Date.now()}.bin`
+    const rootId = await rootDirectoryId(page, apiBase!, token!)
+    const auth = { Authorization: `Bearer ${token}` }
+
+    const created = await page.request.post(`${apiBase}/api/v1/uploads`, {
+      headers: { ...auth, 'Content-Type': 'application/json', 'Idempotency-Key': `resume-${Date.now()}` },
+      data: { parent_id: rootId, name, size: payload.length, mime_type: 'application/octet-stream' },
+    })
+    expect(created.status()).toBe(201)
+    const session = ((await created.json()) as { data: { id: string; part_size: number } }).data
+
+    // Upload only part 1 through the real signed data plane.
+    const signedResponse = await page.request.post(`${apiBase}/api/v1/uploads/${session.id}/parts/sign`, {
+      headers: { ...auth, 'Content-Type': 'application/json' },
+      data: { part_number: 1 },
+    })
+    const signed = ((await signedResponse.json()) as { data: { url: string; method: string } }).data
+    const firstPart = await page.request.fetch(signed.url, {
+      method: signed.method,
+      data: payload.subarray(0, session.part_size),
+    })
+    expect(firstPart.status()).toBe(200)
+
+    // The server must report exactly the part that landed.
+    const listedResponse = await page.request.get(`${apiBase}/api/v1/uploads/${session.id}/parts`, { headers: auth })
+    expect(listedResponse.status()).toBe(200)
+    expect(listedResponse.headers()['cache-control']).toBe('no-store')
+    const listed = ((await listedResponse.json()) as {
+      data: { parts: Array<{ part_number: number }>; complete: boolean; part_size: number }
+    }).data
+    expect(listed.complete).toBe(true)
+    expect(listed.parts.map((part) => part.part_number)).toEqual([1])
+
+    const lastModified = Date.now()
+    await page.addInitScript(([handle, bearer]) => {
+      window.sessionStorage.setItem('asteria.upload.resume', JSON.stringify(handle))
+      window.localStorage.setItem('asteria.token', bearer)
+    }, [{
+      version: 1,
+      uploadId: session.id,
+      tenantId: '',
+      parentId: rootId,
+      parentName: '根目录',
+      fileName: name,
+      size: payload.length,
+      lastModified,
+      partSize: session.part_size,
+      createdAt: Date.now(),
+    }, token!] as const)
+
+    await page.goto('/')
+    // The banner is the user-visible evidence that the load-time probe accepted the handle.
+    await expect(page.getByText('检测到未完成的上传')).toBeVisible()
+    await expect(page.getByText(name)).toBeVisible()
+
+    // Re-select the original bytes and let the console reconcile and complete.
+    //
+    // The File is built inside the page: `setInputFiles({buffer})` stamps `lastModified`
+    // with the current time, and the identity check (name, size, lastModified) would then
+    // reject the re-selected file — which is the check working as designed, not a bug.
+    await page.evaluate(({ name: fileName, size, lastModified: stamp }) => {
+      const bytes = new Uint8Array(size)
+      for (let index = 0; index < size; index += 1) bytes[index] = (index * 7) % 251
+      const file = new File([bytes], fileName, { type: 'application/octet-stream', lastModified: stamp })
+      const inputs = document.querySelectorAll<HTMLInputElement>('input[type="file"]')
+      const input = inputs[inputs.length - 1]
+      const transfer = new DataTransfer()
+      transfer.items.add(file)
+      input.files = transfer.files
+      input.dispatchEvent(new Event('change', { bubbles: true }))
+    }, { name, size: payload.length, lastModified })
+    await expect(page.getByText(`已恢复并完成「${name}」的上传`)).toBeVisible({ timeout: 120_000 })
+    await expect(page.getByRole('button', { name: '下载' }).first()).toBeVisible()
+    await expect.poll(async () => {
+      const listingResponse = await page.request.get(
+        `${apiBase}/api/v1/directories/${rootId}/children?limit=200`,
+        { headers: auth },
+      )
+      const body = (await listingResponse.json()) as { data: Array<{ id: string; name: string; size: number }> }
+      return body.data.find((node) => node.name === name)?.size
+    }).toBe(payload.length)
+
+    // Nothing is left behind: the handle is gone and the committed object is the right size.
+    expect(await page.evaluate(() => window.sessionStorage.getItem('asteria.upload.resume'))).toBeNull()
+  })
 })
 
 async function rootDirectoryId(page: import('@playwright/test').Page, base: string, bearer: string) {

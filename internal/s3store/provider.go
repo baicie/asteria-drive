@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"mime"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -160,6 +161,35 @@ func (p *Provider) AbortMultipart(ctx context.Context, key, uploadID string) err
 		return nil
 	}
 	return mapError(err, "could not abort multipart upload")
+}
+
+// ListParts pages through S3 ListParts. S3 caps a page at 1000 parts, so a 10,000-part
+// upload needs ten calls; the cursor is the part number marker, not an opaque token.
+func (p *Provider) ListParts(ctx context.Context, key, uploadID string) ([]drive.StoredPart, error) {
+	parts := make([]drive.StoredPart, 0)
+	var marker *string
+	for {
+		output, err := p.client.ListParts(ctx, &s3.ListPartsInput{
+			Bucket: aws.String(p.bucket), Key: aws.String(key), UploadId: aws.String(uploadID),
+			PartNumberMarker: marker,
+		})
+		if err != nil {
+			return nil, mapError(err, "could not list multipart parts")
+		}
+		for _, part := range output.Parts {
+			parts = append(parts, drive.StoredPart{
+				PartNumber: int(aws.ToInt32(part.PartNumber)),
+				ETag:       aws.ToString(part.ETag),
+				Size:       aws.ToInt64(part.Size),
+			})
+		}
+		if !aws.ToBool(output.IsTruncated) || output.NextPartNumberMarker == nil {
+			break
+		}
+		marker = output.NextPartNumberMarker
+	}
+	sort.Slice(parts, func(i, j int) bool { return parts[i].PartNumber < parts[j].PartNumber })
+	return parts, nil
 }
 
 func (p *Provider) StatObject(ctx context.Context, key string) (drive.ObjectInfo, error) {

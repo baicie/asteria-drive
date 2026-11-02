@@ -661,6 +661,82 @@ func (s *Service) failUploadCompletion(ctx context.Context, identity Identity, s
 	return nil
 }
 
+// ListUploadParts answers a resumed client's "what did I already upload?" question.
+//
+// It is deliberately read-only: no signing, no state transition, no storage write. The
+// listing merges two sources because neither alone is sufficient:
+//
+//   - object storage knows every part it has accepted, including parts uploaded just
+//     before a reload;
+//   - the control plane only persists parts when completion is requested, but it is the
+//     authority for the frozen completion list.
+//
+// Control-plane rows win on a conflict: once a completion digest is frozen, the client
+// must resend exactly those parts or completion fails with idempotency_conflict.
+//
+// An expired session is transitioned to EXPIRED exactly as a signing attempt would do, so
+// a resumed client learns the session is gone instead of uploading into a dead multipart.
+// A session that storage no longer knows (aborted or expired by maintenance) is reported
+// as invalid_state with no parts rather than leaking the storage error.
+func (s *Service) ListUploadParts(ctx context.Context, identity Identity, uploadID string, limit int) (UploadPartListing, error) {
+	if err := validateID(uploadID); err != nil {
+		return UploadPartListing{}, err
+	}
+	if limit == 0 || limit > MaxUploadParts {
+		limit = MaxUploadParts
+	}
+	session, err := s.repository.Upload(ctx, identity, uploadID)
+	if err != nil {
+		return UploadPartListing{}, err
+	}
+	if !s.clock.Now().Before(session.ExpiresAt) && !session.Status.Terminal() {
+		if _, err := s.repository.AbortUpload(ctx, identity, uploadID, UploadExpired, s.clock.Now()); err != nil {
+			return UploadPartListing{}, err
+		}
+		if err := s.abortMultipart(ctx, session); err != nil {
+			return UploadPartListing{}, err
+		}
+		return UploadPartListing{UploadID: uploadID, Status: UploadExpired, PartSize: session.PartSize, Parts: []StoredPart{}}, nil
+	}
+
+	listing := UploadPartListing{UploadID: uploadID, Status: session.Status, PartSize: session.PartSize, Parts: []StoredPart{}}
+	recorded, err := s.repository.UploadParts(ctx, identity, uploadID)
+	if err != nil {
+		return UploadPartListing{}, err
+	}
+	if len(recorded) > 0 {
+		for _, part := range recorded {
+			listing.Parts = append(listing.Parts, StoredPart{PartNumber: part.PartNumber, ETag: part.ETag, Size: part.Size})
+		}
+		listing.Complete = true
+		return listing, nil
+	}
+	if session.Status == UploadCommitted || session.Status == UploadAborted || session.Status == UploadExpired || session.Status == UploadFailed {
+		// A terminal session has no resumable parts. Returning the terminal status is the
+		// whole answer; do not ask storage about a multipart that no longer exists.
+		return listing, nil
+	}
+	stored, err := s.storage.ListParts(ctx, session.ObjectKey, session.StorageUploadID)
+	if err != nil {
+		if CodeOf(err) == CodeNotFound {
+			return UploadPartListing{}, E(CodeInvalidState, "multipart upload is no longer available")
+		}
+		return UploadPartListing{}, mapStorageError(err)
+	}
+	for _, part := range stored {
+		if part.PartNumber < 1 || part.PartNumber > MaxUploadParts || part.ETag == "" {
+			continue
+		}
+		listing.Parts = append(listing.Parts, part)
+	}
+	sort.Slice(listing.Parts, func(i, j int) bool { return listing.Parts[i].PartNumber < listing.Parts[j].PartNumber })
+	listing.Complete = len(listing.Parts) <= limit
+	if limit > 0 && len(listing.Parts) > limit {
+		listing.Parts = listing.Parts[:limit]
+	}
+	return listing, nil
+}
+
 func (s *Service) AbortUpload(ctx context.Context, identity Identity, uploadID string) error {
 	if err := validateID(uploadID); err != nil {
 		return err

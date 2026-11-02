@@ -678,6 +678,49 @@ func (a *api) getUpload(w http.ResponseWriter, r *http.Request) {
 	a.writeData(w, http.StatusOK, toUploadResponse(upload))
 }
 
+type listedPartResponse struct {
+	PartNumber int    `json:"part_number"`
+	ETag       string `json:"etag"`
+	Size       int64  `json:"size"`
+}
+
+type uploadPartsResponse struct {
+	UploadID string               `json:"upload_id"`
+	Status   drive.UploadStatus   `json:"status"`
+	PartSize int64                `json:"part_size"`
+	Parts    []listedPartResponse `json:"parts"`
+	Complete bool                 `json:"complete"`
+}
+
+// listUploadParts exposes only what a resumed client needs to decide which parts to
+// resend. It deliberately omits bucket, object key, storage upload ID and any signed URL;
+// the part ETags it returns are not credentials and cannot be used to read the object.
+func (a *api) listUploadParts(w http.ResponseWriter, r *http.Request) {
+	limit, err := parsePartListLimit(r.URL.Query().Get("limit"))
+	if err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	listing, err := a.service.ListUploadParts(r.Context(), identity(r), r.PathValue("id"), limit)
+	if err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	response := uploadPartsResponse{
+		UploadID: listing.UploadID, Status: listing.Status, PartSize: listing.PartSize,
+		Parts: make([]listedPartResponse, 0, len(listing.Parts)), Complete: listing.Complete,
+	}
+	for _, part := range listing.Parts {
+		response.Parts = append(response.Parts, listedPartResponse{
+			PartNumber: part.PartNumber, ETag: part.ETag, Size: part.Size,
+		})
+	}
+	// A part listing is derived from a live upload session and changes as parts land; no
+	// intermediary may serve it from cache after the session has moved on.
+	w.Header().Set("Cache-Control", "no-store")
+	a.writeData(w, http.StatusOK, response)
+}
+
 func (a *api) signUploadPart(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		PartNumber int            `json:"part_number"`
@@ -895,6 +938,19 @@ func parseLimit(value string) (int, error) {
 	limit, err := strconv.Atoi(value)
 	if err != nil || limit < 1 || limit > 200 {
 		return 0, drive.E(drive.CodeInvalidRequest, "limit must be between 1 and 200")
+	}
+	return limit, nil
+}
+
+// parsePartListLimit allows the full S3 part range, unlike directory listings, because a
+// resumed upload may genuinely have 10,000 parts. Zero means "server default".
+func parsePartListLimit(value string) (int, error) {
+	if value == "" {
+		return 0, nil
+	}
+	limit, err := strconv.Atoi(value)
+	if err != nil || limit < 1 || limit > drive.MaxUploadParts {
+		return 0, drive.E(drive.CodeInvalidRequest, "limit must be between 1 and 10000")
 	}
 	return limit, nil
 }

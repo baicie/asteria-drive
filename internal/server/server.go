@@ -81,6 +81,7 @@ var protectedAPIRoutes = []apiRoute{
 	{pattern: "DELETE /api/v1/nodes/{id}/acl/{entry_id}", permission: drive.PermissionFilesRead, handler: (*api).deleteNodeACL},
 	{pattern: "POST /api/v1/uploads", permission: drive.PermissionFilesWrite, aclElevation: true, handler: (*api).createUpload},
 	{pattern: "GET /api/v1/uploads/{id}", permission: drive.PermissionFilesRead, handler: (*api).getUpload},
+	{pattern: "GET /api/v1/uploads/{id}/parts", permission: drive.PermissionFilesRead, handler: (*api).listUploadParts},
 	{pattern: "POST /api/v1/uploads/{id}/parts/sign", permission: drive.PermissionFilesWrite, aclElevation: true, handler: (*api).signUploadPart},
 	{pattern: "POST /api/v1/uploads/{id}/complete", permission: drive.PermissionFilesWrite, aclElevation: true, handler: (*api).completeUpload},
 	{pattern: "DELETE /api/v1/uploads/{id}", permission: drive.PermissionFilesWrite, aclElevation: true, handler: (*api).abortUpload},

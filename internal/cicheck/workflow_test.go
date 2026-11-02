@@ -204,6 +204,28 @@ func TestCIWorkflowTrustBoundaryAndStableJobs(t *testing.T) {
 				"npm run test:e2e",
 			},
 		},
+		// The live browser job is the only place a real Chromium talks to a real control
+		// plane, PostgreSQL and SeaweedFS. It is deliberately separate from `web` so the
+		// fixture-only job stays Docker-free and fast.
+		"web-live": {
+			name: "CI / web-live", timeoutMinutes: 30,
+			actions: []string{checkoutAction, setupGoAction, setupNodeAction, uploadArtifactAction},
+			goVersion: `${{ env.GO_CURRENT_VERSION }}`,
+			commands: []string{
+				"docker compose up -d --wait --wait-timeout 180",
+				"go build -o \"$RUNNER_TEMP/asteria-server\" ./cmd/asteria-server",
+				"go build -o \"$RUNNER_TEMP/asteria-migrate\" ./cmd/asteria-migrate",
+				"\"$RUNNER_TEMP/asteria-migrate\"",
+				"\"$RUNNER_TEMP/asteria-server\"",
+				"http://127.0.0.1:18091/healthz",
+				"npm ci --ignore-scripts",
+				"npm run build",
+				"npx playwright install --with-deps chromium",
+				"npm run test:e2e -- --grep \"live stack\"",
+				"go run ./tools/sanitize-ci-log",
+				"docker compose down -v --remove-orphans",
+			},
+		},
 	}
 	if len(workflow.Jobs) != len(expectedJobs) {
 		t.Fatalf("workflow has %d jobs, want %d", len(workflow.Jobs), len(expectedJobs))
@@ -282,6 +304,71 @@ func TestCIWorkflowTrustBoundaryAndStableJobs(t *testing.T) {
 		if jobID == "web" {
 			assertWebJobContract(t, job)
 		}
+		if jobID == "web-live" {
+			assertWebLiveJobContract(t, job)
+		}
+	}
+}
+
+// assertWebLiveJobContract pins the properties that make the live job diagnosable:
+// every teardown/evidence step runs even on failure, the failure evidence is uploaded,
+// and the browser run happens only after the stack is up.
+func assertWebLiveJobContract(t *testing.T, job workflowJob) {
+	t.Helper()
+
+	steps := make(map[string]workflowStep, len(job.Steps))
+	for _, step := range job.Steps {
+		if _, duplicate := steps[step.Name]; duplicate {
+			t.Fatalf("web-live job repeats step name %q", step.Name)
+		}
+		steps[step.Name] = step
+	}
+	for _, stepName := range []string{
+		"Sanitize web-live evidence",
+		"Remove isolated dependencies",
+		"Upload web-live failure evidence",
+	} {
+		step, ok := steps[stepName]
+		if !ok {
+			t.Errorf("web-live job is missing step %q", stepName)
+			continue
+		}
+		if step.If != `${{ always() }}` {
+			t.Errorf("web-live step %q condition = %q, want always()", stepName, step.If)
+		}
+	}
+	upload := steps["Upload web-live failure evidence"]
+	if upload.Uses != uploadArtifactAction {
+		t.Errorf("web-live evidence uses %q, want pinned upload-artifact", upload.Uses)
+	}
+	if fmt.Sprint(upload.With["name"]) != "web-live-evidence" ||
+		fmt.Sprint(upload.With["if-no-files-found"]) != "ignore" ||
+		fmt.Sprint(upload.With["retention-days"]) != "7" {
+		t.Errorf("web-live upload has unexpected inputs: %#v", upload.With)
+	}
+
+	// The token must be long enough for parseTokens to accept it. A short token would
+	// fail config loading, and the job would report a browser failure for a setup bug.
+	token := fmt.Sprint(job.Env["ASTERIA_E2E_TOKEN"])
+	if len(token) < 32 {
+		t.Errorf("web-live token is %d bytes, want at least 32", len(token))
+	}
+	if strings.Contains(token, "change-me") {
+		t.Errorf("web-live token looks like a placeholder: %q", token)
+	}
+
+	order := make(map[string]int, len(job.Steps))
+	for index, step := range job.Steps {
+		order[step.Name] = index
+	}
+	if order["Start isolated dependencies"] >= order["Run live browser upload and download"] {
+		t.Error("web-live dependencies must start before the browser run")
+	}
+	if order["Launch control plane"] >= order["Run live browser upload and download"] {
+		t.Error("web-live control plane must be launched before the browser run")
+	}
+	if order["Migrate database"] >= order["Launch control plane"] {
+		t.Error("web-live migration must run before the control plane starts")
 	}
 }
 

@@ -994,3 +994,53 @@ func assertNoError(t *testing.T, err error) {
 func testID(number int) string {
 	return fmt.Sprintf("00000000-0000-4000-8000-%012d", number)
 }
+
+// TestRepositoryUploadPartsContract covers the read side of ADR-0027 resume support:
+// parts become visible only after BeginComplete freezes them, and a foreign tenant gets
+// not_found rather than an empty list.
+func TestRepositoryUploadPartsContract(t *testing.T) {
+	repository := integrationRepository(t)
+	ctx := context.Background()
+	now := time.Date(2026, 11, 2, 9, 0, 0, 0, time.UTC)
+	identity := drive.Identity{TenantID: testID(901), PrincipalID: testID(903)}
+	other := drive.Identity{TenantID: testID(902), PrincipalID: testID(904)}
+	assertNoError(t, func() error {
+		_, err := repository.EnsureTenant(ctx, drive.TenantSeed{
+			TenantID: identity.TenantID, DisplayName: "Parts", RootNodeID: testID(905), Now: now,
+		})
+		return err
+	}())
+	session := newUpload(testID(906), identity, testID(905), "parts.bin", "parts.bin", now)
+	_, err := repository.CreateUpload(ctx, drive.CreateUploadCommand{Session: session})
+	assertNoError(t, err)
+
+	parts, err := repository.UploadParts(ctx, identity, session.ID)
+	assertNoError(t, err)
+	if len(parts) != 0 {
+		t.Fatalf("parts before completion = %+v, want empty", parts)
+	}
+
+	frozen := []drive.CompletedPart{
+		{PartNumber: 1, ETag: `"etag-1"`, Size: 5, Checksum: drive.Checksum{Algorithm: "sha256", Value: "a"}},
+		{PartNumber: 2, ETag: `"etag-2"`, Size: 7},
+	}
+	if _, err := repository.BeginComplete(ctx, identity, session.ID, "digest-parts", frozen, now.Add(time.Minute)); err != nil {
+		t.Fatalf("begin complete: %v", err)
+	}
+	parts, err = repository.UploadParts(ctx, identity, session.ID)
+	assertNoError(t, err)
+	if len(parts) != 2 || parts[0].PartNumber != 1 || parts[1].PartNumber != 2 {
+		t.Fatalf("frozen parts = %+v", parts)
+	}
+	if parts[0].ETag != `"etag-1"` || parts[0].Size != 5 || parts[0].Checksum.Algorithm != "sha256" {
+		t.Fatalf("part 1 = %+v", parts[0])
+	}
+	if parts[1].ETag != `"etag-2"` || parts[1].Size != 7 {
+		t.Fatalf("part 2 = %+v", parts[1])
+	}
+
+	_, err = repository.UploadParts(ctx, other, session.ID)
+	assertCode(t, err, drive.CodeNotFound)
+	_, err = repository.UploadParts(ctx, identity, testID(999))
+	assertCode(t, err, drive.CodeNotFound)
+}

@@ -160,6 +160,12 @@ func (s *instrumentedStorage) AbortMultipart(ctx context.Context, key, uploadID 
 	return s.StorageProvider.AbortMultipart(ctx, key, uploadID)
 }
 
+func (s *instrumentedStorage) ListParts(ctx context.Context, key, uploadID string) (parts []drive.StoredPart, err error) {
+	started := time.Now()
+	defer func() { s.metrics.observeStorage("list_parts", started, err) }()
+	return s.StorageProvider.ListParts(ctx, key, uploadID)
+}
+
 func (s *instrumentedStorage) StatObject(ctx context.Context, key string) (object drive.ObjectInfo, err error) {
 	started := time.Now()
 	defer func() { s.metrics.observeStorage("stat_object", started, err) }()

@@ -1,11 +1,11 @@
-# ADR-0027: 跨刷新上传恢复协议（设计先行）
+# ADR-0027: 跨刷新上传恢复协议
 
-- 状态：Proposed
+- 状态：Accepted（2026-11-02 实现并验证；见“实现状态”）
 - 日期：2026-11-02
 - 范围：Web 控制台上传恢复、上传会话查询、分片清单
 - 关联：ADR-0002、ADR-0006、ADR-0011、ADR-0013、ADR-0023
-- 交付说明：本 ADR 只定义协议与兼容边界。跨刷新恢复的客户端实现与 `ListParts` 服务端实现
-  均未在本迭代落地，依赖项见“未完成依赖”。
+- 交付说明：本 ADR 定义协议与兼容边界，并且已按此实现服务端 `ListParts`、只读分片端点
+  与客户端恢复流程。仍受平台或产品约束的依赖项见“未完成依赖”。
 
 ## Context
 
@@ -37,16 +37,23 @@ presigned URL 是短期 bearer 凭据（ADR-0023 明确要求不得记录），�
   "uploadId": "55f5efc1-51e8-43be-9408-e4b6bcda92e0",
   "tenantId": "…",
   "parentId": "…",
+  "parentName": "根目录",
   "fileName": "report.bin",
   "size": 1048576,
   "lastModified": 1762000000000,
-  "partSize": 8388608
+  "partSize": 8388608,
+  "createdAt": 1762000000000
 }
 ```
 
 明确不写入：presigned URL、`Authorization` 头、任何 S3 凭据、文件内容、`etag` 之外的
 分片凭据。句柄本身不是授权凭据：每次恢复都必须重新通过 `Authorization` 头调用控制面，
 服务端按 tenant/principal 重新鉴权。上传会话 ID 泄露不产生数据面访问能力。
+
+`tenantId` 只用于诊断，**不参与任何授权判断**：服务端按当前身份限定会话，因此它即使为
+空或过期也只会导致一次 `404`。解析器因此只校验它的类型与长度，不要求非空；否则一个不
+携带租户 ID 的构建会永久无法提供恢复，而不是安全地降级为一次 404。`createdAt` 用于在
+调用服务端之前丢弃超过上传 TTL 的句柄。
 
 选择 `sessionStorage` 而非 `localStorage`：恢复语义是“同一标签页刷新后继续”，
 不应跨标签页、跨用户会话或长期留存。退出登录时清除。
@@ -67,10 +74,16 @@ GET /api/v1/uploads/{id}/parts
     "part_size": 8388608,
     "parts": [
       { "part_number": 1, "etag": "…", "size": 8388608 }
-    ]
+    ],
+    "complete": true
   }
 }
 ```
+
+`complete` 表示列出的 `parts` 是服务端已知的**完整**集合；`false` 表示存储侧分页被
+截断，客户端必须把它当作“没有可信的已完成分片”重新上传全部分片，而不是假定列出的
+就是全部。响应带 `Cache-Control: no-store`：分片清单随上传推进而变化，任何中间层都
+不得缓存它。
 
 设计约束：
 
@@ -116,17 +129,31 @@ GET /api/v1/uploads/{id}/parts
 - `StorageProvider` 增加 `ListParts` 属于 Go 内部接口扩展，需要更新 `memory` fake 与
   所有实现；不涉及已发布 Release Bundle 的修改。
 
+## 实现状态
+
+本迭代已落地全部协议部分：
+
+- `StorageProvider.ListParts` 已实现（S3 分页 `PartNumberMarker`/`IsTruncated` 与 `memory`）。
+- `GET /api/v1/uploads/{id}/parts` 已实现，带 `files:read` 鉴权、tenant 限定与
+  `Cache-Control: no-store`；OpenAPI 条目与路由契约测试同步。
+- 客户端 `web/src/features/uploads/upload-resume.ts`、`upload-manager.ts`（`resumeMultipart`）
+  与 `use-upload-task.ts` 完成句柄校验、探测、分片对账与完成重放。
+- 单测覆盖：句柄不含任何凭据（对序列化文本断言）、TTL、损坏/版本不符、截断清单、
+  会话归属不符、终止状态、分片大小不一致、取消保留句柄、退出清除句柄、并发探测与
+  重复恢复拒绝。
+
 ## 未完成依赖
 
-1. `StorageProvider.ListParts(ctx, objectKey, storageUploadID) ([]StoredPart, error)`：
-   S3 `ListParts` 分页（`PartNumberMarker`/`IsTruncated`）与 `memory` 实现。
-2. `POST /api/v1/uploads/{id}/parts/sign` 目前不记录已签名分片；若不做 ListParts，
-   另一种方案是在签名时写 `upload_part` 占位行，但该行没有 etag，`complete` 的
-   ON CONFLICT 语义会受影响，因此不采用。
-3. UI：上传队列持久化、恢复提示、分片级进度。当前控制台是单文件上传，恢复入口需要
-   先有队列模型。
-4. 多标签页互斥：同一会话被两个标签页恢复时，需要服务端 revision 或客户端锁；
-   当前 `BeginComplete` 已按 digest 幂等，但分片 PUT 并发写同一 part 的胜出者未定义。
+1. UI：当前控制台是**单文件**上传，恢复入口是单条待恢复提示，不是上传队列。队列化
+   需要先有队列模型与逐项状态机，属于后续产品增量。
+2. 多标签页互斥：同一会话被两个标签页恢复时，需要服务端 revision 或客户端锁；
+   `BeginComplete` 已按 digest 幂等，但分片 PUT 并发写同一 part 的胜出者未定义。
+   当前实现只保证**单标签页内**重复恢复被拒绝（`probing` 标志与 `abort` 检查），
+   不声称跨标签页安全。
+3. 对象存储侧的分页上界：`ListParts` 对超大分片数（>1000）依赖服务端翻页聚合；
+   真实 SeaweedFS 只验证了少量分片的路径，未做 >1000 分片的容量验证。
+4. 浏览器无法在刷新后重建 `File`，因此恢复必须由用户重新选择原文件；这是设计选择，
+   不是缺陷，但会阻止“完全无感的自动续传”。
 
 ## Rejected alternatives
 
@@ -139,8 +166,15 @@ GET /api/v1/uploads/{id}/parts
 
 ## Verification
 
-本迭代可验证的部分：
-
-- OpenAPI 契约比较（`tools/verify-openapi-compat`）确保现有上传端点未被破坏；
-- Web 单测覆盖错误分类、重试上界、取消、完成结果未知与清理失败不覆盖主错误；
-- 恢复协议本身在实现落地前只有设计评审，不宣称已实现。
+- OpenAPI 契约比较（`tools/verify-openapi-compat`）确保现有上传端点未被破坏；新增端点
+  是附加式变更，路由与文档的双向一致性由 `TestOpenAPIOperationsMatchRegisteredRoutes`
+  看护。
+- 服务端：`internal/postgres` 的 `TestRepositoryUploadPartsContract`、`internal/s3store`
+  的分页用例、`internal/server` 的只读端点用例（含 `no-store` 与跨租户 404）。
+- Web 单测覆盖错误分类、重试上界、取消、完成结果未知、清理失败不覆盖主错误，以及
+  本 ADR 的句柄与恢复规则（`upload-resume.test.ts`、`upload-manager.test.ts`、
+  `use-upload-task.test.ts`）。
+- Playwright：`web/e2e/live-stack.spec.ts` 在真实 PostgreSQL + SeaweedFS 上完成
+  multipart 上传与字节级下载校验；`CI / web-live` 在隔离依赖中运行它。
+- 边界：恢复流程没有跨刷新真实浏览器自动化的独立用例；上面的单测覆盖状态机，
+  真实栈用例覆盖数据面，但“刷新页面后点击继续”的完整 UI 路径仍依赖人工验证。

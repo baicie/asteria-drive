@@ -1,7 +1,8 @@
 /**
  * Browser-to-S3 multipart transport. This module never streams file bytes through the API server.
- * A session can be reconciled after an uncertain completion; cross-reload part resume is NOT supported
- * (it needs a server-side ListParts endpoint, which does not exist yet — see ADR-0027).
+ * A session can be reconciled after an uncertain completion, and a session that survived a reload
+ * can be resumed from the server's read-only part listing (ADR-0027). Resume state itself is the
+ * caller's business: this module only consumes an already-validated listing.
  */
 import {
   UploadError,
@@ -13,6 +14,12 @@ import {
   type UploadErrorContext,
   type UploadErrorKind,
 } from './upload-errors'
+import {
+  planResume,
+  type ListedPart,
+  type UploadPartsListing,
+  type UploadResumeHandle,
+} from './upload-resume'
 
 export { UploadError, UploadFailure } from './upload-errors'
 export type { UploadErrorKind, UploadErrorContext, UploadCleanupFailure } from './upload-errors'
@@ -43,6 +50,8 @@ export interface UploadGateway {
   complete(uploadId: string, parts: CompletedPart[]): Promise<void>
   read(uploadId: string): Promise<UploadSession>
   abort(uploadId: string): Promise<void>
+  /** Read-only part reconciliation for resume (ADR-0027). Never creates or mutates a session. */
+  parts(uploadId: string): Promise<UploadPartsListing>
 }
 
 export interface UploadOptions {
@@ -50,6 +59,8 @@ export interface UploadOptions {
   concurrency?: number
   onProgress?: (percent: number) => void
   onPhase?: (phase: 'uploading' | 'completing') => void
+  /** Fired once the control plane has created the session, before any part is sent. */
+  onSession?: (session: UploadSession) => void
 }
 
 /** Explicit, exported bounds so callers and tests can assert on them. */
@@ -250,6 +261,125 @@ async function abortQuietly(
   }
 }
 
+function expectedPartSize(fileSize: number, partSize: number, index: number): number {
+  return Math.min(partSize, fileSize - index * partSize)
+}
+
+function validateSession(session: UploadSession): number {
+  if (!Number.isInteger(session.part_size) || session.part_size < 1) {
+    throw new UploadError('invalid-response', '服务端返回了无效的分片大小', {
+      context: { uploadId: session.id },
+    })
+  }
+  return session.part_size
+}
+
+function partCountFor(fileSize: number, partSize: number, uploadId: string): number {
+  const partCount = Math.ceil(fileSize / partSize)
+  if (!Number.isSafeInteger(partCount) || partCount < 1 || partCount > UPLOAD_LIMITS.maxParts) {
+    throw new UploadError('invalid-response', '文件大小超出单次 Multipart 上传限制', {
+      context: { uploadId },
+    })
+  }
+  return partCount
+}
+
+/**
+ * Fill `completed` with the parts the server already holds, and re-upload the rest. A listed
+ * part is only trusted when its number is inside this file's part range and its size matches
+ * the slice the current file would produce: a re-selected file with the same name and size but
+ * different content at a part boundary cannot corrupt the object, because a mismatch in size
+ * (or a later ETag mismatch at completion) fails loudly instead of silently mixing bytes.
+ */
+async function uploadRemainingParts(
+  gateway: UploadGateway,
+  session: UploadSession,
+  file: File,
+  completed: (CompletedPart | undefined)[],
+  controller: AbortController,
+  options: UploadOptions,
+): Promise<void> {
+  const partCount = completed.length
+  let finished = completed.reduce<number>((count, part) => (part === undefined ? count : count + 1), 0)
+  if (finished > 0) options.onProgress?.(Math.round((finished / partCount) * 100))
+  const pending = completed.flatMap((part, index) => (part === undefined ? [index] : []))
+  const concurrency = Math.max(1, Math.min(UPLOAD_LIMITS.maxConcurrency, Math.floor(options.concurrency ?? UPLOAD_LIMITS.maxConcurrency)))
+  let nextPending = 0
+  let firstFailure: unknown = null
+
+  await Promise.all(Array.from({ length: Math.min(concurrency, pending.length) }, async () => {
+    while (!controller.signal.aborted) {
+      const slot = nextPending++
+      if (slot >= pending.length) return
+      const index = pending[slot]
+      try {
+        const part = await uploadPart(gateway, session, file, index, controller.signal)
+        completed[index] = part
+        finished += 1
+        options.onProgress?.(Math.round((finished / partCount) * 100))
+      } catch (error) {
+        if (firstFailure === null) firstFailure = error
+        controller.abort()
+        return
+      }
+    }
+  }))
+
+  if (firstFailure !== null) throw firstFailure
+  ensureNotAborted(controller.signal)
+}
+
+/**
+ * Replay completion with the SAME ordered part list. This is what makes a lost response
+ * recoverable: the control plane treats an identical payload as idempotent (ADR-0011), so
+ * retrying can only converge on committed.
+ */
+async function completeWithRetries(
+  gateway: UploadGateway,
+  uploadId: string,
+  completed: (CompletedPart | undefined)[],
+  options: UploadOptions,
+): Promise<void> {
+  const parts: CompletedPart[] = completed.map((part) => {
+    if (!part) throw new UploadError('invalid-response', '分片清单不完整，已停止提交', { context: { uploadId } })
+    return part
+  })
+  options.onPhase?.('completing')
+  for (let attempt = 0; attempt < UPLOAD_LIMITS.completionAttempts; attempt += 1) {
+    try {
+      await gateway.complete(uploadId, parts)
+      return
+    } catch (completeError) {
+      let remote: UploadSession | null = null
+      try {
+        remote = await gateway.read(uploadId)
+      } catch {
+        remote = null
+      }
+      if (remote?.status === 'committed') return
+      if (remote && ['failed', 'aborted', 'expired'].includes(remote.status)) {
+        throw new UploadError('storage-rejected', `上传已终止（服务端状态：${remote.status}）`, {
+          context: { uploadId, attempt: attempt + 1 },
+          cause: completeError,
+        })
+      }
+      // A 4xx from the control plane is a deterministic refusal, not an unknown outcome:
+      // retrying the identical payload cannot change it. 401/403 falls out here too, so
+      // an expired login stops immediately instead of reporting "unknown completion".
+      if (isApiRefusal(completeError)) {
+        throw new UploadError('non-retryable', `文件提交被拒绝：${(completeError as Error).message}`, {
+          context: { uploadId, attempt: attempt + 1 },
+          cause: completeError,
+        })
+      }
+      if (attempt === UPLOAD_LIMITS.completionAttempts - 1) {
+        throw new UploadCompletionUnknownError(uploadId)
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, 200 * (attempt + 1)))
+    }
+  }
+}
+
 export async function uploadMultipart(
   gateway: UploadGateway,
   file: File,
@@ -272,82 +402,17 @@ export async function uploadMultipart(
       throw classifyControlPlaneError(error)
     }
     ensureNotAborted(controller.signal)
-    if (!Number.isInteger(session.part_size) || session.part_size < 1) {
-      throw new UploadError('invalid-response', '服务端返回了无效的分片大小', {
-        context: { uploadId: session.id },
-      })
-    }
-    const partCount = Math.ceil(file.size / session.part_size)
-    if (!Number.isSafeInteger(partCount) || partCount < 1 || partCount > UPLOAD_LIMITS.maxParts) {
-      throw new UploadError('invalid-response', '文件大小超出单次 Multipart 上传限制', {
-        context: { uploadId: session.id },
-      })
-    }
+    const partSize = validateSession(session)
+    const partCount = partCountFor(file.size, partSize, session.id)
+    options.onSession?.(session)
 
     options.onPhase?.('uploading')
-    const concurrency = Math.max(1, Math.min(UPLOAD_LIMITS.maxConcurrency, Math.floor(options.concurrency ?? UPLOAD_LIMITS.maxConcurrency)))
-    const completed = new Array<CompletedPart>(partCount)
-    let nextIndex = 0
-    let finished = 0
-    let firstFailure: unknown = null
+    const completed = new Array<CompletedPart | undefined>(partCount).fill(undefined)
+    await uploadRemainingParts(gateway, session, file, completed, controller, options)
 
-    await Promise.all(Array.from({ length: Math.min(concurrency, partCount) }, async () => {
-      while (!controller.signal.aborted) {
-        const index = nextIndex++
-        if (index >= partCount) return
-        try {
-          const part = await uploadPart(gateway, session!, file, index, controller.signal)
-          completed[index] = part
-          finished += 1
-          options.onProgress?.(Math.round((finished / partCount) * 100))
-        } catch (error) {
-          if (firstFailure === null) firstFailure = error
-          controller.abort()
-          return
-        }
-      }
-    }))
-
-    if (firstFailure !== null) throw firstFailure
-    ensureNotAborted(controller.signal)
     completing = true
-    options.onPhase?.('completing')
-    // The Go control plane can safely replay completion with the SAME ordered parts:
-    // this handles the object_completed -> committed recovery path after a lost response.
     // Do not abort once completion may have reached the server.
-    for (let attempt = 0; attempt < UPLOAD_LIMITS.completionAttempts; attempt += 1) {
-      try {
-        await gateway.complete(session.id, completed)
-        return
-      } catch (completeError) {
-        let remote: UploadSession | null = null
-        try {
-          remote = await gateway.read(session.id)
-        } catch {
-          remote = null
-        }
-        if (remote?.status === 'committed') return
-        if (remote && ['failed', 'aborted', 'expired'].includes(remote.status)) {
-          throw new UploadError('storage-rejected', `上传已终止（服务端状态：${remote.status}）`, {
-            context: { uploadId: session.id, attempt: attempt + 1 },
-            cause: completeError,
-          })
-        }
-        // A 4xx from the control plane is a deterministic refusal, not an unknown outcome:
-        // retrying the identical payload cannot change it. 401/403 falls out here too, so
-        // an expired login stops immediately instead of reporting "unknown completion".
-        if (isApiRefusal(completeError)) {
-          throw new UploadError('non-retryable', `文件提交被拒绝：${(completeError as Error).message}`, {
-            context: { uploadId: session.id, attempt: attempt + 1 },
-            cause: completeError,
-          })
-        }
-        if (attempt === UPLOAD_LIMITS.completionAttempts - 1) {
-          throw new UploadCompletionUnknownError(session.id)
-        }
-        await new Promise<void>((resolve) => setTimeout(resolve, 200 * (attempt + 1)))
-      }
-    }
+    await completeWithRetries(gateway, session.id, completed, options)
   } catch (error) {
     // The primary error always wins. Cleanup is attempted only when no completion was
     // sent, and any cleanup failure is attached as metadata rather than thrown.
@@ -360,6 +425,94 @@ export async function uploadMultipart(
   } finally {
     options.signal?.removeEventListener('abort', externalAbort)
   }
+}
+
+export type ResumeOutcome =
+  | { outcome: 'committed' }
+  | { outcome: 'resumed'; uploadedParts: number; totalParts: number }
+
+/**
+ * Continue a upload session that outlived a page reload (ADR-0027).
+ *
+ * The caller has already read the handle from sessionStorage; this function asks the server
+ * what it actually holds and trusts the server's answer, not the handle. No part is re-sent
+ * once the session has reached completion: at that point only an idempotent completion replay
+ * is safe. A part failure deliberately does NOT abort the session — the whole point of resume
+ * is to keep durable parts for the next attempt.
+ */
+export async function resumeMultipart(
+  gateway: UploadGateway,
+  handle: UploadResumeHandle,
+  file: File,
+  options: UploadOptions = {},
+): Promise<ResumeOutcome> {
+  if (file.name !== handle.fileName || file.size !== handle.size || file.lastModified !== handle.lastModified) {
+    throw new UploadError('non-retryable', '所选文件与待恢复的上传不一致，请重新选择原文件或取消本次恢复', {
+      context: { uploadId: handle.uploadId },
+    })
+  }
+
+  const controller = new AbortController()
+  const externalAbort = () => controller.abort()
+  options.signal?.addEventListener('abort', externalAbort, { once: true })
+  if (options.signal?.aborted) controller.abort()
+
+  try {
+    ensureNotAborted(controller.signal)
+    let listing: UploadPartsListing
+    try {
+      listing = await gateway.parts(handle.uploadId)
+    } catch (error) {
+      throw classifyControlPlaneError(error)
+    }
+    ensureNotAborted(controller.signal)
+
+    const plan = planResume(listing, handle)
+    if (plan.action === 'finished') {
+      if (plan.reason === 'already-committed') return { outcome: 'committed' }
+      throw new UploadError('storage-rejected', `该上传已结束（服务端状态：${plan.status}），请重新选择文件上传`, {
+        context: { uploadId: handle.uploadId },
+      })
+    }
+
+    if (plan.action === 'complete') {
+      // `parts` here is the control plane's frozen completion list. It is the only payload
+      // that can be replayed without re-uploading anything.
+      options.onPhase?.('completing')
+      await completeWithRetries(gateway, handle.uploadId, plan.parts.map(toCompletedPart), options)
+      return { outcome: 'committed' }
+    }
+
+    const session: UploadSession = {
+      id: handle.uploadId,
+      status: plan.status,
+      // The server's part size is authoritative; the handle's copy is only a UI hint.
+      part_size: listing.part_size,
+      expected_size: handle.size,
+    }
+    const partSize = validateSession(session)
+    const partCount = partCountFor(file.size, partSize, session.id)
+    const completed = new Array<CompletedPart | undefined>(partCount).fill(undefined)
+    for (const listed of plan.uploaded) {
+      const index = listed.part_number - 1
+      if (index < 0 || index >= partCount) continue
+      if (!listed.etag) continue
+      if (listed.size !== expectedPartSize(file.size, partSize, index)) continue
+      completed[index] = toCompletedPart(listed)
+    }
+
+    options.onPhase?.('uploading')
+    await uploadRemainingParts(gateway, session, file, completed, controller, options)
+    await completeWithRetries(gateway, session.id, completed, options)
+    const uploadedParts = completed.filter((part) => part !== undefined).length
+    return { outcome: 'resumed', uploadedParts, totalParts: partCount }
+  } finally {
+    options.signal?.removeEventListener('abort', externalAbort)
+  }
+}
+
+function toCompletedPart(part: ListedPart): CompletedPart {
+  return { part_number: part.part_number, etag: part.etag, size: part.size }
 }
 
 /** User-facing message for any upload rejection, preserving structured detail when present. */

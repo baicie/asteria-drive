@@ -404,6 +404,35 @@ func (r *Repository) AbortUpload(ctx context.Context, identity drive.Identity, i
 	return session, nil
 }
 
+// UploadParts reads the parts frozen by BeginComplete. It first resolves the session so a
+// foreign tenant gets 404 rather than an empty list that would look like "nothing uploaded".
+func (r *Repository) UploadParts(ctx context.Context, identity drive.Identity, id string) ([]drive.CompletedPart, error) {
+	if _, err := scanUpload(r.pool.QueryRow(ctx, `
+		SELECT `+uploadColumns+` FROM upload_session WHERE tenant_id=$1 AND id=$2`, identity.TenantID, id)); err != nil {
+		return nil, mapError(err, drive.CodeInternal, "could not read upload")
+	}
+	rows, err := r.pool.Query(ctx, `
+		SELECT part_number,etag,checksum_algorithm,checksum_value,size_bytes
+		FROM upload_part WHERE tenant_id=$1 AND upload_session_id=$2
+		ORDER BY part_number`, identity.TenantID, id)
+	if err != nil {
+		return nil, mapError(err, drive.CodeInternal, "could not list upload parts")
+	}
+	defer rows.Close()
+	parts := make([]drive.CompletedPart, 0)
+	for rows.Next() {
+		var part drive.CompletedPart
+		if err := rows.Scan(&part.PartNumber, &part.ETag, &part.Checksum.Algorithm, &part.Checksum.Value, &part.Size); err != nil {
+			return nil, mapError(err, drive.CodeInternal, "could not read upload part")
+		}
+		parts = append(parts, part)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, mapError(err, drive.CodeInternal, "could not list upload parts")
+	}
+	return parts, nil
+}
+
 func (r *Repository) MarkUploadCleanupComplete(ctx context.Context, identity drive.Identity, id string, now time.Time) error {
 	tag, err := r.pool.Exec(ctx, `
 		UPDATE upload_session SET cleanup_status='complete',maintenance_not_before=NULL,

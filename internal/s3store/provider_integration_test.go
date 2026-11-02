@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -89,6 +90,26 @@ func TestProviderSeaweedFSContract(t *testing.T) {
 			ETag:       etag,
 			Size:       int64(len(body)),
 		})
+	}
+
+	// ADR-0027 resume support: before completion, a real ListParts must report exactly the
+	// parts storage accepted. This is the only place the SDK paging path is exercised
+	// against a real S3 implementation.
+	listedBefore, err := provider.ListParts(ctx, key, uploadID)
+	if err != nil {
+		t.Fatalf("list parts before completion: %v", err)
+	}
+	if len(listedBefore) != len(completedParts) {
+		t.Fatalf("ListParts returned %d parts, want %d: %+v", len(listedBefore), len(completedParts), listedBefore)
+	}
+	for index, part := range listedBefore {
+		want := completedParts[index]
+		if part.PartNumber != want.PartNumber || part.Size != int64(len(partBodies[index])) {
+			t.Fatalf("listed part %d = %+v, want number=%d size=%d", index, part, want.PartNumber, len(partBodies[index]))
+		}
+		if part.ETag == "" || strings.Trim(part.ETag, `"`) != strings.Trim(want.ETag, `"`) {
+			t.Fatalf("listed part %d ETag = %q, want %q", index, part.ETag, want.ETag)
+		}
 	}
 
 	object, err := provider.CompleteMultipart(ctx, key, uploadID, completedParts)

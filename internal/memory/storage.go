@@ -145,6 +145,24 @@ func (s *Storage) CompleteMultipart(_ context.Context, key, uploadID string, par
 	return info, nil
 }
 
+func (s *Storage) ListParts(_ context.Context, key, uploadID string) ([]drive.StoredPart, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	upload, ok := s.uploads[uploadID]
+	if !ok || upload.key != key {
+		return nil, drive.E(drive.CodeNotFound, "multipart upload was not found")
+	}
+	parts := make([]drive.StoredPart, 0, len(upload.parts))
+	for partNumber, data := range upload.parts {
+		hash := sha256.Sum256(data)
+		parts = append(parts, drive.StoredPart{
+			PartNumber: partNumber, ETag: `"` + hex.EncodeToString(hash[:16]) + `"`, Size: int64(len(data)),
+		})
+	}
+	sort.Slice(parts, func(i, j int) bool { return parts[i].PartNumber < parts[j].PartNumber })
+	return parts, nil
+}
+
 func (s *Storage) AbortMultipart(_ context.Context, key, uploadID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

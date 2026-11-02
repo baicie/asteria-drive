@@ -92,6 +92,9 @@ type Repository interface {
 	MarkObjectCompleted(context.Context, Identity, string, ObjectInfo, time.Time) (UploadSession, error)
 	CommitUpload(context.Context, CommitUploadCommand) (CompleteResult, bool, error)
 	AbortUpload(context.Context, Identity, string, UploadStatus, time.Time) (UploadSession, error)
+	// UploadParts returns the completion parts persisted for a session. It returns an
+	// empty slice when completion has not been requested yet.
+	UploadParts(context.Context, Identity, string) ([]CompletedPart, error)
 	MarkUploadCleanupComplete(context.Context, Identity, string, time.Time) error
 	ExpiredUploads(context.Context, time.Time, int) ([]UploadSession, error)
 	ClaimUploadsForMaintenance(context.Context, string, time.Time, time.Time, time.Time, int) ([]UploadMaintenanceClaim, error)
@@ -115,6 +118,9 @@ type StorageProvider interface {
 	SignUploadPart(context.Context, string, string, int, Checksum, time.Duration) (SignedPart, error)
 	CompleteMultipart(context.Context, string, string, []CompletedPart) (ObjectInfo, error)
 	AbortMultipart(context.Context, string, string) error
+	// ListParts returns the parts object storage has accepted for a multipart upload.
+	// It must be read-only: it never signs, mutates, or completes anything.
+	ListParts(context.Context, string, string) ([]StoredPart, error)
 	StatObject(context.Context, string) (ObjectInfo, error)
 	SignDownload(context.Context, string, string, time.Duration) (SignedDownload, error)
 	DeleteObject(context.Context, string) error

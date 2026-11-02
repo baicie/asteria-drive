@@ -18,6 +18,7 @@ const token = ref(localStorage.getItem('asteria.token') ?? '')
 const tenant = ref<Tenant | null>(null)
 const folderName = ref('')
 const fileInput = ref<HTMLInputElement | null>(null)
+const resumeInput = ref<HTMLInputElement | null>(null)
 const busy = useBusy()
 // Top-level binding so Vue unwraps the computed in templates; `busy.any` would not.
 const busyAny = busy.any
@@ -76,7 +77,11 @@ const {
   progress: uploadProgress,
   phase: uploadPhase,
   cancelling: uploadCancelling,
+  pendingResume,
   start: startUpload,
+  resume: resumeUpload,
+  discoverResume,
+  dismissResume,
   cancel: cancelUpload,
   cancelForLogout: cancelUploadForLogout,
 } = useUploadTask({
@@ -88,6 +93,8 @@ const {
   refreshDirectory,
   notify: setNotice,
   clearNotice,
+  tenantId: () => tenant.value?.id ?? '',
+  isParentVisible: (parentId) => currentDirectory.value?.id === parentId,
 })
 
 function onTokenChange(event: Event) {
@@ -132,6 +139,9 @@ async function connect() {
     if (!loaded) throw new Error('根目录读取失败，连接未完成')
     tenant.value = result
     localStorage.setItem('asteria.token', token.value)
+    // Only after the tenant is live: the probe needs an authenticated identity, and an
+    // offer shown before the directory exists would point at a parent the user cannot see.
+    await discoverResume()
   } catch (error) {
     if (generation !== connectionGeneration) return
     tenant.value = null
@@ -363,6 +373,23 @@ async function uploadFile(event: Event) {
   await startUpload(file)
 }
 
+async function resumeFile(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file) return
+  await resumeUpload(file)
+}
+
+/**
+ * The browser cannot restore a File after a reload, so resuming asks the user to re-select
+ * the original file. That is also the identity check: the transport refuses a file whose
+ * name, size or lastModified differs from the handle.
+ */
+function chooseResumeFile() {
+  resumeInput.value?.click()
+}
+
 async function downloadFile(item: Node) {
   const key = `download:${item.id}`
   // A double click must not open two tabs or issue two authorizations.
@@ -520,6 +547,21 @@ onMounted(() => {
         </div>
 
         <div v-if="notice" class="notice" :class="notice.kind" role="status">{{ notice.text }}</div>
+
+        <div v-if="viewMode === 'files' && pendingResume" class="resume-banner" role="status">
+          <div class="resume-copy">
+            <strong>检测到未完成的上传</strong>
+            <span>
+              「{{ pendingResume.handle.fileName }}」（{{ formatSize(pendingResume.handle.size) }}）
+              刷新前尚未完成，可继续上传到「{{ pendingResume.handle.parentName }}」。重新选择原文件以续传已上传的分片。
+            </span>
+          </div>
+          <input ref="resumeInput" type="file" hidden @change="resumeFile" />
+          <div class="resume-actions">
+            <zw-button variant="primary" size="sm" :disabled="busyAny" @click="chooseResumeFile">选择文件继续</zw-button>
+            <zw-button variant="secondary" size="sm" :disabled="busyAny" @click="dismissResume">放弃恢复</zw-button>
+          </div>
+        </div>
 
         <div v-if="viewMode === 'files'" class="file-card">
           <div class="file-card-header">

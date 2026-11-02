@@ -472,6 +472,11 @@ type FileVersion struct {
 
 type UploadStatus string
 
+// MaxUploadParts is the S3 multipart hard limit. It bounds both the completion payload
+// and a part listing so a resumed client can never be told to download more parts than
+// storage will accept in a single completion request.
+const MaxUploadParts = 10000
+
 const (
 	UploadCreated         UploadStatus = "created"
 	UploadUploading       UploadStatus = "uploading"
@@ -524,6 +529,30 @@ type CompletedPart struct {
 	ETag       string   `json:"etag"`
 	Checksum   Checksum `json:"checksum,omitempty"`
 	Size       int64    `json:"size,omitempty"`
+}
+
+// StoredPart is one part that object storage has durably accepted for a multipart
+// upload. It is the read-only source for cross-reload resume (ADR-0027): it carries no
+// credential and no signed URL, only the identity of a part that can be re-signed.
+type StoredPart struct {
+	PartNumber int
+	ETag       string
+	Size       int64
+}
+
+// UploadPartListing is the merged view of the parts a resumed client already uploaded.
+// The control plane and object storage are both consulted because they cover different
+// windows: storage knows every accepted part, while the control plane only records parts
+// after completion has been requested.
+type UploadPartListing struct {
+	UploadID string
+	Status   UploadStatus
+	PartSize int64
+	Parts    []StoredPart
+	// Complete reports whether the listing is the full set of parts for the declared
+	// size. It is false when more than MaxUploadParts have been observed, in which case
+	// the caller must not treat the listing as authoritative.
+	Complete bool
 }
 
 type ObjectInfo struct {

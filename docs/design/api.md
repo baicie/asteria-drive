@@ -298,12 +298,33 @@ SHA-256 值使用标准 Base64 编码的 32-byte 摘要。后端返回并验证�
 
 幂等取消未完成会话并尽力 Abort Multipart；对已经持久化为 `failed` 且对象曾完成的会话，重复取消会重试精确对象 Delete。首次和重复成功都返回 `204`。`completing`、`object_completed` 和已提交会话不被公开取消，返回 `409 invalid_state`。过期维护任务使用同一领域操作。
 
-### 跨刷新恢复（设计，未实现）
+### 跨刷新恢复
 
-跨刷新恢复的协议、客户端持久化内容与新增只读端点
-`GET /api/v1/uploads/{id}/parts` 见 [ADR-0027](../adr/0027-cross-reload-upload-resume.md)。
-该端点**尚未实现**，也不在本文的已实现路由中。当前客户端只支持会话内重试与完成后
-对账；禁止通过持久化 presigned URL、Token 或 S3 凭据实现恢复。
+### `GET /api/v1/uploads/{id}/parts`
+
+只读分片清单，需要 `files:read` 且会话属于当前 tenant；只返回 `part_number`、`etag`、
+`size` 与会话状态，不签发 URL、不改变状态、不返回 bucket/object key/storage upload id。
+响应带 `Cache-Control: no-store`。
+
+```json
+{
+  "data": {
+    "upload_id": "…",
+    "status": "uploading",
+    "part_size": 8388608,
+    "parts": [{ "part_number": 1, "etag": "…", "size": 8388608 }],
+    "complete": true
+  }
+}
+```
+
+`complete=false` 表示存储侧分页被截断，客户端必须重新上传全部分片而不是相信列出的子集。
+两层来源（控制面 `upload_part` 优先，存储侧 `ListParts` 补齐）与完整恢复流程见
+[ADR-0027](../adr/0027-cross-reload-upload-resume.md)。
+
+Web 客户端只持久化非敏感会话句柄（`sessionStorage`，退出登录清除），恢复时重新鉴权并
+重新读取分片清单；禁止通过持久化 presigned URL、Token 或 S3 凭据实现恢复。会话进入
+`completing`/`object_completed` 后只重放完成请求，不再重传分片。
 
 ## 12. 下载授权
 
