@@ -10,6 +10,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "test:e2e": "playwright test",
+    "test:unit": "vitest run",
+    "test:unit:watch": "vitest",
     "typecheck": "vue-tsc --noEmit"
   },
   "dependencies": {
@@ -24,8 +26,11 @@
     "@playwright/test": "^1.63.0",
     "@types/node": "^24.0.0",
     "@vitejs/plugin-vue": "^6.0.7",
+    "@vitest/coverage-v8": "^5.0.5",
+    "jsdom": "^26.1.0",
     "typescript": "^6.0.3",
     "vite": "^8.3.5",
+    "vitest": "^5.0.5",
     "vue-tsc": "^3.3.11"
   },
   "engines": {
