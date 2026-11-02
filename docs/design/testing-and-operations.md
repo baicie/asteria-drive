@@ -99,6 +99,29 @@ Multipart ETag 不能被测试误判为 MD5。供应商不支持完整 Checksum 
 
 优先 Fuzz 名称、Cursor、JSON、ETag/Checksum、Part 列表和 `Content-Disposition`。执行 `go test -race ./...`；任何跨租户或单提交竞态阻断 MVP。
 
+### 2.7 Web 控制台单元测试
+
+`web/` 使用 Vitest（jsdom 环境）与 V8 覆盖率，测试文件与被测模块同目录，命名为
+`*.test.ts`，由 `npm run test:unit` 执行。Playwright 只负责浏览器流程；两者分工如下：
+
+| 层 | 负责 | 不负责 |
+| --- | --- | --- |
+| Vitest | 纯逻辑与组合式函数：错误分类、重试上界、取消、并发/竞态、分页游标、URL 校验、`busy` 键控 | 真实浏览器弹窗、真实网络 |
+| Playwright（fixture） | 点击到渲染的完整流程、`window.open` 语义（含 stub 未覆盖的浏览器行为）、失败提示 | 真实存储与数据库 |
+| Playwright（live，可选） | 真实 PostgreSQL + SeaweedFS + 真实预签名 PUT/GET 的字节级校验 | CI 默认执行 |
+
+必须保持的负向用例：
+
+- 上传：可重试 5xx 重签后成功、不可重试 4xx 立即失败、401/403 授权失败、过期签名
+  重试、重试次数耗尽、取消、完成结果未知、清理失败不覆盖主错误。
+- 下载：`javascript:`/`data:`/`blob:`/`file:` 拒绝、弹窗被拦截、窗口被用户关闭、
+  授权失败关闭空白页、双击不重复授权。
+- 目录与回收站：刷新丢弃旧响应、重复游标报错、跨目录的迟到分页响应被丢弃。
+- 共享忙碌状态：任何并发操作结束都不得重新启用仍在进行中的另一个操作。
+
+`npm run test:unit -- --coverage` 输出的 lcov/json 摘要随 CI 证据保留，数值不在仓库里
+设置硬门槛：当前策略是先建立覆盖基线，避免为达标而写无断言测试。
+
 ## 3. 质量门禁
 
 每次提交：
@@ -118,6 +141,7 @@ PostgreSQL adapter integration tests
 SeaweedFS StorageProvider contract tests
 HTTP/S3 end-to-end tests
 OpenAPI syntax/route coverage check
+cd web && npm run typecheck && npm run test:unit && npm run build && npm run test:e2e
 ```
 
 不得删除失败测试、放宽租户断言或跳过迁移换取绿灯。外部依赖测试可以用环境变量显式启用，但 P4 验收必须实际运行并归档版本/命令。
@@ -176,6 +200,33 @@ P4 的 Compose 环境最小包含 PostgreSQL 和 SeaweedFS S3。API 可在宿主
 5. 只清理明确的测试 Bucket/数据库；失败时保留诊断但不保留 Secret。
 
 测试清理目标必须由固定测试前缀和随机 run ID 双重限制，不能指向生产。
+
+### 6.1 真实浏览器 + 真实依赖的上传/下载验证
+
+`web/e2e/live-stack.spec.ts` 是可选的第三层：它不用 route fixture，而是让 Chromium 直接
+对真实 API、真实 PostgreSQL、真实 SeaweedFS 完成“上传 8 MiB + 137 字节 → 目录出现
+文件 → 预签名下载 → 字节逐一相等 → 回收清理”。默认跳过，只有同时提供下面两个变量
+才运行：
+
+| 变量 | 作用 |
+| --- | --- |
+| `ASTERIA_E2E_API` | 控制面地址；同时让 `vite preview` 把 `/api` 代理到该地址，保持同源 |
+| `ASTERIA_E2E_TOKEN` | `trusted-dev` 模式下的开发 Token |
+
+本地步骤（依赖与 API 都在回环地址）：
+
+```powershell
+docker compose -f compose.yaml up -d --wait
+go build -o $env:TEMP/asteria-migrate.exe ./cmd/asteria-migrate
+ASTERIA_DATABASE_URL='postgres://asteria:...@127.0.0.1:15432/asteria?sslmode=disable' $env:TEMP/asteria-migrate.exe
+go build -o $env:TEMP/asteria-server.exe ./cmd/asteria-server
+# 以 trusted-dev + postgres + s3 启动 API（见第 4 节配置表）
+cd web; $env:ASTERIA_E2E_API='http://127.0.0.1:18091'; $env:ASTERIA_E2E_TOKEN='...'; npm run test:e2e
+```
+
+该用例不进 CI 默认门禁：CI 的 web job 不启动 Docker，而启动真实依赖会改变现有
+`CI / web` 的 secret-free、无 Docker 边界。若要在 CI 启用，应新增独立 job，并先
+评审其运行时与 flake 风险。
 
 ## 7. 可观测性
 

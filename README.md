@@ -61,17 +61,27 @@ Invoke-RestMethod http://127.0.0.1:18080/readyz
 .\scripts\smoke-local.ps1
 ```
 
-网页控制台的类型检查、生产构建和浏览器级流程测试：
+网页控制台的类型检查、单元测试、生产构建和浏览器级流程测试：
 
 ```powershell
 Push-Location web
 npm ci
 npm run typecheck
+npm run test:unit
 npm run build
 npx playwright install chromium
 npm run test:e2e
 Pop-Location
 ```
+
+`npm run test:unit` 使用 Vitest（jsdom），覆盖上传错误分类、重试上界、下载 URL 校验、
+分页/竞态和并发按钮状态；`-- --coverage` 输出 lcov 与 json 摘要。CI 的 `CI / web`
+在构建前运行单元测试，并始终上传 `web-evidence`（JUnit、覆盖率、Playwright HTML
+报告与 trace）。
+
+若要让浏览器测试直连真实 API + PostgreSQL + SeaweedFS（而不是 route fixture），额外
+提供 `ASTERIA_E2E_API` 与 `ASTERIA_E2E_TOKEN`；该用例默认跳过，详见
+[测试与运行设计](docs/design/testing-and-operations.md) 第 6.1 节。
 
 停止容器但保留本地命名卷：
 

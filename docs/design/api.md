@@ -298,6 +298,13 @@ SHA-256 值使用标准 Base64 编码的 32-byte 摘要。后端返回并验证�
 
 幂等取消未完成会话并尽力 Abort Multipart；对已经持久化为 `failed` 且对象曾完成的会话，重复取消会重试精确对象 Delete。首次和重复成功都返回 `204`。`completing`、`object_completed` 和已提交会话不被公开取消，返回 `409 invalid_state`。过期维护任务使用同一领域操作。
 
+### 跨刷新恢复（设计，未实现）
+
+跨刷新恢复的协议、客户端持久化内容与新增只读端点
+`GET /api/v1/uploads/{id}/parts` 见 [ADR-0027](../adr/0027-cross-reload-upload-resume.md)。
+该端点**尚未实现**，也不在本文的已实现路由中。当前客户端只支持会话内重试与完成后
+对账；禁止通过持久化 presigned URL、Token 或 S3 凭据实现恢复。
+
 ## 12. 下载授权
 
 ### `POST /api/v1/files/{id}/download-authorizations`
@@ -315,6 +322,14 @@ SHA-256 值使用标准 Base64 编码的 32-byte 摘要。后端返回并验证�
 ```
 
 `Content-Disposition` 使用安全编码的显示名。Range 由对象存储处理；API 不代理正文。目录、回收/清理中、未提交和跨租户资源返回 `404`。
+
+客户端打开方式（Web 控制台）：点击处理函数内**同步**打开空白窗口，再等待授权响应，
+最后把窗口导航到签名 URL。浏览器只允许用户激活期间的 `window.open`，在 `await` 之后
+打开会被弹窗拦截。导航前客户端只接受 `http:`/`https:` 绝对 URL 或同源相对路径；
+`javascript:`、`data:`、`blob:`、`file:` 和带内嵌凭据的 URL 一律拒绝，避免开放重定向与
+脚本注入。不要给 `window.open` 传 `noopener` 特性：遵守该特性的浏览器会返回 `null`，
+使“先开后导航”策略误判为弹窗被拦截；应在拿到句柄后显式设置 `popup.opener = null`。
+签名 URL 是 bearer 凭据，页面与反向代理都不得让它进入 `Referer`、日志或缓存。
 
 ## 13. 回收站
 

@@ -32,6 +32,7 @@
 | [0024](0024-staging-postgresql-private-pki.md) | Staging PostgreSQL private PKI, TLS verification, and sanitized evidence | Accepted |
 | [0025](0025-go-toolchain-security-refresh-2026-10.md) | 2026-10 Go toolchain and dependency security refresh | Accepted |
 | [0026](0026-openapi-checksum-variants.md) | OpenAPI checksum variant clarification | Proposed |
+| [0027](0027-cross-reload-upload-resume.md) | Cross-reload upload resume protocol and additive ListParts endpoint | Proposed |
 
 ## Conventions
 
