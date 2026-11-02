@@ -12,11 +12,11 @@ import (
 const (
 	sbomAction             = "anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610"
 	downloadArtifactAction = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
-	attestProvenanceAction = "actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373"
+	attestProvenanceAction = "actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8"
 	setupQEMUAction        = "docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8"
 	setupBuildxAction      = "docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e"
 	registryLoginAction    = "docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9"
-	buildPushAction        = "docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a"
+	buildPushAction        = "docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc"
 )
 
 type releaseWorkflowDocument struct {
