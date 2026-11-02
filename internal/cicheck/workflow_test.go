@@ -191,7 +191,7 @@ func TestCIWorkflowTrustBoundaryAndStableJobs(t *testing.T) {
 			},
 		},
 		"web": {
-			name: "CI / web", timeoutMinutes: 10,
+			name: "CI / web", timeoutMinutes: 20,
 			actions: []string{checkoutAction, setupNodeAction},
 			commands: []string{
 				"npm ci --ignore-scripts",
