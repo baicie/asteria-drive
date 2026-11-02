@@ -56,6 +56,9 @@ KMS 或 secret-controller 轮换、公网 TLS ingress、生产监控/SIEM 与外
   只发一次、重复恢复被拒绝、文件身份不符时不发请求。
 - 开发 Token 与生产 OIDC 的边界记录于
   [development-vs-oidc-auth](security/development-vs-oidc-auth.md)。
+- 本地命令、集成套件（22/22）与真实栈恢复用例的证据见
+  [web-transfer-resume-20261102](operations/evidence/web-transfer-resume-20261102.md)，
+  包含首次推送 `CI / quality` 失败（gofmt 对齐）与修正记录。
 
 2026-10-22，本地复核 `go test ./...`、`go vet ./...`、`go build ./...`、`web/` 的
 `vue-tsc`/Vite production build、GitHub Actions workflow lint、OpenAPI lint、
