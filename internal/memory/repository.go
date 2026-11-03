@@ -39,7 +39,7 @@ func NewRepository() *Repository {
 		members: make(map[string]drive.PrincipalRecord), nodes: make(map[string]drive.Node),
 		blobs: make(map[string]drive.Blob), versions: make(map[string]drive.FileVersion),
 		uploads: make(map[string]drive.UploadSession), parts: make(map[string][]drive.CompletedPart),
-		partSignatures: make(map[string]map[int]drive.PartSignature),
+		partSignatures:    make(map[string]map[int]drive.PartSignature),
 		idempotency:       make(map[string]drive.IdempotencyRecord),
 		uploadMaintenance: make(map[string]maintenanceLease), recycleMaintenance: make(map[string]maintenanceLease),
 		invitations: make(map[string]drive.TenantInvitation), invitationTokens: make(map[string]string),
