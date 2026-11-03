@@ -79,7 +79,7 @@ jobs:
           selected_image=""
           probe_exit=1
           run_probe() {
-            local candidate="$1" candidate_sha="$2"
+            local candidate="$1" candidate_sha="$2" evidence_code=0
             set +e
             ssh \
               -F none -i "$RUNNER_TEMP/ssh/key" -p "$DEPLOY_PORT" \
@@ -92,6 +92,119 @@ jobs:
             local code="$?"
             set -e
             printf '%s probe_exit=%s\n' "$candidate" "$code" >>"$RUNNER_TEMP/staging-monitor-attempts.log"
+            PROBE_EVIDENCE_DIR="$evidence_dir" PROBE_CANDIDATE="$candidate" \
+            PROBE_EXIT_CODE="$code" PROBE_EVIDENCE_PATH="$raw_evidence" \
+            PROBE_STDERR_PATH="$raw_stderr" PROBE_DEPLOY_HOST="${DEPLOY_HOST:-}" \
+              python3 - <<'PY' || evidence_code="$?"
+          # --- asteria-probe-evidence:v1 ---
+          # Record per-attempt digests plus a bounded, redacted excerpt of the remote
+          # stderr. Raw remote output stays deleted: an SSH or dispatcher failure can echo
+          # connection material. Only a digest used to be retained, which left the
+          # 2026-11-01..03 staging failures undiagnosable (see
+          # docs/operations/evidence/phase-s1-staging-20261103.md).
+          import hashlib
+          import json
+          import os
+          import re
+
+          MAX_LINES = 40
+          MAX_LINE_CHARS = 400
+          MAX_TOTAL_LINES = 200
+
+          REDACTIONS = (
+              (re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://)[^\s/@]+@"), r"\1<redacted>@"),
+              (re.compile(r"(?i)\b(password|passwd|token|secret|apikey|api_key|access_key)"
+                          r"\s*[=:]\s*\S+"), r"\1=<redacted>"),
+              (re.compile(r"-----BEGIN[^-]*-----.*?-----END[^-]*-----", re.S), "<redacted-pem>"),
+              (re.compile(r"-----BEGIN[^-]*-----"), "<redacted-pem>"),
+              (re.compile(r"(?i)(--?(?:password|token|secret)[= ])\S+"), r"\1<redacted>"),
+              (re.compile(r"\b\d{1,3}(?:\.\d{1,3}){3}\b"), "<redacted-ip>"),
+              (re.compile(r"\b[0-9a-fA-F]{32,}\b"), "<redacted-token>"),
+              (re.compile(r"\b(?=[A-Za-z0-9+/]*[A-Z])(?=[A-Za-z0-9+/]*[a-z])"
+                          r"(?=[A-Za-z0-9+/]*[0-9])[A-Za-z0-9+/]{32,}={0,2}\b"), "<redacted-token>"),
+          )
+
+
+          def redact(text):
+              host = os.environ.get("PROBE_DEPLOY_HOST", "")
+              if host:
+                  # The SSH target is a staging secret; it must never reach an artifact.
+                  text = text.replace(host, "<redacted-host>")
+              for pattern, replacement in REDACTIONS:
+                  text = pattern.sub(replacement, text)
+              return text
+
+
+          def describe(path):
+              if not os.path.isfile(path):
+                  return {"present": False, "size_bytes": 0, "sha256": None}
+              digest = hashlib.sha256()
+              size = 0
+              with open(path, "rb") as handle:
+                  for chunk in iter(lambda: handle.read(65536), b""):
+                      size += len(chunk)
+                      digest.update(chunk)
+              return {"present": True, "size_bytes": size, "sha256": digest.hexdigest()}
+
+
+          def excerpt(path):
+              if not os.path.isfile(path):
+                  return []
+              with open(path, "rb") as handle:
+                  raw = handle.read(64 * 1024)
+              lines = []
+              for line in raw.decode("utf-8", "replace").splitlines():
+                  line = line.rstrip()
+                  if not line:
+                      continue
+                  if len(line) > MAX_LINE_CHARS:
+                      line = line[:MAX_LINE_CHARS] + "...<truncated>"
+                  lines.append(redact(line))
+                  if len(lines) == MAX_LINES:
+                      lines.append("...<more lines omitted>")
+                      break
+              return lines
+
+
+          candidate = os.environ["PROBE_CANDIDATE"]
+          if not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", candidate):
+              raise SystemExit(f"probe candidate is invalid: {candidate}")
+          raw_exit = os.environ["PROBE_EXIT_CODE"]
+          if not re.fullmatch(r"-?[0-9]{1,3}", raw_exit):
+              raise SystemExit(f"probe exit code is invalid: {raw_exit}")
+
+          evidence_dir = os.environ["PROBE_EVIDENCE_DIR"]
+          report = {
+              "schema": "asteria-drive-staging-probe-attempt/v1",
+              "candidate": candidate,
+              "exit_code": int(raw_exit),
+              "evidence": describe(os.environ["PROBE_EVIDENCE_PATH"]),
+              "stderr": describe(os.environ["PROBE_STDERR_PATH"]),
+          }
+          with open(os.path.join(evidence_dir, f"attempt-{candidate}.json"), "x", encoding="utf-8") as handle:
+              json.dump(report, handle, indent=2, sort_keys=True)
+              handle.write("\n")
+
+          lines = excerpt(os.environ["PROBE_STDERR_PATH"])
+          excerpt_path = os.path.join(evidence_dir, "remote-stderr-excerpt.txt")
+          if lines:
+              existing = 0
+              if os.path.exists(excerpt_path):
+                  with open(excerpt_path, encoding="utf-8") as handle:
+                      existing = sum(1 for _ in handle)
+              room = MAX_TOTAL_LINES - existing
+              if room > 1:
+                  with open(excerpt_path, "a", encoding="utf-8") as handle:
+                      handle.write(f"# {candidate} exit={raw_exit}\n")
+                      for line in lines[: room - 1]:
+                          handle.write(line + "\n")
+                      if len(lines) > room - 1:
+                          handle.write("...<more lines omitted>\n")
+          # --- end asteria-probe-evidence ---
+          PY
+            if [[ "$evidence_code" -ne 0 ]]; then
+              echo "probe evidence helper failed with exit $evidence_code" >&2
+            fi
             return "$code"
           }
           fallback_allowed() {
@@ -139,6 +252,25 @@ jobs:
           fi
           if [[ -z "$selected_version" ]]; then
             printf 'no approved staging monitor probe succeeded without masking a real failure\n' >&2
+            # Name the last phase the remote probe reached. The evidence JSON is
+            # validated below, but this line has to be useful even when validation
+            # never runs, so it only echoes two fixed-shape fields.
+            python3 - "$raw_evidence" <<'PY' || true
+          import json
+          import re
+          import sys
+          try:
+              with open(sys.argv[1], encoding="utf-8") as handle:
+                  report = json.load(handle)
+          except (OSError, ValueError):
+              raise SystemExit(0)
+          status = report.get("status")
+          phase = report.get("last_phase")
+          if isinstance(status, str) and re.fullmatch(r"[a-z-]{1,32}", status):
+              print(f"remote probe status: {status}")
+          if isinstance(phase, str) and re.fullmatch(r"[a-z-]{1,32}", phase):
+              print(f"remote probe last phase: {phase}")
+          PY
             probe_exit=1
           fi
           cp "$RUNNER_TEMP/staging-monitor-attempts.log" "$evidence_dir/probe-attempts.txt" 2>/dev/null || true
