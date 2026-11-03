@@ -69,6 +69,11 @@ button { cursor: pointer; }
 .notice { margin: 10px 0; padding: 10px 13px; border-radius: 8px; font-size: 12px; }
 .notice.success { color: #177245; background: #eaf8f0; }
 .notice.error { color: #ad2e2e; background: #fff0f0; }
+.resume-banner { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin: 10px 0; padding: 12px 14px; border: 1px solid #cfdbf4; border-radius: 10px; background: #f4f7ff; }
+.resume-copy { display: flex; flex-direction: column; gap: 4px; min-width: 240px; flex: 1 1 320px; }
+.resume-copy strong { color: #2f4380; font-size: 12px; }
+.resume-copy span { color: #59677e; font-size: 12px; line-height: 1.5; }
+.resume-actions { display: flex; gap: 8px; }
 .page-more { display: flex; justify-content: center; padding: 15px; border-top: 1px solid #eef1f5; background: #fcfdff; }
 .page-more button { border: 1px solid #dbe4f3; border-radius: 8px; padding: 8px 16px; color: #30447f; background: #fff; font-size: 12px; font-weight: 600; }
 .page-more button:hover:not(:disabled) { border-color: #8198d5; background: #f3f6ff; }

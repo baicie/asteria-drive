@@ -4,23 +4,26 @@
       "package": "github.com/baicie/asteria-drive/internal/postgres",
       "tests": [
         "TestMigrateIsIdempotent",
-        "TestRepositoryOIDCMemberContract",
-        "TestRepositoryMemberLifecycleContract",
+        "TestRepositoryAuditRowsAreAppendOnly",
+        "TestRepositoryCommitRollbackAndPurgeContract",
+        "TestRepositoryConcurrentMutualDirectoryMovesPreserveAcyclicTree",
+        "TestRepositoryConcurrentNestedRecycleRootsRemainIndependent",
+        "TestRepositoryConcurrentNormalizedNameCreateHasSingleWinner",
+        "TestRepositoryConcurrentParentRecycleDoesNotCreateActiveOrphans",
+        "TestRepositoryDirectorySubtreeRecycleRestoreContract",
+        "TestRepositoryFailUploadCompletionContract",
+        "TestRepositoryGovernanceACLAndAuditContract",
         "TestRepositoryIdempotencyClaimContract",
         "TestRepositoryIdempotencyCreationContract",
-        "TestRepositoryGovernanceACLAndAuditContract",
-        "TestRepositoryAuditRowsAreAppendOnly",
+        "TestRepositoryMemberLifecycleContract",
         "TestRepositoryNamespaceAndUploadContract",
-        "TestRepositoryFailUploadCompletionContract",
-        "TestRepositoryCommitRollbackAndPurgeContract",
         "TestRepositoryNestedRecycleRootsRemainIndependent",
-        "TestRepositoryConcurrentNormalizedNameCreateHasSingleWinner",
-        "TestRepositoryConcurrentMutualDirectoryMovesPreserveAcyclicTree",
-        "TestRepositoryConcurrentParentRecycleDoesNotCreateActiveOrphans",
-        "TestRepositoryConcurrentNestedRecycleRootsRemainIndependent",
+        "TestRepositoryOIDCMemberContract",
+        "TestRepositoryRestoreChildConflictsWhileOriginalParentIsTrashed",
         "TestRepositorySequentialPurgeSharedBlobPlansLastEffectiveReference",
-        "TestRepositoryDirectorySubtreeRecycleRestoreContract",
-        "TestRepositoryRestoreChildConflictsWhileOriginalParentIsTrashed"
+        "TestRepositoryPartSignaturesSurviveForwardMigration",
+        "TestRepositoryUploadPartsContract",
+        "TestBaseline0003DataSurvivesForwardMigration"
       ]
     },
     {
@@ -33,7 +36,8 @@
       "package": "github.com/baicie/asteria-drive/internal/server",
       "tests": [
         "TestLiveHTTPPostgresSeaweedFSEndToEnd",
-        "TestLiveHTTPConcurrentUploadSessionBaseline"
+        "TestLiveHTTPConcurrentUploadSessionBaseline",
+        "TestLiveReSignKeepsStoredPartIdentity"
       ]
     }
   ]

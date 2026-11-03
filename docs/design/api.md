@@ -298,12 +298,52 @@ SHA-256 值使用标准 Base64 编码的 32-byte 摘要。后端返回并验证�
 
 幂等取消未完成会话并尽力 Abort Multipart；对已经持久化为 `failed` 且对象曾完成的会话，重复取消会重试精确对象 Delete。首次和重复成功都返回 `204`。`completing`、`object_completed` 和已提交会话不被公开取消，返回 `409 invalid_state`。过期维护任务使用同一领域操作。
 
-### 跨刷新恢复（设计，未实现）
+### 跨刷新恢复
 
-跨刷新恢复的协议、客户端持久化内容与新增只读端点
-`GET /api/v1/uploads/{id}/parts` 见 [ADR-0027](../adr/0027-cross-reload-upload-resume.md)。
-该端点**尚未实现**，也不在本文的已实现路由中。当前客户端只支持会话内重试与完成后
-对账；禁止通过持久化 presigned URL、Token 或 S3 凭据实现恢复。
+### `GET /api/v1/uploads/{id}/parts`
+
+只读分片清单，需要 `files:read` 且会话属于当前 tenant；只返回 `part_number`、`etag`、
+`size` 与会话状态，不签发 URL、不改变状态、不返回 bucket/object key/storage upload id。
+响应带 `Cache-Control: no-store`。
+
+```json
+{
+  "data": {
+    "upload_id": "…",
+    "status": "uploading",
+    "part_size": 8388608,
+    "parts": [{
+      "part_number": 1, "etag": "…", "size": 8388608,
+      "storage_sha256": "…", "reusable": true
+    }],
+    "complete": true
+  }
+}
+```
+
+`complete=false` 表示返回被 `limit` 截断，客户端必须重新上传全部分片而不是相信列出的子集。
+两层来源（控制面 `upload_part` 优先，存储侧 `ListParts` 补齐）与完整恢复流程见
+[ADR-0027](../adr/0027-cross-reload-upload-resume.md)。
+
+端点**严格只读**：TTL 已过的会话在响应中报告 `status: expired` 与空分片，但不改库、不
+Abort Multipart；真实迁移由维护循环完成。鉴权为 `files:read` + tenant 匹配——会话是
+**租户内共享**的只读资源，同租户其他 principal（含 viewer）可读，签名仍要求 `files:write`。
+
+`storage_sha256` 是**对象存储自己**报告的分片摘要，`reusable` 是服务端对该分片能否被
+跳过的判定：仅当分片号在存储中唯一、大小符合会话几何、存储报告了 checksum，**且该后端
+通过契约鉴定**（报告值确实描述所存字节，且不匹配摘要的 PUT 会被拒绝）时为 `true`。
+签名时客户端声明的摘要是意图而非事实，不作为证据（[ADR-0029](../adr/0029-resume-reuses-only-storage-attested-parts.md)）。
+后端鉴定由 `ASTERIA_S3_TRUST_PART_CHECKSUMS` 显式开启（默认 false，且要求
+`ASTERIA_S3_CHECKSUM_HEADERS=true`）；未开启时任何 S3 兼容后端——包括 AWS S3——
+都返回 `reusable: false`，客户端全量重传。
+
+恢复的客户端对 `reusable: false` 的分片一律重新签名并重传；对 `reusable: true` 的分片还要
+本地哈希所选文件在该偏移处的字节，只有等于 `storage_sha256` 才跳过。SeaweedFS 3.85 不报告
+分片 checksum，因此在该后端上恢复会重传全部分片——这是有意的安全降级。
+
+Web 客户端只持久化非敏感会话句柄（`sessionStorage`，退出登录清除），恢复时重新鉴权并
+重新读取分片清单；禁止通过持久化 presigned URL、Token 或 S3 凭据实现恢复。会话进入
+`completing`/`object_completed` 后只重放完成请求，不再重传分片。
 
 ## 12. 下载授权
 
@@ -322,6 +362,9 @@ SHA-256 值使用标准 Base64 编码的 32-byte 摘要。后端返回并验证�
 ```
 
 `Content-Disposition` 使用安全编码的显示名。Range 由对象存储处理；API 不代理正文。目录、回收/清理中、未提交和跨租户资源返回 `404`。
+
+`POST /parts/sign` 与下载授权接口都返回短期 bearer URL，因此都带 `Cache-Control: no-store`；
+分片清单同样 `no-store`。
 
 客户端打开方式（Web 控制台）：点击处理函数内**同步**打开空白窗口，再等待授权响应，
 最后把窗口导航到签名 URL。浏览器只允许用户激活期间的 `window.open`，在 `await` 之后

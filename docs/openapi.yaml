@@ -1037,6 +1037,59 @@ paths:
         "503":
           $ref: "#/components/responses/DependencyUnavailable"
 
+  /api/v1/uploads/{id}/parts:
+    parameters:
+      - $ref: "#/components/parameters/ResourceID"
+      - $ref: "#/components/parameters/TenantSelector"
+    get:
+      tags: [Uploads]
+      operationId: listUploadParts
+      summary: List parts already accepted for an upload session
+      description: |
+        Read-only resume support (ADR-0027). Returns the parts object storage has
+        accepted and, once completion has been requested, the frozen completion list.
+        It never signs a URL, mutates session state, or triggers a storage write.
+        Responses are not cacheable and never expose the bucket, object key, or
+        storage upload ID. A session that has expired is transitioned to `expired`
+        exactly as a signing attempt would do.
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          description: Maximum parts to return; defaults to and is capped at 10000.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 10000
+      responses:
+        "200":
+          description: Parts accepted so far.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/RequestID"
+            Cache-Control:
+              description: Always no-store; a part listing must not be cached.
+              schema:
+                const: no-store
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UploadPartsEnvelope"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/DependencyUnavailable"
+
   /api/v1/uploads/{id}/parts/sign:
     parameters:
       - $ref: "#/components/parameters/ResourceID"
@@ -2164,6 +2217,76 @@ components:
         url: "http://127.0.0.1:18333/asteria-drive-local/...?redacted"
         required_headers: {}
         expires_at: "2026-08-02T10:15:00Z"
+    ListedPart:
+      type: object
+      additionalProperties: false
+      required: [part_number, etag, size, reusable]
+      properties:
+        part_number:
+          type: integer
+          minimum: 1
+          maximum: 10000
+        etag:
+          type: string
+          minLength: 1
+          maxLength: 1024
+        size:
+          type: integer
+          format: int64
+          minimum: 0
+        storage_sha256:
+          type: string
+          description: |
+            Base64 SHA-256 reported by object storage for the bytes it accepted, or empty
+            when the backend reports none. It is never a digest the client declared: a
+            signature describes a request that may not have been followed by a successful
+            PUT, and re-signing a part number does not touch storage (ADR-0029).
+          pattern: '^([A-Za-z0-9+/]{43}=)?$'
+        reusable:
+          type: boolean
+          description: |
+            Whether this part may be skipped when resuming. True only when the part number
+            is unique in storage, its size matches the session geometry, storage reported a
+            checksum for it, and the deployment has attested that this backend really
+            computes that checksum over the stored bytes and rejects a part whose content
+            does not match its signed digest. Unattested backends, including AWS S3 by
+            default, therefore report false for every part. A client MUST re-upload every
+            part where this is false; doing so can cost bandwidth but can never splice
+            another file's bytes.
+    UploadParts:
+      type: object
+      additionalProperties: false
+      required: [upload_id, status, part_size, parts, complete]
+      properties:
+        upload_id:
+          type: string
+          format: uuid
+        status:
+          $ref: "#/components/schemas/UploadStatus"
+        part_size:
+          type: integer
+          format: int64
+          minimum: 5242880
+          maximum: 5368709120
+        parts:
+          type: array
+          items:
+            $ref: "#/components/schemas/ListedPart"
+        complete:
+          type: boolean
+          description: |
+            False when the listing was truncated by the requested limit; treat it as
+            non-authoritative and re-upload every part. A `completing`/`object_completed`
+            session returns its frozen completion list and is always complete. An elapsed
+            session is reported with `status: expired` and no parts, without the endpoint
+            changing the session: expiry is owned by the maintenance loop.
+    UploadPartsEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          $ref: "#/components/schemas/UploadParts"
     SignedPartEnvelope:
       type: object
       additionalProperties: false

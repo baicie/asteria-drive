@@ -13,6 +13,7 @@
  * preview server so the console keeps using same-origin requests.
  */
 import { expect, test } from '@playwright/test'
+import { createHash } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 
 const apiBase = process.env.ASTERIA_E2E_API
@@ -75,7 +76,361 @@ test.describe('live stack', () => {
       expect([204, 404]).toContain(deleted.status())
     }
   })
+
+  test('resumes an interrupted upload after a reload and produces exactly the selected bytes', async ({ page }) => {
+    // The browser cannot restore a File across a reload, so the scenario is staged the way
+    // a real interruption leaves it: a live session created through the API, one part
+    // already in S3, and the non-sensitive handle the console writes before its first part.
+    const payload = Buffer.alloc(8 * 1024 * 1024 + 37)
+    for (let index = 0; index < payload.length; index += 1) payload[index] = (index * 7) % 251
+    const name = `resume-${Date.now()}.bin`
+    const rootId = await rootDirectoryId(page, apiBase!, token!)
+    const auth = { Authorization: `Bearer ${token}` }
+
+    const created = await page.request.post(`${apiBase}/api/v1/uploads`, {
+      headers: { ...auth, 'Content-Type': 'application/json', 'Idempotency-Key': `resume-${Date.now()}` },
+      data: { parent_id: rootId, name, size: payload.length, mime_type: 'application/octet-stream' },
+    })
+    expect(created.status()).toBe(201)
+    const session = ((await created.json()) as { data: { id: string; part_size: number } }).data
+
+    // Upload only part 1 through the real signed data plane.
+    const firstChunk = payload.subarray(0, session.part_size)
+    const signedResponse = await page.request.post(`${apiBase}/api/v1/uploads/${session.id}/parts/sign`, {
+      headers: { ...auth, 'Content-Type': 'application/json' },
+      // The digest is what binds part 1 to these bytes for every later resume.
+      data: {
+        part_number: 1,
+        checksum: { algorithm: 'sha256', value: createHash('sha256').update(firstChunk).digest('base64') },
+      },
+    })
+    const signed = ((await signedResponse.json()) as {
+      data: { url: string; method: string; required_headers?: Record<string, string> }
+    }).data
+    const firstPart = await page.request.fetch(signed.url, {
+      method: signed.method,
+      headers: signedHeaders(signed.required_headers),
+      data: firstChunk,
+    })
+    expect(firstPart.status()).toBe(200)
+
+    // The server must report exactly the part that landed. Whether it may be skipped
+    // depends on evidence storage itself reports: SeaweedFS 3.85 returns no per-part
+    // checksum, so the expected answer here is `reusable: false` and a re-upload. A part
+    // must never be advertised as reusable on the strength of the client's own signature.
+    const listedResponse = await page.request.get(`${apiBase}/api/v1/uploads/${session.id}/parts`, { headers: auth })
+    expect(listedResponse.status()).toBe(200)
+    expect(listedResponse.headers()['cache-control']).toBe('no-store')
+    const listed = ((await listedResponse.json()) as {
+      data: { parts: Array<{ part_number: number; storage_sha256?: string; reusable: boolean }>; complete: boolean; part_size: number }
+    }).data
+    expect(listed.complete).toBe(true)
+    expect(listed.parts.map((part) => part.part_number)).toEqual([1])
+    const signedDigest = createHash('sha256').update(payload.subarray(0, session.part_size)).digest('base64')
+    if (listed.parts[0].reusable) {
+      // A backend that reports a checksum must report the checksum of the stored bytes.
+      expect(listed.parts[0].storage_sha256).toBe(signedDigest)
+    } else {
+      // Otherwise the listing must not smuggle in the client-declared digest as proof.
+      expect(listed.parts[0].storage_sha256 ?? '').toBe('')
+    }
+
+    const lastModified = Date.now()
+    await page.addInitScript(([handle, bearer]) => {
+      window.sessionStorage.setItem('asteria.upload.resume', JSON.stringify(handle))
+      window.localStorage.setItem('asteria.token', bearer)
+    }, [{
+      version: 1,
+      uploadId: session.id,
+      tenantId: '',
+      parentId: rootId,
+      parentName: '根目录',
+      fileName: name,
+      size: payload.length,
+      lastModified,
+      partSize: session.part_size,
+      createdAt: Date.now(),
+    }, token!] as const)
+
+    await page.goto('/')
+    // The banner is the user-visible evidence that the load-time probe accepted the handle.
+    await expect(page.getByText('检测到未完成的上传')).toBeVisible()
+    await expect(page.getByText(name)).toBeVisible()
+
+    // Re-select the original bytes and let the console reconcile and complete.
+    //
+    // The File is built inside the page: `setInputFiles({buffer})` stamps `lastModified`
+    // with the current time, and the identity check (name, size, lastModified) would then
+    // reject the re-selected file — which is the check working as designed, not a bug.
+    await page.evaluate(({ name: fileName, size, lastModified: stamp }) => {
+      const bytes = new Uint8Array(size)
+      for (let index = 0; index < size; index += 1) bytes[index] = (index * 7) % 251
+      const file = new File([bytes], fileName, { type: 'application/octet-stream', lastModified: stamp })
+      const inputs = document.querySelectorAll<HTMLInputElement>('input[type="file"]')
+      const input = inputs[inputs.length - 1]
+      const transfer = new DataTransfer()
+      transfer.items.add(file)
+      input.files = transfer.files
+      input.dispatchEvent(new Event('change', { bubbles: true }))
+    }, { name, size: payload.length, lastModified })
+    await expect(page.getByText(`已恢复并完成「${name}」的上传`)).toBeVisible({ timeout: 120_000 })
+    await expect(page.getByRole('button', { name: '下载' }).first()).toBeVisible()
+
+    // Byte-level proof that the resumed object is the selected file and nothing else: the
+    // whole point of ADR-0029 is that a reused part can never come from another file.
+    const popupPromise = page.context().waitForEvent('page')
+    const row = page.locator('.file-row').filter({ hasText: name })
+    await row.getByRole('button', { name: '下载' }).click()
+    const popup = await popupPromise
+    const download = await Promise.race([
+      popup.waitForEvent('download', { timeout: 30_000 }),
+      page.waitForEvent('download', { timeout: 30_000 }),
+    ])
+    const downloaded = await readFile((await download.path())!)
+    expect(downloaded.length).toBe(payload.length)
+    expect(downloaded.equals(payload)).toBe(true)
+
+    await expect.poll(async () => {
+      const listingResponse = await page.request.get(
+        `${apiBase}/api/v1/directories/${rootId}/children?limit=200`,
+        { headers: auth },
+      )
+      const body = (await listingResponse.json()) as { data: Array<{ id: string; name: string; size: number }> }
+      return body.data.find((node) => node.name === name)?.size
+    }).toBe(payload.length)
+
+    // Nothing is left behind: the handle is gone and the committed object is the right size.
+    expect(await page.evaluate(() => window.sessionStorage.getItem('asteria.upload.resume'))).toBeNull()
+  })
+
+  test('refuses to splice a different file into a resumed session (P0 mixed content)', async ({ page }) => {
+    // Files A and B agree on name, size and lastModified but differ in every byte of part 1.
+    // The only thing that can tell them apart is the digest each part was signed with.
+    const size = 8 * 1024 * 1024 + 11
+    const payloadA = Buffer.alloc(size)
+    const payloadB = Buffer.alloc(size)
+    for (let index = 0; index < size; index += 1) {
+      payloadA[index] = (index * 7) % 251
+      payloadB[index] = (index * 11 + 3) % 251
+    }
+    expect(payloadA.equals(payloadB)).toBe(false)
+    const name = `mixed-${Date.now()}.bin`
+    const lastModified = Date.now()
+    const rootId = await rootDirectoryId(page, apiBase!, token!)
+    const auth = { Authorization: `Bearer ${token}` }
+
+    const created = await page.request.post(`${apiBase}/api/v1/uploads`, {
+      headers: { ...auth, 'Content-Type': 'application/json', 'Idempotency-Key': `mixed-${Date.now()}` },
+      data: { parent_id: rootId, name, size, mime_type: 'application/octet-stream' },
+    })
+    expect(created.status()).toBe(201)
+    const session = ((await created.json()) as { data: { id: string; part_size: number } }).data
+
+    // A's part 1 goes to storage, bound to A's digest at signing time.
+    const chunkA = payloadA.subarray(0, session.part_size)
+    const signedResponse = await page.request.post(`${apiBase}/api/v1/uploads/${session.id}/parts/sign`, {
+      headers: { ...auth, 'Content-Type': 'application/json' },
+      data: {
+        part_number: 1,
+        checksum: { algorithm: 'sha256', value: createHash('sha256').update(chunkA).digest('base64') },
+      },
+    })
+    expect(signedResponse.status()).toBe(200)
+    const signed = ((await signedResponse.json()) as {
+      data: { url: string; method: string; required_headers?: Record<string, string> }
+    }).data
+    const putA = await page.request.fetch(signed.url, {
+      method: signed.method,
+      headers: signedHeaders(signed.required_headers),
+      data: chunkA,
+    })
+    expect(putA.status()).toBe(200)
+
+    // Whatever evidence the backend reports, it describes A's stored bytes — never a
+    // digest that only the signing request declared.
+    const listed = ((await (await page.request.get(`${apiBase}/api/v1/uploads/${session.id}/parts`, { headers: auth })).json()) as {
+      data: { parts: Array<{ part_number: number; storage_sha256?: string; reusable: boolean }> }
+    }).data
+    if (listed.parts[0].reusable) {
+      expect(listed.parts[0].storage_sha256).toBe(createHash('sha256').update(chunkA).digest('base64'))
+    } else {
+      expect(listed.parts[0].storage_sha256 ?? '').toBe('')
+    }
+
+    // Seed the handle, then hand the console file B under A's identity.
+    await page.addInitScript(([handle, bearer]) => {
+      window.sessionStorage.setItem('asteria.upload.resume', JSON.stringify(handle))
+      window.localStorage.setItem('asteria.token', bearer)
+    }, [{
+      version: 1,
+      uploadId: session.id,
+      tenantId: '',
+      parentId: rootId,
+      parentName: '根目录',
+      fileName: name,
+      size,
+      lastModified,
+      partSize: session.part_size,
+      createdAt: Date.now(),
+    }, token!] as const)
+
+    await page.goto('/')
+    await expect(page.getByText('检测到未完成的上传')).toBeVisible()
+    await page.evaluate(({ name: fileName, size: total, lastModified: stamp }) => {
+      const bytes = new Uint8Array(total)
+      for (let index = 0; index < total; index += 1) bytes[index] = (index * 11 + 3) % 251
+      const file = new File([bytes], fileName, { type: 'application/octet-stream', lastModified: stamp })
+      const inputs = document.querySelectorAll<HTMLInputElement>('input[type="file"]')
+      const input = inputs[inputs.length - 1]
+      const transfer = new DataTransfer()
+      transfer.items.add(file)
+      input.files = transfer.files
+      input.dispatchEvent(new Event('change', { bubbles: true }))
+    }, { name, size, lastModified })
+    await expect(page.getByText(`已恢复并完成「${name}」的上传`)).toBeVisible({ timeout: 120_000 })
+
+    // The object must be B, end to end: A's part 1 was re-uploaded, never spliced in.
+    const popupPromise = page.context().waitForEvent('page')
+    const row = page.locator('.file-row').filter({ hasText: name })
+    await row.getByRole('button', { name: '下载' }).click()
+    const popup = await popupPromise
+    const download = await Promise.race([
+      popup.waitForEvent('download', { timeout: 30_000 }),
+      page.waitForEvent('download', { timeout: 30_000 }),
+    ])
+    const downloaded = await readFile((await download.path())!)
+    expect(downloaded.length).toBe(size)
+    expect(downloaded.equals(payloadB)).toBe(true)
+    expect(downloaded.equals(payloadA)).toBe(false)
+  })
+
+  // R3 P1: cancelling during a resume must abort the server session, not merely stop the
+  // local transfer. The assertion is the server's own answer, not the browser's notice.
+  test('cancelling a resume aborts its multipart upload on the server', async ({ page }) => {
+    const size = 8 * 1024 * 1024 + 29
+    const payload = Buffer.alloc(size)
+    for (let index = 0; index < size; index += 1) payload[index] = (index * 13 + 5) % 251
+    const name = `cancel-resume-${Date.now()}.bin`
+    const lastModified = Date.now()
+    const rootId = await rootDirectoryId(page, apiBase!, token!)
+    const auth = { Authorization: `Bearer ${token}` }
+
+    const created = await page.request.post(`${apiBase}/api/v1/uploads`, {
+      headers: { ...auth, 'Content-Type': 'application/json', 'Idempotency-Key': `cancel-resume-${Date.now()}` },
+      data: { parent_id: rootId, name, size, mime_type: 'application/octet-stream' },
+    })
+    expect(created.status()).toBe(201)
+    const session = ((await created.json()) as { data: { id: string; part_size: number } }).data
+
+    // Load the console with a live session and hand it a file; the resume starts and the
+    // first part PUT is stalled so the user can cancel mid-transfer.
+    await page.addInitScript(([handle, bearer]) => {
+      window.sessionStorage.setItem('asteria.upload.resume', JSON.stringify(handle))
+      window.localStorage.setItem('asteria.token', bearer)
+    }, [{
+      version: 1,
+      uploadId: session.id,
+      tenantId: '',
+      parentId: rootId,
+      parentName: '根目录',
+      fileName: name,
+      size,
+      lastModified,
+      partSize: session.part_size,
+      createdAt: Date.now(),
+    }, token!] as const)
+    // Match the real presigned part PUT by its SigV4 query and method, not by a path
+    // prefix: the data plane is SeaweedFS itself (a different host and port from the API),
+    // so any glob over a synthetic `/s3/` path intercepts nothing and the test would race
+    // a real upload instead of holding it. The predicate also makes the intercepted
+    // request auditable in the failure message.
+    let putStarted!: () => void
+    const putInFlight = new Promise<void>((resolve) => { putStarted = resolve })
+    const intercepted: string[] = []
+    // Upload ids whose DELETE the browser sent. Recorded from the request layer so the
+    // assertion is about the wire, not about what the UI says.
+    const deletes: string[] = []
+    await page.route(
+      (url) => url.pathname.startsWith('/api/v1/uploads/'),
+      async (route) => {
+        const request = route.request()
+        if (request.method() === 'DELETE') {
+          deletes.push(decodeURIComponent(new URL(request.url()).pathname.split('/').pop() ?? ''))
+        }
+        await route.continue()
+      },
+    )
+    await page.route(
+      (url) => url.searchParams.has('X-Amz-Signature') && url.searchParams.has('partNumber'),
+      async (route) => {
+        const request = route.request()
+        intercepted.push(`${request.method()} ${new URL(request.url()).pathname}`)
+        if (request.method() !== 'PUT') {
+          await route.continue()
+          return
+        }
+        // Never answer: the part PUT stays in flight until the user cancels.
+        putStarted()
+        await new Promise<void>(() => {})
+      },
+    )
+    await page.goto('/')
+    await expect(page.getByText('检测到未完成的上传')).toBeVisible()
+    await page.evaluate(({ name: fileName, size: total, lastModified: stamp }) => {
+      const bytes = new Uint8Array(total)
+      for (let index = 0; index < total; index += 1) bytes[index] = (index * 13 + 5) % 251
+      const file = new File([bytes], fileName, { type: 'application/octet-stream', lastModified: stamp })
+      const inputs = document.querySelectorAll<HTMLInputElement>('input[type="file"]')
+      const input = inputs[inputs.length - 1]
+      const transfer = new DataTransfer()
+      transfer.items.add(file)
+      input.files = transfer.files
+      input.dispatchEvent(new Event('change', { bubbles: true }))
+    }, { name, size, lastModified })
+
+    // The cancel is only meaningful while a part PUT is genuinely in flight. Wait for the
+    // intercepted request rather than for a fixed delay: a cancel that lands before the
+    // transfer starts would pass without ever exercising the abort path.
+    await putInFlight
+    expect(intercepted.length).toBeGreaterThan(0)
+    expect(intercepted[0]).toMatch(/^PUT /)
+    await expect(page.getByRole('button', { name: '取消上传' })).toBeVisible({ timeout: 30_000 })
+    await page.getByRole('button', { name: '取消上传' }).click()
+    await expect(page.getByText(`已取消「${name}」的上传`)).toBeVisible({ timeout: 30_000 })
+
+    // The browser must actually have sent the DELETE. A separate abort request is the only
+    // way the server learns about a cancel during resume, so observe the request itself
+    // rather than inferring it from the resulting state.
+    const aborts = deletes.filter((entry) => entry === session.id)
+    expect(aborts).toHaveLength(1)
+
+    // The server must now consider the session aborted. This is the fact the R2 build never
+    // established: it stopped the browser and left the multipart upload alive.
+    await expect.poll(async () => {
+      const response = await page.request.get(`${apiBase}/api/v1/uploads/${session.id}`, { headers: auth })
+      if (response.status() === 404) return 'gone'
+      const body = (await response.json()) as { data?: { status?: string } }
+      return body.data?.status ?? `status-${response.status()}`
+    }, { timeout: 30_000 }).toMatch(/^(aborted|gone)$/)
+    // The handle is gone too, so a reload cannot offer to resume a cancelled upload.
+    expect(await page.evaluate(() => window.sessionStorage.getItem('asteria.upload.resume'))).toBeNull()
+    // Nothing was committed: a cancelled upload must not leave a file behind.
+    const children = await page.request.get(`${apiBase}/api/v1/directories/${rootId}/children?limit=200`, { headers: auth })
+    const listing = (await children.json()) as { data: Array<{ name: string }> }
+    expect(listing.data.some((node) => node.name === name)).toBe(false)
+  })
 })
+
+
+/** Forward the signed headers a presigned PUT requires, without trying to set Host. */
+function signedHeaders(required: Record<string, string> | undefined): Record<string, string> {
+  const headers: Record<string, string> = {}
+  for (const [name, value] of Object.entries(required ?? {})) {
+    if (name.toLowerCase() === 'host') continue
+    headers[name] = value
+  }
+  return headers
+}
 
 async function rootDirectoryId(page: import('@playwright/test').Page, base: string, bearer: string) {
   const response = await page.request.get(`${base}/api/v1/tenant`, { headers: { Authorization: `Bearer ${bearer}` } })

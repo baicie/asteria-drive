@@ -1,6 +1,8 @@
 export type NodeKind = 'directory' | 'file'
 
 export interface Tenant {
+  /** Present on GET /api/v1/tenant; optional so older fixtures and callers still typecheck. */
+  id?: string
   display_name: string
   root_directory_id: string
 }

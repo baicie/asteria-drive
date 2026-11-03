@@ -472,6 +472,11 @@ type FileVersion struct {
 
 type UploadStatus string
 
+// MaxUploadParts is the S3 multipart hard limit. It bounds both the completion payload
+// and a part listing so a resumed client can never be told to download more parts than
+// storage will accept in a single completion request.
+const MaxUploadParts = 10000
+
 const (
 	UploadCreated         UploadStatus = "created"
 	UploadUploading       UploadStatus = "uploading"
@@ -524,6 +529,55 @@ type CompletedPart struct {
 	ETag       string   `json:"etag"`
 	Checksum   Checksum `json:"checksum,omitempty"`
 	Size       int64    `json:"size,omitempty"`
+}
+
+// PartSignature is the content identity a client declared when it asked for a part's
+// signature. It is an audit record of what the client promised, not proof of what storage
+// accepted: a signature can be issued and the PUT that was supposed to follow it can be
+// interrupted. Resume therefore never reads it back (ADR-0028).
+type PartSignature struct {
+	PartNumber int
+	Size       int64
+	SHA256     string
+}
+
+// StoredPart is one part that object storage has durably accepted for a multipart
+// upload. It is the read-only source for cross-reload resume (ADR-0027): it carries no
+// credential and no signed URL, only the identity of a part that can be re-signed.
+type StoredPart struct {
+	PartNumber int
+	ETag       string
+	Size       int64
+	// StorageChecksum is the checksum object storage itself reports for the bytes it
+	// accepted, when the backend supports per-part checksums.
+	StorageChecksum Checksum
+	// ChecksumAttested is the provider's assertion that StorageChecksum actually describes
+	// the bytes it stored AND that the backend refused any part whose content did not match
+	// the digest it was signed with. A backend can return a checksum it never validated
+	// (SeaweedFS 3.85 ignores the signed header entirely), so "reported" is not "proven":
+	// only a provider that has passed a real-backend contract test may set this (ADR-0029).
+	ChecksumAttested bool
+	// Reusable reports whether this entry carries enough storage-attested evidence for a
+	// resuming client to skip re-sending it. It is false for a part whose backend reports
+	// no checksum or cannot attest it, for a part number object storage returned more than
+	// once with different identities, and for a part this service cannot describe exactly.
+	// False always means "re-upload", which costs bandwidth but cannot splice two files.
+	Reusable bool
+}
+
+// UploadPartListing is the merged view of the parts a resumed client already uploaded.
+// The control plane and object storage are both consulted because they cover different
+// windows: storage knows every accepted part, while the control plane only records parts
+// after completion has been requested.
+type UploadPartListing struct {
+	UploadID string
+	Status   UploadStatus
+	PartSize int64
+	Parts    []StoredPart
+	// Complete reports whether the listing is the full set of parts for the declared
+	// size. It is false when more than MaxUploadParts have been observed, in which case
+	// the caller must not treat the listing as authoritative.
+	Complete bool
 }
 
 type ObjectInfo struct {

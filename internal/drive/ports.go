@@ -92,6 +92,16 @@ type Repository interface {
 	MarkObjectCompleted(context.Context, Identity, string, ObjectInfo, time.Time) (UploadSession, error)
 	CommitUpload(context.Context, CommitUploadCommand) (CompleteResult, bool, error)
 	AbortUpload(context.Context, Identity, string, UploadStatus, time.Time) (UploadSession, error)
+	// UploadParts returns the completion parts persisted for a session. It returns an
+	// empty slice when completion has not been requested yet.
+	UploadParts(context.Context, Identity, string) ([]CompletedPart, error)
+	// RecordPartSignature stores the content identity a client declared for a part when
+	// it requested a signature. Re-signing the same number replaces the previous digest.
+	// The row records intent for audit and diagnosis only: a signature can be issued and
+	// its PUT never arrive, so resume must never read it back as proof of stored bytes.
+	RecordPartSignature(context.Context, Identity, string, PartSignature, time.Time) error
+	// PartSignatures returns every recorded signature for a session.
+	PartSignatures(context.Context, Identity, string) ([]PartSignature, error)
 	MarkUploadCleanupComplete(context.Context, Identity, string, time.Time) error
 	ExpiredUploads(context.Context, time.Time, int) ([]UploadSession, error)
 	ClaimUploadsForMaintenance(context.Context, string, time.Time, time.Time, time.Time, int) ([]UploadMaintenanceClaim, error)
@@ -112,9 +122,17 @@ type StorageProvider interface {
 	Ready(context.Context) error
 	Bucket() string
 	CreateMultipart(context.Context, string, string, Checksum) (string, error)
-	SignUploadPart(context.Context, string, string, int, Checksum, time.Duration) (SignedPart, error)
+	// SignUploadPart returns a short-lived URL. When the checksum is a sha256 digest the
+	// provider must bind it to the signature (a signed checksum header) so storage rejects
+	// any part whose bytes do not hash to it. reportChecksumHeader tells the caller whether
+	// that binding is active, because resume integrity depends on it.
+	SignUploadPart(context.Context, string, string, int, Checksum, time.Duration) (SignedPart, bool, error)
 	CompleteMultipart(context.Context, string, string, []CompletedPart) (ObjectInfo, error)
 	AbortMultipart(context.Context, string, string) error
+	// ListParts returns the parts object storage has accepted for a multipart upload,
+	// including the checksum storage itself reports for each part when the backend keeps
+	// one. It must be read-only: it never signs, mutates, or completes anything.
+	ListParts(context.Context, string, string) ([]StoredPart, error)
 	StatObject(context.Context, string) (ObjectInfo, error)
 	SignDownload(context.Context, string, string, time.Duration) (SignedDownload, error)
 	DeleteObject(context.Context, string) error

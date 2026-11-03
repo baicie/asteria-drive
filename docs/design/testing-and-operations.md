@@ -168,6 +168,7 @@ cd web && npm run typecheck && npm run test:unit && npm run build && npm run tes
 | `ASTERIA_S3_ACCESS_KEY_ID/SECRET_ACCESS_KEY` | Secret；优先短期工作负载凭据 |
 | `ASTERIA_S3_PATH_STYLE` | SeaweedFS 本地环境为 true |
 | `ASTERIA_S3_CHECKSUM_HEADERS` | 默认 false；只有真实契约验证支持 checksum request headers 的后端才启用 |
+| `ASTERIA_S3_TRUST_PART_CHECKSUMS` | 默认 false；仅当该确切后端通过“报告摘要=所存字节、错误摘要 PUT 被拒绝”的契约测试后才启用，且要求 checksum headers 为 true；AWS S3 未在本仓库验证 |
 | `ASTERIA_CURSOR_HMAC_KEY` | Secret，至少 32 bytes |
 | 签名/会话 TTL | 必须在安全上下限内；回收保留期随 SHOULD 维护任务延期 |
 | Body/Part/文件大小上限 | 服务端固定上限，客户端不能提高 |
@@ -224,9 +225,11 @@ go build -o $env:TEMP/asteria-server.exe ./cmd/asteria-server
 cd web; $env:ASTERIA_E2E_API='http://127.0.0.1:18091'; $env:ASTERIA_E2E_TOKEN='...'; npm run test:e2e
 ```
 
-该用例不进 CI 默认门禁：CI 的 web job 不启动 Docker，而启动真实依赖会改变现有
-`CI / web` 的 secret-free、无 Docker 边界。若要在 CI 启用，应新增独立 job，并先
-评审其运行时与 flake 风险。
+该用例不进 `CI / web` 默认门禁：`CI / web` 不启动 Docker，启动真实依赖会改变它
+secret-free、无 Docker 的边界。它现在由独立的 `CI / web-live` job 运行：该 job 启动固定
+版本的 PostgreSQL/SeaweedFS Compose 服务、迁移并启动真实控制面、只跑 `live stack`
+用例，然后清理并按 `if: always()` 上传 `web-live-evidence`。`web-live` **尚未**成为
+required check：这属于远端仓库设置，且需要先证明其运行时稳定。
 
 ## 7. 可观测性
 

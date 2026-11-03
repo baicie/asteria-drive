@@ -70,23 +70,26 @@ func (s *Storage) CreateMultipart(_ context.Context, key, mimeType string, check
 	return id, nil
 }
 
-func (s *Storage) SignUploadPart(_ context.Context, key, uploadID string, partNumber int, checksum drive.Checksum, ttl time.Duration) (drive.SignedPart, error) {
+func (s *Storage) SignUploadPart(_ context.Context, key, uploadID string, partNumber int, checksum drive.Checksum, ttl time.Duration) (drive.SignedPart, bool, error) {
 	s.mu.RLock()
 	upload, ok := s.uploads[uploadID]
 	s.mu.RUnlock()
 	if !ok || upload.key != key {
-		return drive.SignedPart{}, drive.E(drive.CodeNotFound, "multipart upload was not found")
+		return drive.SignedPart{}, false, drive.E(drive.CodeNotFound, "multipart upload was not found")
 	}
 	expiresAt := time.Now().UTC().Add(ttl)
 	query := url.Values{"upload_id": {uploadID}, "part_number": {fmt.Sprint(partNumber)}}
 	headers := map[string]string{}
-	if checksum.Algorithm == "sha256" {
+	bound := checksum.Algorithm == "sha256"
+	if bound {
+		// The fake storage applies the same rule as S3: the signed digest is checked
+		// against the bytes on PUT, so a mixed-content resume fails here too.
 		headers["x-amz-checksum-sha256"] = checksum.Value
 	}
 	return drive.SignedPart{
 		PartNumber: partNumber, Method: "PUT", URL: s.baseURL + "/" + url.PathEscape(key) + "?" + query.Encode(),
 		RequiredHeaders: headers, ExpiresAt: expiresAt,
-	}, nil
+	}, bound, nil
 }
 
 func (s *Storage) PutPart(uploadID string, partNumber int, data []byte) (drive.CompletedPart, error) {
@@ -143,6 +146,30 @@ func (s *Storage) CompleteMultipart(_ context.Context, key, uploadID string, par
 	s.objects[key] = storedObject{data: append([]byte(nil), data...), info: info}
 	delete(s.uploads, uploadID)
 	return info, nil
+}
+
+func (s *Storage) ListParts(_ context.Context, key, uploadID string) ([]drive.StoredPart, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	upload, ok := s.uploads[uploadID]
+	if !ok || upload.key != key {
+		return nil, drive.E(drive.CodeNotFound, "multipart upload was not found")
+	}
+	parts := make([]drive.StoredPart, 0, len(upload.parts))
+	for partNumber, data := range upload.parts {
+		hash := sha256.Sum256(data)
+		parts = append(parts, drive.StoredPart{
+			PartNumber: partNumber, ETag: `"` + hex.EncodeToString(hash[:16]) + `"`, Size: int64(len(data)),
+			// The fake storage knows the bytes it holds, so it reports them the way S3
+			// reports a checksum it computed. This is storage evidence, not a client
+			// declaration: it changes only when PutPart actually replaces the bytes, and
+			// this implementation is the one backend that can attest it by construction.
+			StorageChecksum:  drive.Checksum{Algorithm: "sha256", Value: base64.StdEncoding.EncodeToString(hash[:])},
+			ChecksumAttested: true,
+		})
+	}
+	sort.Slice(parts, func(i, j int) bool { return parts[i].PartNumber < parts[j].PartNumber })
+	return parts, nil
 }
 
 func (s *Storage) AbortMultipart(_ context.Context, key, uploadID string) error {

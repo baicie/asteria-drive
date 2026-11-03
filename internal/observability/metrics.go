@@ -142,7 +142,7 @@ func (s *instrumentedStorage) CreateMultipart(ctx context.Context, key, mediaTyp
 	return s.StorageProvider.CreateMultipart(ctx, key, mediaType, checksum)
 }
 
-func (s *instrumentedStorage) SignUploadPart(ctx context.Context, key, uploadID string, part int, checksum drive.Checksum, ttl time.Duration) (signed drive.SignedPart, err error) {
+func (s *instrumentedStorage) SignUploadPart(ctx context.Context, key, uploadID string, part int, checksum drive.Checksum, ttl time.Duration) (signed drive.SignedPart, bound bool, err error) {
 	started := time.Now()
 	defer func() { s.metrics.observeStorage("sign_upload_part", started, err) }()
 	return s.StorageProvider.SignUploadPart(ctx, key, uploadID, part, checksum, ttl)
@@ -158,6 +158,12 @@ func (s *instrumentedStorage) AbortMultipart(ctx context.Context, key, uploadID 
 	started := time.Now()
 	defer func() { s.metrics.observeStorage("abort_multipart", started, err) }()
 	return s.StorageProvider.AbortMultipart(ctx, key, uploadID)
+}
+
+func (s *instrumentedStorage) ListParts(ctx context.Context, key, uploadID string) (parts []drive.StoredPart, err error) {
+	started := time.Now()
+	defer func() { s.metrics.observeStorage("list_parts", started, err) }()
+	return s.StorageProvider.ListParts(ctx, key, uploadID)
 }
 
 func (s *instrumentedStorage) StatObject(ctx context.Context, key string) (object drive.ObjectInfo, err error) {

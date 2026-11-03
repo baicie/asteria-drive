@@ -23,6 +23,43 @@ func TestLoadValidDevelopmentConfiguration(t *testing.T) {
 	if configuration.S3ChecksumHeaders {
 		t.Fatal("S3 checksum headers must default off for custom MVP endpoints")
 	}
+	if configuration.S3TrustPartChecksums {
+		t.Fatal("part checksum attestation must default off: no backend has passed the contract test")
+	}
+}
+
+func TestLoadGatesPartChecksumTrustOnSignedChecksumHeaders(t *testing.T) {
+	base := map[string]string{
+		"ASTERIA_TRUSTED_TOKENS_JSON": validTokens,
+		"ASTERIA_CURSOR_HMAC_KEY":     "test-cursor-hmac-key-at-least-32-bytes",
+		"ASTERIA_STORAGE_DRIVER":      "s3",
+		"ASTERIA_S3_ENDPOINT":         "http://127.0.0.1:8333",
+	}
+	configuration, err := load(mapLookup(base))
+	if err != nil {
+		t.Fatalf("load defaults: %v", err)
+	}
+	if configuration.S3TrustPartChecksums {
+		t.Fatal("part checksum attestation must default off for S3-compatible endpoints")
+	}
+	trusted := map[string]string{"ASTERIA_S3_CHECKSUM_HEADERS": "true", "ASTERIA_S3_TRUST_PART_CHECKSUMS": "true"}
+	for key, value := range base {
+		trusted[key] = value
+	}
+	configuration, err = load(mapLookup(trusted))
+	if err != nil {
+		t.Fatalf("load explicit attestation: %v", err)
+	}
+	if !configuration.S3TrustPartChecksums || !configuration.S3ChecksumHeaders {
+		t.Fatalf("explicit attestation was not retained: %+v", configuration)
+	}
+	unsafeTrust := map[string]string{"ASTERIA_S3_TRUST_PART_CHECKSUMS": "true"}
+	for key, value := range base {
+		unsafeTrust[key] = value
+	}
+	if _, err := load(mapLookup(unsafeTrust)); err == nil || !strings.Contains(err.Error(), "ASTERIA_S3_TRUST_PART_CHECKSUMS") {
+		t.Fatalf("trust without signed checksum headers error = %v", err)
+	}
 }
 
 func TestLoadMaintenanceDefaultsAndRejectsInvalidBatch(t *testing.T) {

@@ -1,16 +1,19 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   UPLOAD_LIMITS,
   UploadCancelledError,
   UploadCompletionUnknownError,
+  resumeMultipart,
   uploadErrorMessage,
   uploadMultipart,
   type CompletedPart,
+  type PartChecksum,
   type SignedPart,
   type UploadGateway,
   type UploadSession,
 } from './upload-manager'
 import { UploadError, UploadFailure } from './upload-errors'
+import type { ListedPart, UploadPartsListing, UploadResumeHandle } from './upload-resume'
 
 const session: UploadSession = { id: 'upload-1', status: 'created', part_size: 5, expected_size: 10 }
 
@@ -35,8 +38,10 @@ function makeGateway(overrides: Partial<UploadGateway> = {}) {
     create: 0,
     sign: [] as number[],
     complete: 0,
+    completeParts: [] as CompletedPart[][],
     read: 0,
     abort: 0,
+    parts: [] as string[],
   }
   // Uncounted defaults; the exported gateway wraps them so overrides are counted too.
   const base: UploadGateway = {
@@ -45,6 +50,9 @@ function makeGateway(overrides: Partial<UploadGateway> = {}) {
     async complete() {},
     async read() { return { ...session, status: 'uploading' } },
     async abort() {},
+    async parts() {
+      return { upload_id: session.id, status: 'uploading', part_size: session.part_size, parts: [], complete: true }
+    },
   }
   const gateway: UploadGateway = {
     create: (file, parent, key) => {
@@ -57,6 +65,7 @@ function makeGateway(overrides: Partial<UploadGateway> = {}) {
     },
     complete: (id, parts) => {
       calls.complete += 1
+      calls.completeParts.push(parts)
       return (overrides.complete ?? base.complete)(id, parts)
     },
     read: (id) => {
@@ -66,6 +75,10 @@ function makeGateway(overrides: Partial<UploadGateway> = {}) {
     abort: (id) => {
       calls.abort += 1
       return (overrides.abort ?? base.abort)(id)
+    },
+    parts: (id) => {
+      calls.parts.push(id)
+      return (overrides.parts ?? base.parts)(id)
     },
   }
   return { gateway, calls }
@@ -289,6 +302,42 @@ describe('uploadMultipart error taxonomy', () => {
 
     expect(error.kind).toBe('cancelled')
   })
+
+  // R3.1 (A): a plain network failure is not a user cancel, so the transport still tries to
+  // abort. When that abort fails the caller must be able to tell, because the session may
+  // still be alive and its parts resumable.
+  it('attaches a failed automatic abort to a non-cancellation failure', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      throw new TypeError('Failed to fetch')
+    }))
+    const { gateway, calls } = makeGateway({
+      async abort() {
+        throw new Error('control plane unreachable')
+      },
+    })
+
+    const error = await uploadMultipart(gateway, makeFile(), 'parent', 'key').catch((e) => e)
+
+    expect(error).toBeInstanceOf(UploadFailure)
+    // Cleanup never replaces the primary failure, which is the network error.
+    expect(error.kind).toBe('network')
+    expect(error.cleanup?.uploadId).toBe(session.id)
+    expect(calls.abort).toBe(1)
+  })
+
+  it('keeps no cleanup annotation when the automatic abort succeeds', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      throw new TypeError('Failed to fetch')
+    }))
+    const { gateway, calls } = makeGateway()
+
+    const error = await uploadMultipart(gateway, makeFile(), 'parent', 'key').catch((e) => e)
+
+    expect(error).toBeInstanceOf(UploadError)
+    expect(error).not.toBeInstanceOf(UploadFailure)
+    expect(error.kind).toBe('network')
+    expect(calls.abort).toBe(1)
+  })
 })
 
 describe('uploadMultipart completion semantics', () => {
@@ -443,5 +492,439 @@ describe('uploadErrorMessage', () => {
     expect(uploadErrorMessage(new UploadError('network', '网络错误'))).toBe('网络错误')
     expect(uploadErrorMessage(new Error('plain'))).toBe('plain')
     expect(uploadErrorMessage('nonsense')).toBe('上传失败')
+  })
+})
+
+/** Content of each test file, because jsdom's Blob.slice cannot read its own bytes back. */
+const fileContents = new WeakMap<File, string>()
+
+function resumeFile(bytes = 'abcdefghij', lastModified = 1_760_000_000_000) {
+  const file = new File([bytes], 'file.txt', { type: 'text/plain', lastModified })
+  fileContents.set(file, bytes)
+  return file
+}
+
+// jsdom's Blob.slice returns a stub with neither arrayBuffer() nor readable text, so a
+// real digest over a slice cannot run there. Slicing the recorded content keeps the
+// property under test honest: two files with the same name/size but different bytes hash
+// differently, which is exactly the mixed-content case.
+beforeEach(() => {
+  vi.spyOn(File.prototype, 'slice').mockImplementation(function (this: File, start?: number, end?: number) {
+    const content = fileContents.get(this) ?? ''
+    const slice = content.slice(start ?? 0, end ?? content.length)
+    return { size: slice.length, text: async () => slice } as unknown as Blob
+  })
+})
+
+function makeHandle(file: File, overrides: Partial<UploadResumeHandle> = {}): UploadResumeHandle {
+  return {
+    version: 1,
+    uploadId: 'upload-1',
+    tenantId: 'tenant-1',
+    parentId: 'parent-1',
+    parentName: '根目录',
+    fileName: file.name,
+    size: file.size,
+    lastModified: file.lastModified,
+    partSize: 5,
+    createdAt: 1_760_000_000_000,
+    ...overrides,
+  }
+}
+
+function listing(overrides: Partial<UploadPartsListing> = {}): UploadPartsListing {
+  return {
+    upload_id: 'upload-1',
+    status: 'uploading',
+    part_size: 5,
+    parts: [],
+    complete: true,
+    ...overrides,
+  }
+}
+
+/**
+ * A deterministic content digest for tests. Real hashing uses WebCrypto, which jsdom's
+ * Blob does not fully implement; the resume contract only needs "same bytes → same
+ * digest, different bytes → different digest", which this provides.
+ */
+const testDigest = async (bytes: Blob): Promise<PartChecksum> => {
+  // The shim in beforeEach exposes only `text()`; a real Blob would expose `text()` too.
+  const text = typeof (bytes as { text?: unknown }).text === 'function'
+    ? await bytes.text()
+    : ''
+  return { algorithm: 'sha256', value: `test:${text.length}:${text}` }
+}
+
+/** A listed part whose digest matches the bytes the test file holds at that offset. */
+function signedPart(partNumber: number, bytes: string, etag = `"etag-${partNumber}"`): ListedPart {
+  return {
+    part_number: partNumber,
+    etag,
+    size: bytes.length,
+    // The server reports what storage holds; `reusable` is its own proof that this is a
+    // single, correctly sized part with a storage-reported checksum.
+    storage_sha256: `test:${bytes.length}:${bytes}`,
+    reusable: true,
+  }
+}
+
+describe('resumeMultipart', () => {
+  it('re-uploads only the missing part and completes with the reconciled list', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { status: 200, headers: { ETag: '"etag-2"' } })))
+    const file = resumeFile()
+    const { gateway, calls } = makeGateway({
+      async parts() {
+        // Part 1 is signed with the digest of the bytes this file holds at that offset.
+        return listing({ parts: [signedPart(1, 'abcde')] })
+      },
+    })
+
+    const result = await resumeMultipart(gateway, makeHandle(file), file, { digest: testDigest })
+
+    expect(result).toEqual({ outcome: 'resumed', uploadedParts: 1, totalParts: 2 })
+    expect(calls.parts).toEqual(['upload-1'])
+    expect(calls.sign).toEqual([2])
+    expect(calls.complete).toBe(1)
+    expect(calls.completeParts[0]).toEqual([
+      { part_number: 1, etag: '"etag-1"', size: 5 },
+      { part_number: 2, etag: '"etag-2"', size: 5 },
+    ])
+    // Resume must never call create or abort: the session already exists.
+    expect(calls.create).toBe(0)
+    expect(calls.abort).toBe(0)
+  })
+
+  it('re-uploads a listed part when the selected file holds different bytes (P0 mixed content)', async () => {
+    // The attack the round-2 review asks about: file B has the same name, size and
+    // lastModified as A but different content. Part 1 of A is already in storage.
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { status: 200, headers: { ETag: '"fresh-1"' } })))
+    const fileA = resumeFile('AAAAABBBBB')
+    const fileB = resumeFile('XXXXXBBBBB')
+    expect([fileB.name, fileB.size, fileB.lastModified]).toEqual([fileA.name, fileA.size, fileA.lastModified])
+    const handle = makeHandle(fileA)
+    const { gateway, calls } = makeGateway({
+      async parts() {
+        // The server reports the digest A's part 1 was signed with.
+        return listing({ parts: [signedPart(1, 'AAAAA')] })
+      },
+    })
+
+    const result = await resumeMultipart(gateway, handle, fileB, { digest: testDigest })
+
+    // B's part 1 hashes differently, so it must be re-sent rather than reused.
+    expect(calls.sign).toEqual([1, 2])
+    expect(result).toEqual({ outcome: 'resumed', uploadedParts: 2, totalParts: 2 })
+    // Both parts were re-sent, so both ETags come from the fresh PUT.
+    expect(calls.completeParts[0]).toEqual([
+      { part_number: 1, etag: '"fresh-1"', size: 5 },
+      { part_number: 2, etag: '"fresh-1"', size: 5 },
+    ])
+  })
+
+  it('re-uploads a part the server has no integrity evidence for', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { status: 200, headers: { ETag: '"fresh-1"' } })))
+    const file = resumeFile()
+    const { gateway, calls } = makeGateway({
+      async parts() {
+        // Not reusable: the server has no storage-attested checksum for this part, so it
+        // cannot prove the stored bytes belong to this file.
+        return listing({ parts: [{ part_number: 1, etag: '"etag-1"', size: 5, reusable: false }] })
+      },
+    })
+
+    await resumeMultipart(gateway, makeHandle(file), file, { digest: testDigest })
+
+    expect(calls.sign).toEqual([1, 2])
+    expect(calls.completeParts[0][0]).toEqual({ part_number: 1, etag: '"fresh-1"', size: 5 })
+  })
+
+  it('verifies parts by digest even when part order in the listing is reversed', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { status: 200, headers: { ETag: '"x"' } })))
+    const file = resumeFile()
+    const { gateway, calls } = makeGateway({
+      async parts() {
+        return listing({ parts: [signedPart(2, 'fghij'), signedPart(1, 'abcde')] })
+      },
+    })
+
+    await resumeMultipart(gateway, makeHandle(file), file, { digest: testDigest })
+
+    expect(calls.sign).toEqual([])
+    expect(calls.completeParts[0].map((part) => part.part_number)).toEqual([1, 2])
+  })
+
+  it('completes immediately without uploading when the session was completing', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { status: 200, headers: { ETag: '"x"' } })))
+    const file = resumeFile()
+    // The frozen completion list is replayed verbatim; its entries carry no reuse claim,
+    // because completion is never resumed from (ADR-0028).
+    const frozen = [
+      { part_number: 1, etag: '"etag-1"', size: 5, reusable: false },
+      { part_number: 2, etag: '"etag-2"', size: 5, reusable: false },
+    ]
+    const { gateway, calls } = makeGateway({
+      async parts() {
+        return listing({ status: 'completing', parts: frozen })
+      },
+    })
+
+    const result = await resumeMultipart(gateway, makeHandle(file), file)
+
+    expect(result).toEqual({ outcome: 'committed' })
+    expect(calls.sign).toEqual([])
+    expect(calls.completeParts).toEqual([[
+      { part_number: 1, etag: '"etag-1"', size: 5 },
+      { part_number: 2, etag: '"etag-2"', size: 5 },
+    ]])
+  })
+
+  it('reports a committed session without touching storage again', async () => {
+    vi.stubGlobal('fetch', vi.fn())
+    const file = resumeFile()
+    const { gateway, calls } = makeGateway({
+      async parts() {
+        return listing({ status: 'committed', parts: [{ part_number: 1, etag: '"a"', size: 5, reusable: false }] })
+      },
+    })
+
+    await expect(resumeMultipart(gateway, makeHandle(file), file)).resolves.toEqual({ outcome: 'committed' })
+    expect(calls.sign).toEqual([])
+    expect(calls.complete).toBe(0)
+  })
+
+  it('refuses a terminated session with a structured error', async () => {
+    const file = resumeFile()
+    for (const status of ['aborted', 'expired', 'failed']) {
+      const { gateway, calls } = makeGateway({
+        async parts() {
+          return listing({ status })
+        },
+      })
+      const error = await resumeMultipart(gateway, makeHandle(file), file).catch((e) => e)
+      expect(error).toBeInstanceOf(UploadError)
+      expect(error.kind).toBe('storage-rejected')
+      expect(calls.complete).toBe(0)
+      expect(calls.abort).toBe(0)
+    }
+  })
+
+  it('rejects a re-selected file that does not match the handle before any request', async () => {
+    const original = resumeFile('abcdefghij', 1_760_000_000_000)
+    const different = resumeFile('abcdefghij', 1_760_000_000_001)
+    const { gateway, calls } = makeGateway()
+
+    const error = await resumeMultipart(gateway, makeHandle(original), different).catch((e) => e)
+
+    expect(error.kind).toBe('non-retryable')
+    expect(calls.parts).toEqual([])
+    expect(calls.sign).toEqual([])
+  })
+
+  it('re-uploads every part when the listing is truncated', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      const part = String(url).split('/').pop()
+      return new Response(null, { status: 200, headers: { ETag: `"etag-${part}"` } })
+    }))
+    const file = resumeFile()
+    const { gateway, calls } = makeGateway({
+      async parts() {
+        // complete=false means the server could not prove this is the whole set.
+        return listing({ complete: false, parts: [signedPart(1, 'abcde')] })
+      },
+    })
+
+    await resumeMultipart(gateway, makeHandle(file), file, { digest: testDigest })
+
+    expect(calls.sign).toEqual([1, 2])
+  })
+
+  it('does not trust a listed part whose size contradicts this file', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { status: 200, headers: { ETag: '"fresh"' } })))
+    const file = resumeFile()
+    const { gateway, calls } = makeGateway({
+      async parts() {
+        return listing({ parts: [{ part_number: 1, etag: '"stale"', size: 4, storage_sha256: 'test:4:abcd', reusable: true }] })
+      },
+    })
+
+    await resumeMultipart(gateway, makeHandle(file), file, { digest: testDigest })
+
+    expect(calls.sign).toEqual([1, 2])
+    expect(calls.completeParts[0][0]).toEqual({ part_number: 1, etag: '"fresh"', size: 5 })
+  })
+
+  it('ignores listed parts outside the current file range', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { status: 200, headers: { ETag: '"fresh"' } })))
+    const file = resumeFile()
+    const { gateway, calls } = makeGateway({
+      async parts() {
+        return listing({ parts: [
+          signedPart(1, 'abcde'),
+          signedPart(2, 'fghij'),
+          signedPart(9, 'zzzzz', '"etag-9"'),
+        ] })
+      },
+    })
+
+    await resumeMultipart(gateway, makeHandle(file), file, { digest: testDigest })
+
+    expect(calls.sign).toEqual([])
+    expect(calls.completeParts[0]).toHaveLength(2)
+  })
+
+  it('keeps the session when a part fails mid-resume instead of aborting durable parts', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('nope', { status: 404 })))
+    const file = resumeFile()
+    const { gateway, calls } = makeGateway({
+      async parts() {
+        return listing({ parts: [signedPart(1, 'abcde')] })
+      },
+    })
+
+    const error = await resumeMultipart(gateway, makeHandle(file), file, { digest: testDigest }).catch((e) => e)
+
+    expect(error).toBeInstanceOf(UploadError)
+    expect(error.kind).toBe('non-retryable')
+    expect(calls.complete).toBe(0)
+    // Aborting here would delete the parts that were just reconciled, making the next
+    // resume start from zero — the opposite of what resume is for.
+    expect(calls.abort).toBe(0)
+  })
+
+  it('rejects a listing for a different session id', async () => {
+    vi.stubGlobal('fetch', vi.fn())
+    const file = resumeFile()
+    const { gateway, calls } = makeGateway({
+      async parts() {
+        return listing({ upload_id: 'someone-else' })
+      },
+    })
+
+    const error = await resumeMultipart(gateway, makeHandle(file), file).catch((e) => e)
+
+    expect(error.kind).toBe('storage-rejected')
+    expect(calls.complete).toBe(0)
+  })
+
+  it('classifies an unreadable listing as a control-plane failure', async () => {
+    const file = resumeFile()
+    const { gateway, calls } = makeGateway({
+      async parts() {
+        throw Object.assign(new Error('forbidden'), { name: 'ApiError', status: 403 })
+      },
+    })
+
+    const error = await resumeMultipart(gateway, makeHandle(file), file).catch((e) => e)
+
+    expect(error.kind).toBe('unauthorized')
+    expect(calls.sign).toEqual([])
+  })
+
+  // R3: the R2 implementation only stopped the local transfer on cancel, leaving the
+  // multipart upload alive on the server. A cancel must reach the control plane.
+  it('cancels a resume by aborting the server session', async () => {
+    const controller = new AbortController()
+    const file = resumeFile()
+    const { gateway, calls } = makeGateway({
+      async parts() {
+        controller.abort()
+        return listing({ parts: [signedPart(1, 'abcde')] })
+      },
+    })
+
+    const error = await resumeMultipart(gateway, makeHandle(file), file, { signal: controller.signal, digest: testDigest })
+      .catch((e) => e)
+
+    expect(error).toBeInstanceOf(UploadCancelledError)
+    expect(calls.sign).toEqual([])
+    expect(calls.abort).toBe(1)
+  })
+
+  it('pauses a resume without aborting the server session', async () => {
+    const controller = new AbortController()
+    const file = resumeFile()
+    const { gateway, calls } = makeGateway({
+      async parts() {
+        controller.abort()
+        return listing({ parts: [signedPart(1, 'abcde')] })
+      },
+    })
+
+    const error = await resumeMultipart(gateway, makeHandle(file), file, {
+      signal: controller.signal,
+      digest: testDigest,
+      interruption: () => 'pause',
+    }).catch((e) => e)
+
+    expect(error).toBeInstanceOf(UploadCancelledError)
+    expect(calls.abort).toBe(0)
+  })
+
+  it('never aborts a resume whose completion may already have reached the server', async () => {
+    const controller = new AbortController()
+    const file = resumeFile()
+    const { gateway, calls } = makeGateway({
+      async parts() {
+        return listing({ status: 'object_completed', parts: [signedPart(1, 'abcde'), signedPart(2, 'fghij')] })
+      },
+      async complete() {
+        controller.abort()
+        throw new Error('connection lost')
+      },
+    })
+
+    const error = await resumeMultipart(gateway, makeHandle(file), file, { signal: controller.signal, digest: testDigest })
+      .catch((e) => e)
+
+    expect(error).toBeInstanceOf(UploadError)
+    expect(calls.abort).toBe(0)
+  })
+
+  it('reports a failed abort instead of claiming a clean cancel', async () => {
+    const controller = new AbortController()
+    const file = resumeFile()
+    const { gateway } = makeGateway({
+      async parts() {
+        controller.abort()
+        return listing({ parts: [signedPart(1, 'abcde')] })
+      },
+      async abort() {
+        throw new Error('control plane is unreachable')
+      },
+    })
+
+    const error = await resumeMultipart(gateway, makeHandle(file), file, { signal: controller.signal, digest: testDigest })
+      .catch((e) => e)
+
+    // The cancellation stays the primary error, and the failed cleanup is attached rather
+    // than replacing it or being silently dropped.
+    expect(error).toBeInstanceOf(UploadFailure)
+    expect((error as UploadFailure).kind).toBe('cancelled')
+    expect((error as UploadFailure).cleanup?.uploadId).toBe('upload-1')
+  })
+
+  it('reports an unknown completion after the bounded attempts and never aborts', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { status: 200, headers: { ETag: '"1"' } })))
+    const file = resumeFile()
+    const { gateway, calls } = makeGateway({
+      async parts() {
+        return listing({
+          parts: [signedPart(1, 'abcde'), signedPart(2, 'fghij')],
+        })
+      },
+      async complete() {
+        throw new Error('network reset')
+      },
+      async read() {
+        return { ...session, status: 'uploading' }
+      },
+    })
+
+    const error = await resumeMultipart(gateway, makeHandle(file), file, { digest: testDigest }).catch((e) => e)
+
+    expect(error).toBeInstanceOf(UploadCompletionUnknownError)
+    expect(calls.complete).toBe(UPLOAD_LIMITS.completionAttempts)
+    expect(calls.abort).toBe(0)
   })
 })

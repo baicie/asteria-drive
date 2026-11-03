@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"mime"
 	"net/http"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,6 +20,11 @@ import (
 	"github.com/baicie/asteria-drive/internal/drive"
 )
 
+// maxListPartsPages bounds the ListParts cursor loop. S3 pages hold up to 1000 parts, so
+// 20 pages cover the 10,000-part limit with headroom; anything beyond that is a cursor
+// that is not making progress, not a legitimate upload.
+const maxListPartsPages = 20
+
 type Options struct {
 	Endpoint              string
 	PublicEndpoint        string
@@ -28,13 +35,21 @@ type Options struct {
 	UsePathStyle          bool
 	AutoCreateBucket      bool
 	EnableChecksumHeaders bool
+	// TrustPartChecksums says this exact backend has passed a contract test proving that
+	// (a) ListParts reports the checksum of the stored bytes and (b) a part PUT whose
+	// content does not match the signed checksum is rejected. Only then may a resumed client
+	// skip a part. It defaults to false on purpose: a service that merely returns a
+	// checksum field has not been shown to validate anything, and SeaweedFS 3.85 is a
+	// concrete counter-example that reports nothing and enforces nothing (ADR-0029).
+	TrustPartChecksums bool
 }
 
 type Provider struct {
-	client          *s3.Client
-	presigner       *s3.PresignClient
-	bucket          string
-	checksumHeaders bool
+	client             *s3.Client
+	presigner          *s3.PresignClient
+	bucket             string
+	checksumHeaders    bool
+	trustPartChecksums bool
 }
 
 func New(ctx context.Context, options Options) (*Provider, error) {
@@ -73,6 +88,11 @@ func New(ctx context.Context, options Options) (*Provider, error) {
 	provider := &Provider{
 		client: client, presigner: s3.NewPresignClient(presignClient), bucket: options.Bucket,
 		checksumHeaders: options.Endpoint == "" || options.EnableChecksumHeaders,
+		// Trusting part checksums also requires the header to participate in the signature,
+		// otherwise the "enforcement" half of the contract is not even attempted. Both are
+		// opt-in and both default off; no backend is trusted by default.
+		trustPartChecksums: options.TrustPartChecksums &&
+			(options.Endpoint == "" || options.EnableChecksumHeaders),
 	}
 	if options.AutoCreateBucket {
 		if err := provider.ensureBucket(ctx, options.Region); err != nil {
@@ -115,23 +135,28 @@ func (p *Provider) CreateMultipart(ctx context.Context, key, mimeType string, ch
 	return *output.UploadId, nil
 }
 
-func (p *Provider) SignUploadPart(ctx context.Context, key, uploadID string, partNumber int, checksum drive.Checksum, ttl time.Duration) (drive.SignedPart, error) {
+func (p *Provider) SignUploadPart(ctx context.Context, key, uploadID string, partNumber int, checksum drive.Checksum, ttl time.Duration) (drive.SignedPart, bool, error) {
 	input := &s3.UploadPartInput{
 		Bucket: aws.String(p.bucket), Key: aws.String(key), UploadId: aws.String(uploadID), PartNumber: aws.Int32(int32(partNumber)),
 	}
-	if p.checksumHeaders && checksum.Algorithm == "sha256" {
+	// When the checksum header participates in the signature, S3 verifies the uploaded
+	// bytes against it and rejects a mismatch. That is what makes "the part already in
+	// storage is this part of this file" a storage-enforced fact rather than a client
+	// promise, so resume can safely skip a signed part (ADR-0028).
+	bound := p.checksumHeaders && checksum.Algorithm == "sha256"
+	if bound {
 		input.ChecksumSHA256 = aws.String(checksum.Value)
 	}
 	output, err := p.presigner.PresignUploadPart(ctx, input, func(options *s3.PresignOptions) {
 		options.Expires = ttl
 	})
 	if err != nil {
-		return drive.SignedPart{}, mapError(err, "could not sign upload part")
+		return drive.SignedPart{}, false, mapError(err, "could not sign upload part")
 	}
 	return drive.SignedPart{
 		PartNumber: partNumber, Method: output.Method, URL: output.URL,
 		RequiredHeaders: flattenHeaders(output.SignedHeader), ExpiresAt: time.Now().UTC().Add(ttl),
-	}, nil
+	}, bound, nil
 }
 
 func (p *Provider) CompleteMultipart(ctx context.Context, key, uploadID string, parts []drive.CompletedPart) (drive.ObjectInfo, error) {
@@ -160,6 +185,74 @@ func (p *Provider) AbortMultipart(ctx context.Context, key, uploadID string) err
 		return nil
 	}
 	return mapError(err, "could not abort multipart upload")
+}
+
+// ListParts pages through S3 ListParts. S3 caps a page at 1000 parts, so a 10,000-part
+// upload needs ten calls; the cursor is the part number marker, not an opaque token.
+//
+// The loop is bounded in three independent ways, because a misbehaving endpoint must not
+// be able to hang a resumed client or grow memory without limit:
+//
+//   - a cursor must strictly advance (NextPartNumberMarker > the marker just used);
+//   - the page count is capped at maxListPartsPages;
+//   - collection stops once drive.MaxUploadParts parts have been seen, which is the most a
+//     single completion request can carry, so asking for an eleventh page is pointless.
+func (p *Provider) ListParts(ctx context.Context, key, uploadID string) ([]drive.StoredPart, error) {
+	parts := make([]drive.StoredPart, 0)
+	var marker *string
+	previous := 0
+	for page := 0; ; page++ {
+		if page >= maxListPartsPages {
+			return nil, drive.E(drive.CodeDependencyUnavailable, "multipart part listing exceeded its page bound")
+		}
+		output, err := p.client.ListParts(ctx, &s3.ListPartsInput{
+			Bucket: aws.String(p.bucket), Key: aws.String(key), UploadId: aws.String(uploadID),
+			PartNumberMarker: marker,
+		})
+		if err != nil {
+			return nil, mapError(err, "could not list multipart parts")
+		}
+		for _, part := range output.Parts {
+			stored := drive.StoredPart{
+				PartNumber: int(aws.ToInt32(part.PartNumber)),
+				ETag:       aws.ToString(part.ETag),
+				Size:       aws.ToInt64(part.Size),
+			}
+			// Only a checksum the storage service itself reports for the accepted bytes is
+			// evidence of content identity. A missing value is not an error: AWS S3 returns
+			// it when the multipart upload was created with a checksum algorithm, while
+			// SeaweedFS 3.85 never does (verified against 3.85 with all four algorithms),
+			// and resume then re-uploads every part rather than trust a client's promise.
+			if value := aws.ToString(part.ChecksumSHA256); value != "" && drive.ValidChecksum(drive.Checksum{Algorithm: "sha256", Value: value}) {
+				stored.StorageChecksum = drive.Checksum{Algorithm: "sha256", Value: value}
+				// A reported checksum is only evidence when this deployment has been
+				// configured as a backend that was proven to compute it over the stored
+				// bytes and to reject a part that does not match its signature. Without
+				// that attestation a resume re-uploads the part (ADR-0029).
+				stored.ChecksumAttested = p.trustPartChecksums
+			}
+			parts = append(parts, stored)
+		}
+		if len(parts) >= drive.MaxUploadParts {
+			parts = parts[:drive.MaxUploadParts]
+			sort.Slice(parts, func(i, j int) bool { return parts[i].PartNumber < parts[j].PartNumber })
+			return parts, nil
+		}
+		if !aws.ToBool(output.IsTruncated) {
+			break
+		}
+		// S3 returns the marker as a string; it must both parse and strictly advance. A
+		// truncated page with no usable cursor cannot be followed, and treating it as the
+		// end would silently under-report parts, so fail loudly instead.
+		next, parseErr := strconv.Atoi(aws.ToString(output.NextPartNumberMarker))
+		if output.NextPartNumberMarker == nil || parseErr != nil || next <= previous {
+			return nil, drive.E(drive.CodeDependencyUnavailable, "multipart part listing returned a non-advancing cursor")
+		}
+		previous = next
+		marker = output.NextPartNumberMarker
+	}
+	sort.Slice(parts, func(i, j int) bool { return parts[i].PartNumber < parts[j].PartNumber })
+	return parts, nil
 }
 
 func (p *Provider) StatObject(ctx context.Context, key string) (drive.ObjectInfo, error) {

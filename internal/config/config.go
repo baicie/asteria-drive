@@ -28,31 +28,35 @@ type OIDCBootstrap struct {
 }
 
 type Config struct {
-	Environment           string
-	Address               string
-	MetricsAddress        string
-	AuthMode              string
-	Tokens                map[string]Token
-	OIDCIssuer            string
-	OIDCClientID          string
-	OIDCBootstrap         []OIDCBootstrap
-	CursorKey             []byte
-	MetadataDriver        string
-	DatabaseURL           string
-	DatabaseURLFromFile   bool
-	AutoMigrate           bool
-	StorageDriver         string
-	S3Endpoint            string
-	S3PublicEndpoint      string
-	S3Region              string
-	S3Bucket              string
-	S3AccessKey           string
-	S3AccessKeyFromFile   bool
-	S3SecretKey           string
-	S3SecretKeyFromFile   bool
-	S3PathStyle           bool
-	S3AutoCreate          bool
-	S3ChecksumHeaders     bool
+	Environment         string
+	Address             string
+	MetricsAddress      string
+	AuthMode            string
+	Tokens              map[string]Token
+	OIDCIssuer          string
+	OIDCClientID        string
+	OIDCBootstrap       []OIDCBootstrap
+	CursorKey           []byte
+	MetadataDriver      string
+	DatabaseURL         string
+	DatabaseURLFromFile bool
+	AutoMigrate         bool
+	StorageDriver       string
+	S3Endpoint          string
+	S3PublicEndpoint    string
+	S3Region            string
+	S3Bucket            string
+	S3AccessKey         string
+	S3AccessKeyFromFile bool
+	S3SecretKey         string
+	S3SecretKeyFromFile bool
+	S3PathStyle         bool
+	S3AutoCreate        bool
+	S3ChecksumHeaders   bool
+	// S3TrustPartChecksums enables part skipping on resume, but only for a backend that
+	// passed the attestation contract test (ADR-0029). It defaults to false: returning a
+	// checksum field is not the same as validating the bytes it describes.
+	S3TrustPartChecksums  bool
 	MaxFileSize           int64
 	PartSize              int64
 	UploadTTL             time.Duration
@@ -160,6 +164,11 @@ func load(lookup func(string) (string, bool)) (Config, error) {
 	}
 	if cfg.S3ChecksumHeaders, err = parseBool(get("ASTERIA_S3_CHECKSUM_HEADERS", "false")); err != nil {
 		return Config{}, fmt.Errorf("ASTERIA_S3_CHECKSUM_HEADERS: %w", err)
+	}
+	// Off by default everywhere, including production: no backend, AWS S3 included, has
+	// passed this repository's real-backend attestation test, so none may skip parts.
+	if cfg.S3TrustPartChecksums, err = parseBool(get("ASTERIA_S3_TRUST_PART_CHECKSUMS", "false")); err != nil {
+		return Config{}, fmt.Errorf("ASTERIA_S3_TRUST_PART_CHECKSUMS: %w", err)
 	}
 	if cfg.MaintenanceEnabled, err = parseBool(get("ASTERIA_MAINTENANCE_ENABLED", "true")); err != nil {
 		return Config{}, fmt.Errorf("ASTERIA_MAINTENANCE_ENABLED: %w", err)
@@ -275,6 +284,12 @@ func (c Config) Validate() error {
 	}
 	if c.StorageDriver == "s3" && (c.S3Endpoint == "" || c.S3PublicEndpoint == "" || c.S3Region == "" || c.S3Bucket == "") {
 		return fmt.Errorf("S3 endpoint, public endpoint, region and bucket are required for s3")
+	}
+	if c.StorageDriver == "s3" && c.S3TrustPartChecksums && !c.S3ChecksumHeaders {
+		// Without the signed checksum header a part PUT carries no digest for the backend to
+		// enforce, so "attested" would be a claim about nothing. Refuse at startup rather than
+		// silently degrade to a backend that never skips parts.
+		return fmt.Errorf("ASTERIA_S3_TRUST_PART_CHECKSUMS requires ASTERIA_S3_CHECKSUM_HEADERS=true")
 	}
 	if c.StorageDriver == "s3" {
 		for _, endpoint := range []struct {

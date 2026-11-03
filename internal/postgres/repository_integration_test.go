@@ -38,11 +38,11 @@ func TestMigrateIsIdempotent(t *testing.T) {
 	if err := conn.QueryRow(ctx, `
 		SELECT count(*) FROM information_schema.tables
 		WHERE table_schema=current_schema()
-		  AND table_name IN ('tenant','file_node','blob','file_version','upload_session','upload_part','principal','tenant_member')`,
+		  AND table_name IN ('tenant','file_node','blob','file_version','upload_session','upload_part','principal','tenant_member','upload_part_signature')`,
 	).Scan(&tables); err != nil {
 		t.Fatalf("count MVP tables: %v", err)
 	}
-	if migrations != 3 || tables != 8 {
+	if migrations != 5 || tables != 9 {
 		t.Fatalf("unexpected migration result: migrations=%d tables=%d", migrations, tables)
 	}
 }
@@ -993,4 +993,107 @@ func assertNoError(t *testing.T, err error) {
 
 func testID(number int) string {
 	return fmt.Sprintf("00000000-0000-4000-8000-%012d", number)
+}
+
+// TestRepositoryUploadPartsContract covers the read side of ADR-0027 resume support:
+// parts become visible only after BeginComplete freezes them, and a foreign tenant gets
+// not_found rather than an empty list.
+func TestRepositoryUploadPartsContract(t *testing.T) {
+	repository := integrationRepository(t)
+	ctx := context.Background()
+	now := time.Date(2026, 11, 2, 9, 0, 0, 0, time.UTC)
+	identity := drive.Identity{TenantID: testID(901), PrincipalID: testID(903)}
+	other := drive.Identity{TenantID: testID(902), PrincipalID: testID(904)}
+	assertNoError(t, func() error {
+		_, err := repository.EnsureTenant(ctx, drive.TenantSeed{
+			TenantID: identity.TenantID, DisplayName: "Parts", RootNodeID: testID(905), Now: now,
+		})
+		return err
+	}())
+	session := newUpload(testID(906), identity, testID(905), "parts.bin", "parts.bin", now)
+	_, err := repository.CreateUpload(ctx, drive.CreateUploadCommand{Session: session})
+	assertNoError(t, err)
+
+	parts, err := repository.UploadParts(ctx, identity, session.ID)
+	assertNoError(t, err)
+	if len(parts) != 0 {
+		t.Fatalf("parts before completion = %+v, want empty", parts)
+	}
+
+	frozen := []drive.CompletedPart{
+		{PartNumber: 1, ETag: `"etag-1"`, Size: 5, Checksum: drive.Checksum{Algorithm: "sha256", Value: "a"}},
+		{PartNumber: 2, ETag: `"etag-2"`, Size: 7},
+	}
+	if _, err := repository.BeginComplete(ctx, identity, session.ID, "digest-parts", frozen, now.Add(time.Minute)); err != nil {
+		t.Fatalf("begin complete: %v", err)
+	}
+	parts, err = repository.UploadParts(ctx, identity, session.ID)
+	assertNoError(t, err)
+	if len(parts) != 2 || parts[0].PartNumber != 1 || parts[1].PartNumber != 2 {
+		t.Fatalf("frozen parts = %+v", parts)
+	}
+	if parts[0].ETag != `"etag-1"` || parts[0].Size != 5 || parts[0].Checksum.Algorithm != "sha256" {
+		t.Fatalf("part 1 = %+v", parts[0])
+	}
+	if parts[1].ETag != `"etag-2"` || parts[1].Size != 7 {
+		t.Fatalf("part 2 = %+v", parts[1])
+	}
+
+	_, err = repository.UploadParts(ctx, other, session.ID)
+	assertCode(t, err, drive.CodeNotFound)
+	_, err = repository.UploadParts(ctx, identity, testID(999))
+	assertCode(t, err, drive.CodeNotFound)
+}
+
+// TestRepositoryPartSignaturesSurviveForwardMigration proves the R3 schema change is a
+// forward-only addition on an already-published schema: a session created and signed under
+// migration 0004 keeps its rows, and a database that has only ever run 0004 can be brought
+// forward without rewriting anything.
+func TestRepositoryPartSignaturesSurviveForwardMigration(t *testing.T) {
+	connection := isolatedDatabaseURL(t)
+	ctx := context.Background()
+	// Bring the schema to its published R2 state only, exactly as a deployed database sits.
+	if err := applyMigrationsThrough(ctx, connection, 4); err != nil {
+		t.Fatalf("apply R2 migrations: %v", err)
+	}
+	now := time.Date(2026, 11, 3, 9, 0, 0, 0, time.UTC)
+	identity := drive.Identity{TenantID: testID(921), PrincipalID: testID(923)}
+	repository, err := New(ctx, connection)
+	if err != nil {
+		t.Fatalf("open repository on R2 schema: %v", err)
+	}
+	assertNoError(t, func() error {
+		_, err := repository.EnsureTenant(ctx, drive.TenantSeed{
+			TenantID: identity.TenantID, DisplayName: "Legacy", RootNodeID: testID(925), Now: now,
+		})
+		return err
+	}())
+	session := newUpload(testID(926), identity, testID(925), "legacy.bin", "legacy.bin", now)
+	_, err = repository.CreateUpload(ctx, drive.CreateUploadCommand{Session: session})
+	assertNoError(t, err)
+	assertNoError(t, repository.RecordPartSignature(ctx, identity, session.ID, drive.PartSignature{
+		PartNumber: 1, Size: 4, SHA256: "u4KAGrZLoDkPvv6uAVbXB3hfd1Ra1b4AVSPiIVppbQo=",
+	}, now))
+	repository.Close()
+
+	// The R3 migration must apply cleanly on top and leave the historical row untouched.
+	if err := Migrate(ctx, connection); err != nil {
+		t.Fatalf("apply forward migration on an R2 database: %v", err)
+	}
+	upgraded, err := New(ctx, connection)
+	if err != nil {
+		t.Fatalf("open repository after forward migration: %v", err)
+	}
+	t.Cleanup(upgraded.Close)
+	signatures, err := upgraded.PartSignatures(ctx, identity, session.ID)
+	assertNoError(t, err)
+	if len(signatures) != 1 || signatures[0].PartNumber != 1 || signatures[0].SHA256 != "u4KAGrZLoDkPvv6uAVbXB3hfd1Ra1b4AVSPiIVppbQo=" {
+		t.Fatalf("historical signature lost by the forward migration: %+v", signatures)
+	}
+	// The session is still usable: a part can be signed and the frozen list still reads back.
+	live, err := upgraded.Upload(ctx, identity, session.ID)
+	assertNoError(t, err)
+	if live.ID != session.ID || live.Status != drive.UploadCreated {
+		t.Fatalf("historical session unreadable after migration: %+v", live)
+	}
 }

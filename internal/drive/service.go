@@ -513,11 +513,39 @@ func (s *Service) SignUploadPart(ctx context.Context, identity Identity, uploadI
 			return SignedPart{}, err
 		}
 	}
-	signed, err := s.storage.SignUploadPart(ctx, session.ObjectKey, session.StorageUploadID, partNumber, checksum, s.uploadSignTTL)
+	signed, bound, err := s.storage.SignUploadPart(ctx, session.ObjectKey, session.StorageUploadID, partNumber, checksum, s.uploadSignTTL)
 	if err != nil {
 		return SignedPart{}, mapStorageError(err)
 	}
+	// Record what the client promised, for audit and diagnosis. This row is never read
+	// back as proof of stored bytes: a signature can be issued and its PUT interrupted, or
+	// the same part number can be re-signed with another digest without a second PUT
+	// (ADR-0028). `bound` only says the backend would enforce the header; it does not say
+	// this part was ever stored, and not every backend enforces it (SeaweedFS 3.85 ignores
+	// it), so it must not change what resume is allowed to trust.
+	if bound {
+		partSize := signedPartSize(session, partNumber)
+		if err := s.repository.RecordPartSignature(ctx, identity, uploadID, PartSignature{
+			PartNumber: partNumber, Size: partSize, SHA256: checksum.Value,
+		}, s.clock.Now()); err != nil {
+			return SignedPart{}, err
+		}
+	}
 	return signed, nil
+}
+
+// signedPartSize is the byte length of a part of this session, derived from the declared
+// total size and the session part size. The last part is whatever remains.
+func signedPartSize(session UploadSession, partNumber int) int64 {
+	start := int64(partNumber-1) * session.PartSize
+	remaining := session.ExpectedSize - start
+	if remaining > session.PartSize {
+		return session.PartSize
+	}
+	if remaining < 0 {
+		return 0
+	}
+	return remaining
 }
 
 type CompleteOutput struct {
@@ -659,6 +687,131 @@ func (s *Service) failUploadCompletion(ctx context.Context, identity Identity, s
 		}
 	}
 	return nil
+}
+
+// ListUploadParts answers a resumed client's "what did I already upload?" question.
+//
+// It is deliberately read-only: no signing, no state transition, no storage write. The
+// listing merges two sources because neither alone is sufficient:
+//
+//   - object storage knows every part it has accepted, including parts uploaded just
+//     before a reload;
+//   - the control plane only persists parts when completion is requested, but it is the
+//     authority for the frozen completion list.
+//
+// Control-plane rows win on a conflict: once a completion digest is frozen, the client
+// must resend exactly those parts or completion fails with idempotency_conflict.
+//
+// A listed part is marked Reusable only when object storage itself reports a checksum for
+// the bytes it accepted. The client-declared `upload_part_signature` digest is never used:
+// it describes a request that may never have been followed by a successful PUT, and a
+// later signature for the same part number overwrites it without touching storage
+// (ADR-0028, R3).
+//
+// This endpoint is strictly read-only. An elapsed session is reported as EXPIRED in the
+// response without changing its stored status or aborting its multipart upload: a GET must
+// not have persistent side effects, and the maintenance loop owns the actual transition.
+// A session that storage no longer knows (aborted or expired by maintenance) is reported
+// as invalid_state with no parts rather than leaking the storage error.
+func (s *Service) ListUploadParts(ctx context.Context, identity Identity, uploadID string, limit int) (UploadPartListing, error) {
+	if err := validateID(uploadID); err != nil {
+		return UploadPartListing{}, err
+	}
+	if limit == 0 || limit > MaxUploadParts {
+		limit = MaxUploadParts
+	}
+	session, err := s.repository.Upload(ctx, identity, uploadID)
+	if err != nil {
+		return UploadPartListing{}, err
+	}
+	if !s.clock.Now().Before(session.ExpiresAt) && !session.Status.Terminal() {
+		// Report the effective status without writing it: the maintenance loop performs the
+		// real transition and the multipart abort.
+		return UploadPartListing{UploadID: uploadID, Status: UploadExpired, PartSize: session.PartSize, Parts: []StoredPart{}, Complete: true}, nil
+	}
+
+	listing := UploadPartListing{UploadID: uploadID, Status: session.Status, PartSize: session.PartSize, Parts: []StoredPart{}}
+	recorded, err := s.repository.UploadParts(ctx, identity, uploadID)
+	if err != nil {
+		return UploadPartListing{}, err
+	}
+	if len(recorded) > 0 {
+		// The frozen completion list is the authority once completion has been requested:
+		// these are the exact parts the server will accept, so they are complete. None is
+		// reusable: the client must replay this list, not resume from it (ADR-0028).
+		for _, part := range recorded {
+			listing.Parts = append(listing.Parts, StoredPart{PartNumber: part.PartNumber, ETag: part.ETag, Size: part.Size})
+		}
+		listing.Complete = true
+		return listing, nil
+	}
+	if session.Status == UploadCommitted || session.Status == UploadAborted || session.Status == UploadExpired || session.Status == UploadFailed {
+		// A terminal session has no resumable parts. Returning the terminal status is the
+		// whole answer; do not ask storage about a multipart that no longer exists.
+		return listing, nil
+	}
+	stored, err := s.storage.ListParts(ctx, session.ObjectKey, session.StorageUploadID)
+	if err != nil {
+		if CodeOf(err) == CodeNotFound {
+			return UploadPartListing{}, E(CodeInvalidState, "multipart upload is no longer available")
+		}
+		return UploadPartListing{}, mapStorageError(err)
+	}
+	listing.Parts = reusableStoredParts(stored, session)
+	sort.Slice(listing.Parts, func(i, j int) bool { return listing.Parts[i].PartNumber < listing.Parts[j].PartNumber })
+	// Completeness is decided before truncation: if the caller's limit cuts the list short,
+	// the returned subset is not authoritative. Storage itself never returns more than
+	// MaxUploadParts, which is the maximum a completion request can carry, so a storage
+	// listing at that bound is still complete.
+	listing.Complete = len(listing.Parts) <= limit
+	if len(listing.Parts) > limit {
+		listing.Parts = listing.Parts[:limit]
+	}
+	return listing, nil
+}
+
+// reusableStoredParts turns a raw storage listing into the entries a resumed client may
+// act on, and decides for each one whether skipping it is provable.
+//
+// A part is reusable only when all of the following hold:
+//
+//   - object storage returned the part number once. A backend that keeps several objects
+//     for the same part number (SeaweedFS does: a re-PUT appends a second entry) makes the
+//     final content depend on which ETag completion names, so there is no single stored
+//     identity to check against;
+//   - its size is exactly the size this session's declared geometry gives that part, so a
+//     truncated or foreign fragment cannot be mistaken for the real part;
+//   - storage reports a checksum for the bytes it accepted, and the provider attests that
+//     the value describes stored content and that the backend enforced it on the PUT.
+//
+// The attestation matters as much as the value. A backend can answer with a checksum it
+// computed but never validated against the signed digest (SeaweedFS 3.85 computes a part
+// MD5 and ignores x-amz-checksum-sha256 entirely), and an S3-compatible service that merely
+// echoes a header is not proof of stored bytes either. Without a provider contract test
+// against that exact backend there is no attestation, so nothing is skipable.
+//
+// Everything else is returned with Reusable=false so the client re-sends it. The cost is
+// bandwidth; the alternative is trusting a value that a failed PUT never touched.
+func reusableStoredParts(stored []StoredPart, session UploadSession) []StoredPart {
+	byPart := make(map[int][]StoredPart, len(stored))
+	for _, part := range stored {
+		if part.PartNumber < 1 || part.PartNumber > MaxUploadParts || part.ETag == "" {
+			continue
+		}
+		byPart[part.PartNumber] = append(byPart[part.PartNumber], part)
+	}
+	parts := make([]StoredPart, 0, len(byPart))
+	for partNumber, candidates := range byPart {
+		part := candidates[0]
+		part.Reusable = len(candidates) == 1 &&
+			part.Size == signedPartSize(session, partNumber) &&
+			part.ChecksumAttested &&
+			part.StorageChecksum.Algorithm == "sha256" &&
+			ValidChecksum(part.StorageChecksum)
+		parts = append(parts, part)
+	}
+	sort.Slice(parts, func(i, j int) bool { return parts[i].PartNumber < parts[j].PartNumber })
+	return parts
 }
 
 func (s *Service) AbortUpload(ctx context.Context, identity Identity, uploadID string) error {

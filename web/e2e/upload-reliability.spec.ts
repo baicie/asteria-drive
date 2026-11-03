@@ -249,9 +249,51 @@ test('cancels an active upload and aborts its multipart session', async ({ page 
   })
   await expect.poll(() => created).toBe(true)
   await page.getByRole('button', { name: '取消上传' }).click()
-  await expect(page.getByText('上传已取消')).toBeVisible()
+  await expect(page.getByText('已取消「cancelled.txt」的上传')).toBeVisible()
   expect(aborted).toBe(true)
   expect(completed).toBe(false)
+})
+
+test('pausing keeps the multipart session and offers a resume', async ({ page }) => {
+  const files: Record<string, unknown>[] = []
+  let aborted = false
+  let created = false
+  await page.route('**/s3/upload/**', async (route) => {
+    // Every part stalls: the only way out is the pause button.
+    await new Promise(() => {})
+  })
+  await page.route('**/api/v1/**', async (route) => {
+    const request = route.request()
+    const url = new URL(request.url())
+    const base = serveBase(route, url, files)
+    if (base) { await base; return }
+    if (url.pathname === '/api/v1/uploads' && request.method() === 'POST') {
+      created = true
+      await route.fulfill({ status: 201, json: { data: { id: uploadId, status: 'created', part_size: 8, expected_size: 12 } } })
+    } else if (url.pathname.endsWith('/parts/sign')) {
+      const part = (request.postDataJSON() as { part_number: number }).part_number
+      await route.fulfill({ json: { data: { part_number: part, method: 'PUT', url: `/s3/upload/${part}` } } })
+    } else if (url.pathname === `/api/v1/uploads/${uploadId}` && request.method() === 'DELETE') {
+      aborted = true
+      await route.fulfill({ status: 204, body: '' })
+    } else {
+      await route.fulfill({ status: 404, json: { error: { message: 'unexpected route' } } })
+    }
+  })
+
+  await login(page)
+  await page.locator('input[type="file"]').setInputFiles({
+    name: 'paused.txt',
+    mimeType: 'text/plain',
+    buffer: Buffer.from('twelve-bytes'),
+  })
+  await expect.poll(() => created).toBe(true)
+  await page.getByRole('button', { name: '暂停', exact: true }).click()
+  await expect(page.getByText('已暂停「paused.txt」，可刷新后继续上传')).toBeVisible()
+
+  // Pause and cancel are different operations: the server session must survive.
+  expect(aborted).toBe(false)
+  expect(await page.evaluate(() => window.sessionStorage.getItem('asteria.upload.resume'))).toBeTruthy()
 })
 
 
