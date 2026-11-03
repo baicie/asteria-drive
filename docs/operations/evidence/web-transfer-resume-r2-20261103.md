@@ -80,6 +80,21 @@ CPU，无额外网络流量；恢复时只哈希需要比对的分片。
 签名中的 checksum 头，摘要绑定不会生效，恢复会安全地退化为“无证据 → 全部重传”。该行为由
 `TestListUploadPartsWithoutSignatureHasNoIdentity` 与客户端“无摘要必须重传”的用例覆盖。
 
+## `CI / web-live` 重复运行记录
+
+真实栈 job 每次运行都记录实际用例数与结果，不做无条件重试、不 sleep、不跳过：
+
+| run | 提交 | 用例数 | 结果 | 备注 |
+| --- | --- | --- | --- | --- |
+| [41567679623](https://github.com/baicie/asteria-drive/actions/runs/41567679623) | `06dc4e6` | 3 | 3 passed (5.6s) | R2 最终提交，含 P0 混合内容用例 |
+| [41567171544](https://github.com/baicie/asteria-drive/actions/runs/41567171544) | `cfea680` | 3 | 3 passed (4.3s) | R2 首次推送；同 run 的 `CI / quality` 因 gofmt 失败 |
+| [41476098805](https://github.com/baicie/asteria-drive/actions/runs/41476098805) | `ce11e54` | 2 | 2 passed (3.4s) | R1 文档提交 |
+| [41474905270](https://github.com/baicie/asteria-drive/actions/runs/41474905270) | `29e0833` | 2 | 2 passed (6.3s) | R1 首次成功运行 |
+
+失败记录同样保留：run `41474678713` 的 `CI / quality` 在 “Check formatting” 失败（gofmt
+对齐），修正后重跑；R2 的 `41567171544` 也以同样原因失败并已修正。两次失败都来自格式检查，
+没有通过重试或跳过掩盖。
+
 ## 未覆盖 / 风险
 
 - `ListParts` 在 SeaweedFS 上仍未验证超过 1000 分片的真实分页（仅用 XML 桩覆盖协议）。
