@@ -5,6 +5,7 @@ import (
 	"os"
 	"reflect"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -192,10 +193,12 @@ func TestCIWorkflowTrustBoundaryAndStableJobs(t *testing.T) {
 		},
 		"web": {
 			name: "CI / web", timeoutMinutes: 20,
-			actions: []string{checkoutAction, setupNodeAction},
+			actions: []string{checkoutAction, setupNodeAction, uploadArtifactAction},
 			commands: []string{
 				"npm ci --ignore-scripts",
 				"npm run typecheck",
+				"npm run test:unit",
+				"--reporter=junit",
 				"npm run build",
 				"npx playwright install --with-deps chromium",
 				"npm run test:e2e",
@@ -276,6 +279,58 @@ func TestCIWorkflowTrustBoundaryAndStableJobs(t *testing.T) {
 		if jobID == "integration" {
 			assertIntegrationJobContract(t, job)
 		}
+		if jobID == "web" {
+			assertWebJobContract(t, job)
+		}
+	}
+}
+
+func assertWebJobContract(t *testing.T, job workflowJob) {
+	t.Helper()
+
+	steps := make(map[string]workflowStep, len(job.Steps))
+	for _, step := range job.Steps {
+		if _, duplicate := steps[step.Name]; duplicate {
+			t.Fatalf("web job repeats step name %q", step.Name)
+		}
+		steps[step.Name] = step
+	}
+	upload, ok := steps["Upload web failure evidence"]
+	if !ok {
+		t.Fatal("web job is missing the failure-evidence upload step")
+	}
+	if upload.If != `${{ always() }}` {
+		t.Errorf("web evidence upload condition = %q, want always()", upload.If)
+	}
+	if upload.Uses != uploadArtifactAction {
+		t.Errorf("web evidence uses %q, want pinned upload-artifact", upload.Uses)
+	}
+	if fmt.Sprint(upload.With["if-no-files-found"]) != "ignore" ||
+		fmt.Sprint(upload.With["retention-days"]) != "7" ||
+		fmt.Sprint(upload.With["name"]) != "web-evidence" {
+		t.Errorf("web evidence upload has unexpected inputs: %#v", upload.With)
+	}
+	uploadPaths := strings.Fields(fmt.Sprint(upload.With["path"]))
+	for _, required := range []string{
+		"web/unit-results.xml",
+		"web/unit-output.log",
+		"web/coverage",
+		"web/playwright-report",
+		"web/playwright-results.xml",
+	} {
+		if !slices.Contains(uploadPaths, required) {
+			t.Errorf("web evidence upload omits %q", required)
+		}
+	}
+
+	// Unit tests must run before the build so a unit failure reports the real cause
+	// rather than a downstream bundling error.
+	order := make(map[string]int, len(job.Steps))
+	for index, step := range job.Steps {
+		order[step.Name] = index
+	}
+	if order["Run web unit tests"] >= order["Build web console"] {
+		t.Error("web unit tests must run before the production build")
 	}
 }
 

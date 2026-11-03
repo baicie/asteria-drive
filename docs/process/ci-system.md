@@ -13,9 +13,10 @@ gated by the configured `release` environment and immutable-release setting.
 - The repository is public and main is the default branch.
 - `.github/workflows/ci.yml` runs five secret-free PR gates. Their required-check
   status is a GitHub platform setting and must be verified for the target branch.
-- `.github/workflows/security.yml` runs govulncheck, dependency review, and
-  CodeQL without repository secrets; `.github/dependabot.yml` covers Go, npm,
-  GitHub Actions, and Compose/Docker dependencies.
+- `.github/workflows/security.yml` runs govulncheck, dependency review, and two
+  CodeQL jobs (Go, and TypeScript/Vue) without repository secrets;
+  `.github/dependabot.yml` covers Go, npm, GitHub Actions, and Compose/Docker
+  dependencies. The TypeScript/Vue CodeQL job is not yet a required check.
 - `go.mod` declares Go 1.25; quality and API checks use patched minimum Go
   1.26.10,
   while race uses the current Go 1.27.3. Automatic toolchain downloads are
@@ -41,7 +42,7 @@ implemented:
 | Workflow | Trigger | Merge-gate status | Responsibility |
 | --- | --- | --- | --- |
 | ci.yml | pull request, push to main, manual | required on protected main | quality, race, API contract, integration, and web console implemented |
-| security.yml | pull request, push to main, weekly schedule, manual | required on protected main | govulncheck, dependency review, CodeQL |
+| security.yml | pull request, push to main, weekly schedule, manual | required on protected main | govulncheck, dependency review, CodeQL (Go); CodeQL (TypeScript/Vue) runs but is not yet required |
 | release.yml | v* tag, manual | protected release environment | reproducible API binaries, Web static bundle, checksums, SBOMs and provenance |
 | dependabot.yml | GitHub configuration | n/a; implemented | Go modules, npm, Actions, and Docker update proposals |
 
@@ -153,12 +154,22 @@ Steps:
 - install the locked `web/package-lock.json` dependencies with lifecycle scripts
   disabled;
 - run `vue-tsc --noEmit` over the Vue application;
+- run the Vitest unit suite with the V8 coverage provider, writing a JUnit
+  result file, a console log, and lcov/json coverage into `web/`;
 - build the production Vite bundle;
 - install Chromium and run the Playwright browser workflow against a local
-  preview server with deterministic API fixtures.
+  preview server with deterministic API fixtures, writing an HTML report and a
+  JUnit result file;
+- always upload `web-evidence` (unit JUnit + log + coverage + Playwright HTML
+  report, JUnit file, and traces) with `if: always()`, so a failing run keeps its
+  evidence instead of only a log line.
 
 This job is secret-free and does not start Docker or contact the API. The web
 image build and API smoke flow remain separate integration work.
+
+The unit tests run before the production build so a unit failure reports its
+own cause rather than a downstream bundling error. The contract test in
+`internal/cicheck` enforces that ordering and the evidence paths.
 
 ## 4. Security workflow and dependency updates
 
@@ -171,7 +182,12 @@ weekly at 03:17 UTC on Mondays, and manual dispatches:
 - `Security / dependency-review` runs only for pull requests and blocks newly
   introduced high or critical dependency vulnerabilities;
 - `Security / codeql` analyzes Go with the pinned CodeQL action and grants only
-  `security-events: write` in that job.
+  `security-events: write` in that job;
+- `Security / codeql-web` analyzes the TypeScript/Vue console with
+  `languages: javascript-typescript` and `build-mode: none`. It is a separate job
+  rather than a matrix entry so the existing required check name
+  `Security / codeql` does not change. It is **not yet a required check**:
+  promoting it is a repository-settings change, not a workflow change.
 
 Every Action is pinned to a full commit SHA, checkout credentials are discarded,
 and no job reads repository secrets. All three security checks are required for
@@ -254,7 +270,13 @@ Upload only short-lived, non-secret artifacts:
   profiles;
 - OpenAPI lint output;
 - sanitized Compose logs;
+- web unit JUnit/log/lcov and Playwright HTML report, JUnit file, and traces from
+  `web-evidence`;
 - benchmark output when a benchmark job is explicitly requested.
+
+The web evidence contains only synthetic fixtures: the Playwright suite replaces
+`/api` with route handlers and never receives a real token or a real presigned
+URL. The opt-in live-stack spec is not part of `CI / web` for that reason.
 
 Never upload environment files, Authorization headers, signed URLs, database
 URLs, or full request bodies. Required jobs must not retry failed tests
@@ -310,8 +332,11 @@ Deployment automation remains outside this rollout.
 - API contract installs only locked npm dependencies, validates the workflow
   schema, lints OpenAPI, compares the pull-request document with its base, and
   checks exact equality between documented and registered HTTP operations.
-- Web typechecks the Vue application and builds the production bundle from the
-  locked `web/package-lock.json`; it does not contact external services.
+- Web typechecks the Vue application, runs the Vitest unit suite before the
+  production build, and builds the bundle from the locked
+  `web/package-lock.json`; it does not contact external services. Unit and
+  Playwright failures leave a `web-evidence` artifact (JUnit, coverage, HTML
+  report, traces) for seven days.
 - Workflow permissions are read-only, checkout credentials are not persisted,
   pull-request concurrency is cancellable, and third-party Actions use full SHAs.
 - Integration uses disposable repository-owned values rather than GitHub Secrets
@@ -328,7 +353,9 @@ Deployment automation remains outside this rollout.
   strict up-to-date checks, review rules, CODEOWNERS review, and administrator
   enforcement.
 - Security checks run without repository secrets, use pinned Action/tool versions,
-  and keep CodeQL's write permission scoped to its job.
+  and keep CodeQL's write permission scoped to its job. The TypeScript/Vue
+  CodeQL job is additive and must be promoted to a required check by a
+  repository-settings change before it can gate merges.
 - Dependabot proposes weekly updates for Go, npm, Actions, and Compose/Docker
   dependencies; it does not itself grant merge or branch permissions.
 - Release tags are validated against protected `main`; pull requests cannot

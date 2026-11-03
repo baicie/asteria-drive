@@ -21,6 +21,10 @@
 /web/dist/
 /web/test-results/
 /web/playwright-report/
+/web/playwright-results.xml
+/web/unit-results.xml
+/web/unit-output.log
+/web/coverage/
 /unit-test.json
 
 # Local evidence collection scratch directories

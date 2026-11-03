@@ -89,3 +89,30 @@ jobs:
         uses: github/codeql-action/analyze@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v4.37.7
         with:
           category: /language:go
+
+  # The web console is TypeScript/Vue and was never scanned: the `codeql` job above only
+  # initialises the Go extractor. This job is deliberately separate rather than a matrix
+  # entry, because a matrix would rename the existing `Security / codeql` required check.
+  # It is not yet a required check; promoting it is a repository-settings change.
+  codeql-web:
+    name: Security / codeql-web
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v4.37.7
+        with:
+          languages: javascript-typescript
+          build-mode: none
+      - name: Analyze with CodeQL
+        uses: github/codeql-action/analyze@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v4.37.7
+        with:
+          category: /language:javascript-typescript

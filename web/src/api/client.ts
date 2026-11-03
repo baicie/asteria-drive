@@ -41,7 +41,11 @@ export async function apiResponse<T>(path: string, init: ApiInit = {}): Promise<
 
 export async function api<T>(path: string, init: ApiInit = {}): Promise<T> {
   const body = await apiResponse<{ data?: T } | T>(path, init)
-  return ((body as { data?: T } | null)?.data ?? body) as T
+  // An explicit `{"data": null}` must stay null; only a missing envelope key passes the body through.
+  if (body !== null && typeof body === 'object' && Object.prototype.hasOwnProperty.call(body, 'data')) {
+    return (body as { data: T }).data
+  }
+  return body as T
 }
 
 export async function apiPage<T>(path: string, token = ''): Promise<PageResponse<T>> {

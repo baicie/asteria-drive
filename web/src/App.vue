@@ -9,6 +9,7 @@ import { useDirectory } from './features/files/use-directory'
 import { useMovePicker } from './features/files/use-move-picker'
 import { useRecycleBin } from './features/recycle/use-recycle-bin'
 import { useUploadTask } from './features/uploads/use-upload-task'
+import { useBusy } from './lib/busy'
 import { newIdempotencyKey } from './lib/idempotency'
 
 type ViewMode = 'files' | 'recycle'
@@ -17,7 +18,9 @@ const token = ref(localStorage.getItem('asteria.token') ?? '')
 const tenant = ref<Tenant | null>(null)
 const folderName = ref('')
 const fileInput = ref<HTMLInputElement | null>(null)
-const busy = ref('')
+const busy = useBusy()
+// Top-level binding so Vue unwraps the computed in templates; `busy.any` would not.
+const busyAny = busy.any
 const loginError = ref('')
 const notice = ref<Notice>(null)
 const viewMode = ref<ViewMode>('files')
@@ -142,7 +145,7 @@ function logout() {
   // Cancel any in-flight S3 transport before invalidating the current UI session.
   // Upload cleanup uses the credential captured at upload start, not the cleared reactive token.
   cancelUploadForLogout()
-  busy.value = ''
+  busy.clear()
   connectionGeneration += 1
   resetDirectory()
   resetRecycleBin()
@@ -184,58 +187,70 @@ async function switchView(mode: ViewMode) {
   }
 }
 
-async function recycleEntry(item: Node) {
-  if (!window.confirm(`确定将「${item.name}」移入回收站吗？`)) return
-  busy.value = `recycle:${item.id}`
-  clearNotice()
+/**
+ * Run one keyed operation. A repeat invocation of the same key is refused, so a double
+ * click that lands before the disabled attribute re-renders cannot issue a duplicate
+ * DELETE/PATCH/POST.
+ */
+async function runBusy(key: string, action: () => Promise<void>): Promise<void> {
+  if (busy.active(key)) return
+  busy.begin(key)
   try {
-    await api(`/api/v1/nodes/${encodeURIComponent(item.id)}`, {
-      method: 'DELETE',
-      headers: revisionHeader(item),
-    })
-    await refresh()
-    setNotice(`已将「${item.name}」移入回收站`)
-  } catch (error) {
-    setNotice(error instanceof Error ? error.message : '移入回收站失败', 'error')
+    await action()
   } finally {
-    busy.value = ''
+    busy.end(key)
   }
 }
 
+async function recycleEntry(item: Node) {
+  if (!window.confirm(`确定将「${item.name}」移入回收站吗？`)) return
+  await runBusy(`recycle:${item.id}`, async () => {
+    clearNotice()
+    try {
+      await api(`/api/v1/nodes/${encodeURIComponent(item.id)}`, {
+        method: 'DELETE',
+        headers: revisionHeader(item),
+      })
+      await refresh()
+      setNotice(`已将「${item.name}」移入回收站`)
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : '移入回收站失败', 'error')
+    }
+  })
+}
+
 async function restoreEntry(entry: RecycleEntry) {
-  busy.value = `restore:${entry.node.id}`
-  clearNotice()
-  try {
-    await api<Node>(`/api/v1/recycle-bin/${encodeURIComponent(entry.node.id)}/restore`, {
-      method: 'POST',
-      headers: revisionHeader(entry.node),
-      body: '{}',
-    })
-    await loadRecycleBin()
-    setNotice(`已恢复「${entry.node.name}」`)
-  } catch (error) {
-    setNotice(error instanceof Error ? error.message : '恢复失败', 'error')
-  } finally {
-    busy.value = ''
-  }
+  await runBusy(`restore:${entry.node.id}`, async () => {
+    clearNotice()
+    try {
+      await api<Node>(`/api/v1/recycle-bin/${encodeURIComponent(entry.node.id)}/restore`, {
+        method: 'POST',
+        headers: revisionHeader(entry.node),
+        body: '{}',
+      })
+      await loadRecycleBin()
+      setNotice(`已恢复「${entry.node.name}」`)
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : '恢复失败', 'error')
+    }
+  })
 }
 
 async function purgeEntry(entry: RecycleEntry) {
   if (!window.confirm(`永久删除「${entry.node.name}」后不可恢复，继续吗？`)) return
-  busy.value = `purge:${entry.node.id}`
-  clearNotice()
-  try {
-    await api(`/api/v1/recycle-bin/${encodeURIComponent(entry.node.id)}`, {
-      method: 'DELETE',
-      headers: revisionHeader(entry.node),
-    })
-    await loadRecycleBin()
-    setNotice(`已永久删除「${entry.node.name}」`)
-  } catch (error) {
-    setNotice(error instanceof Error ? error.message : '永久删除失败', 'error')
-  } finally {
-    busy.value = ''
-  }
+  await runBusy(`purge:${entry.node.id}`, async () => {
+    clearNotice()
+    try {
+      await api(`/api/v1/recycle-bin/${encodeURIComponent(entry.node.id)}`, {
+        method: 'DELETE',
+        headers: revisionHeader(entry.node),
+      })
+      await loadRecycleBin()
+      setNotice(`已永久删除「${entry.node.name}」`)
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : '永久删除失败', 'error')
+    }
+  })
 }
 
 function openRename(item: Node) {
@@ -255,22 +270,21 @@ async function submitRename(value: string) {
     renameTarget.value = null
     return
   }
-  busy.value = `rename:${target.id}`
-  clearNotice()
-  try {
-    await api<Node>(`/api/v1/nodes/${encodeURIComponent(target.id)}`, {
-      method: 'PATCH',
-      headers: revisionHeader(target),
-      body: JSON.stringify({ name }),
-    })
-    renameTarget.value = null
-    await refresh()
-    setNotice(`已重命名为「${name}」`)
-  } catch (error) {
-    setNotice(error instanceof Error ? error.message : '重命名失败', 'error')
-  } finally {
-    busy.value = ''
-  }
+  await runBusy(`rename:${target.id}`, async () => {
+    clearNotice()
+    try {
+      await api<Node>(`/api/v1/nodes/${encodeURIComponent(target.id)}`, {
+        method: 'PATCH',
+        headers: revisionHeader(target),
+        body: JSON.stringify({ name }),
+      })
+      renameTarget.value = null
+      await refresh()
+      setNotice(`已重命名为「${name}」`)
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : '重命名失败', 'error')
+    }
+  })
 }
 
 async function openMove(item: Node) {
@@ -288,23 +302,22 @@ async function moveHere() {
     moveError.value = '不能移动到自身'
     return
   }
-  busy.value = `move:${target.id}`
-  moveError.value = ''
-  clearNotice()
-  try {
-    await api<Node>(`/api/v1/nodes/${encodeURIComponent(target.id)}`, {
-      method: 'PATCH',
-      headers: revisionHeader(target),
-      body: JSON.stringify({ parent_id: destination.id }),
-    })
-    closeMovePicker()
-    await refresh()
-    setNotice(`已移动「${target.name}」`)
-  } catch (error) {
-    moveError.value = error instanceof Error ? error.message : '移动失败'
-  } finally {
-    busy.value = ''
-  }
+  await runBusy(`move:${target.id}`, async () => {
+    moveError.value = ''
+    clearNotice()
+    try {
+      await api<Node>(`/api/v1/nodes/${encodeURIComponent(target.id)}`, {
+        method: 'PATCH',
+        headers: revisionHeader(target),
+        body: JSON.stringify({ parent_id: destination.id }),
+      })
+      closeMovePicker()
+      await refresh()
+      setNotice(`已移动「${target.name}」`)
+    } catch (error) {
+      moveError.value = error instanceof Error ? error.message : '移动失败'
+    }
+  })
 }
 
 function closeMove() {
@@ -321,22 +334,21 @@ async function createFolder() {
   const name = folderName.value.trim()
   const parent = currentDirectory.value
   if (!name || !parent) return
-  busy.value = 'folder'
-  clearNotice()
-  try {
-    await api<Node>('/api/v1/directories', {
-      method: 'POST',
-      headers: { 'Idempotency-Key': newIdempotencyKey() },
-      body: JSON.stringify({ parent_id: parent.id, name }),
-    })
-    folderName.value = ''
-    await refresh()
-    setNotice(`已创建文件夹「${name}」`)
-  } catch (error) {
-    setNotice(error instanceof Error ? error.message : '创建文件夹失败', 'error')
-  } finally {
-    busy.value = ''
-  }
+  await runBusy('folder', async () => {
+    clearNotice()
+    try {
+      await api<Node>('/api/v1/directories', {
+        method: 'POST',
+        headers: { 'Idempotency-Key': newIdempotencyKey() },
+        body: JSON.stringify({ parent_id: parent.id, name }),
+      })
+      folderName.value = ''
+      await refresh()
+      setNotice(`已创建文件夹「${name}」`)
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : '创建文件夹失败', 'error')
+    }
+  })
 }
 
 function chooseFile() {
@@ -352,13 +364,16 @@ async function uploadFile(event: Event) {
 }
 
 async function downloadFile(item: Node) {
+  const key = `download:${item.id}`
+  // A double click must not open two tabs or issue two authorizations.
+  if (busy.active(key)) return
   // The window must be opened while the click's user activation is still present.
   const target = openDownloadWindow()
   if (!target) {
     setNotice('浏览器拦截了下载窗口，请允许弹窗后重试', 'error')
     return
   }
-  busy.value = `download:${item.id}`
+  busy.begin(key)
   clearNotice()
   try {
     const authorization = await api<{ url: string }>('/api/v1/files/' + encodeURIComponent(item.id) + '/download-authorizations', {
@@ -369,12 +384,13 @@ async function downloadFile(item: Node) {
       setNotice('下载窗口已关闭，请重试', 'error')
       return
     }
+    // setUrl validates the scheme and throws DownloadUrlRejectedError on anything unsafe.
     target.setUrl(authorization.url)
   } catch (error) {
     target.close()
     setNotice(error instanceof Error ? error.message : '下载失败', 'error')
   } finally {
-    busy.value = ''
+    busy.end(key)
   }
 }
 
@@ -483,14 +499,14 @@ onMounted(() => {
           <div class="toolbar-actions">
             <form class="new-folder" @submit.prevent="createFolder">
               <zw-input :value="folderName" size="sm" maxlength="255" placeholder="新文件夹名称" @value-change="onFolderNameChange"></zw-input>
-              <zw-button variant="secondary" size="sm" :disabled="busy !== ''" type="submit">新建文件夹</zw-button>
+              <zw-button variant="secondary" size="sm" :disabled="busyAny" type="submit">新建文件夹</zw-button>
             </form>
             <input ref="fileInput" type="file" hidden @change="uploadFile" />
-            <zw-button variant="primary" :disabled="busy !== ''" @click="chooseFile">
+            <zw-button variant="primary" :disabled="busyAny" @click="chooseFile">
               <span class="upload-icon">↑</span>
-              {{ busy === 'upload' ? (uploadPhase === 'completing' ? '正在提交…' : `上传中 ${uploadProgress}%`) : '上传文件' }}
+              {{ busy.active('upload') ? (uploadPhase === 'completing' ? '正在提交…' : `上传中 ${uploadProgress}%`) : '上传文件' }}
             </zw-button>
-            <zw-button v-if="busy === 'upload' && uploadPhase === 'uploading'" variant="secondary" :disabled="uploadCancelling" @click="cancelUpload">
+            <zw-button v-if="busy.active('upload') && uploadPhase === 'uploading'" variant="secondary" :disabled="uploadCancelling" @click="cancelUpload">
               {{ uploadCancelling ? '取消中…' : '取消上传' }}
             </zw-button>
           </div>
@@ -524,12 +540,12 @@ onMounted(() => {
             <span class="file-size">{{ item.kind === 'directory' ? '—' : formatSize(item.size) }}</span>
             <div class="row-action">
               <button v-if="item.kind === 'directory'" class="action-link" type="button" @click="openEntry(item)">打开</button>
-              <button v-else class="action-link" type="button" :disabled="busy === `download:${item.id}`" @click="downloadFile(item)">
-                {{ busy === `download:${item.id}` ? '准备中…' : '下载' }}
+              <button v-else class="action-link" type="button" :disabled="busy.active(`download:${item.id}`)" @click="downloadFile(item)">
+                {{ busy.active(`download:${item.id}`) ? '准备中…' : '下载' }}
               </button>
               <button class="action-link" type="button" @click="openRename(item)">重命名</button>
               <button class="action-link" type="button" @click="openMove(item)">移动</button>
-              <button class="action-link danger" type="button" :disabled="busy === `recycle:${item.id}`" @click="recycleEntry(item)">回收</button>
+              <button class="action-link danger" type="button" :disabled="busy.active(`recycle:${item.id}`)" @click="recycleEntry(item)">回收</button>
             </div>
           </div>
           <div v-if="!loading && directoryCursor" class="page-more">
@@ -557,11 +573,11 @@ onMounted(() => {
             <span class="file-kind">{{ formatType(entry.node) }}</span>
             <span class="file-size">{{ formatDeletedAt(entry.deleted_at) }}</span>
             <div class="row-action">
-              <button class="action-link" type="button" :disabled="busy === `restore:${entry.node.id}`" @click="restoreEntry(entry)">
-                {{ busy === `restore:${entry.node.id}` ? '恢复中…' : '恢复' }}
+              <button class="action-link" type="button" :disabled="busy.active(`restore:${entry.node.id}`)" @click="restoreEntry(entry)">
+                {{ busy.active(`restore:${entry.node.id}`) ? '恢复中…' : '恢复' }}
               </button>
-              <button class="action-link danger" type="button" :disabled="busy === `purge:${entry.node.id}`" @click="purgeEntry(entry)">
-                {{ busy === `purge:${entry.node.id}` ? '删除中…' : '永久删除' }}
+              <button class="action-link danger" type="button" :disabled="busy.active(`purge:${entry.node.id}`)" @click="purgeEntry(entry)">
+                {{ busy.active(`purge:${entry.node.id}`) ? '删除中…' : '永久删除' }}
               </button>
             </div>
           </div>
@@ -579,7 +595,7 @@ onMounted(() => {
         <RenameDialog
           v-if="renameTarget"
           :target="renameTarget"
-          :busy="busy === `rename:${renameTarget.id}`"
+          :busy="busy.active(`rename:${renameTarget.id}`)"
           @cancel="renameTarget = null"
           @submit="submitRename"
         />
@@ -593,7 +609,7 @@ onMounted(() => {
           :loading-more="moveLoadingMore"
           :error="moveError"
           :cursor="moveCursor"
-          :busy="busy === `move:${moveTarget.id}`"
+          :busy="busy.active(`move:${moveTarget.id}`)"
           @close="closeMove"
           @enter="enterMoveDirectory"
           @jump="jumpMovePath"

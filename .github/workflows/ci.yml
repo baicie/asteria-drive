@@ -287,6 +287,11 @@ jobs:
         run: npm ci --ignore-scripts
       - name: Typecheck web console
         run: npm run typecheck
+      - name: Run web unit tests
+        shell: bash
+        run: |
+          set -o pipefail
+          npm run test:unit -- --reporter=default --reporter=junit --outputFile.junit=unit-results.xml --coverage 2>&1 | tee unit-output.log
       - name: Build web console
         run: npm run build
       - name: Install Playwright Chromium
@@ -294,4 +299,20 @@ jobs:
           PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT: "120000"
         run: npx playwright install --with-deps chromium
       - name: Run web browser tests
+        env:
+          PLAYWRIGHT_HTML_REPORT: playwright-report
         run: npm run test:e2e
+      - name: Upload web failure evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: web-evidence
+          path: |
+            web/unit-results.xml
+            web/unit-output.log
+            web/coverage
+            web/playwright-report
+            web/playwright-results.xml
+            web/test-results
+          if-no-files-found: ignore
+          retention-days: 7
