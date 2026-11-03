@@ -285,6 +285,54 @@ describe('resume handle lifecycle on a fresh upload', () => {
     expect(readResumeHandle(storage, NOW)).toMatchObject({ uploadId: 'upload-1' })
   })
 
+  // R3.1 (A): the automatic abort after a plain network failure can itself fail. The
+  // session may then still hold durable parts, so the handle must survive.
+  it('keeps the handle when a non-cancel failure cannot be cleaned up', async () => {
+    const storage = memoryStorage()
+    const { task, notices } = makeTask(storage)
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
+      const url = String(input)
+      if (url.includes('/parts/sign')) {
+        const part = JSON.parse(String(init.body)).part_number as number
+        return json({ data: { part_number: part, method: 'PUT', url: `https://s3.test/part/${part}`, required_headers: {} } })
+      }
+      if (url.includes('s3.test')) throw new TypeError('Failed to fetch')
+      if (init.method === 'DELETE') throw new TypeError('control plane unreachable')
+      return json({ data: { id: 'upload-1', status: 'created', part_size: PART_SIZE, expected_size: 10 } })
+    }))
+
+    await task.start(makeFile())
+
+    expect(task.failureKind.value).toBe('network')
+    // Primary failure wording survives; the unconfirmed cleanup is appended, never replacing it.
+    const errorNotice = notices.find((entry) => entry.kind === 'error')
+    expect(errorNotice?.text).toContain('网络')
+    expect(errorNotice?.text).toContain('远端状态尚未确认')
+    expect(readResumeHandle(storage, NOW)).toMatchObject({ uploadId: 'upload-1' })
+  })
+
+  it('drops the handle when a non-cancel failure is cleaned up successfully', async () => {
+    const storage = memoryStorage()
+    const { task, notices } = makeTask(storage)
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
+      const url = String(input)
+      if (url.includes('/parts/sign')) {
+        const part = JSON.parse(String(init.body)).part_number as number
+        return json({ data: { part_number: part, method: 'PUT', url: `https://s3.test/part/${part}`, required_headers: {} } })
+      }
+      if (url.includes('s3.test')) throw new TypeError('Failed to fetch')
+      if (init.method === 'DELETE') return new Response(null, { status: 204 })
+      return json({ data: { id: 'upload-1', status: 'created', part_size: PART_SIZE, expected_size: 10 } })
+    }))
+
+    await task.start(makeFile())
+
+    expect(task.failureKind.value).toBe('network')
+    expect(notices.some((entry) => entry.kind === 'error' && entry.text.includes('远端状态尚未确认'))).toBe(false)
+    // The session is gone, so a handle would only offer a resume that 404s.
+    expect(readResumeHandle(storage, NOW)).toBeNull()
+  })
+
   it('drops the handle when the server refuses the upload for good', async () => {
     const storage = memoryStorage()
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {

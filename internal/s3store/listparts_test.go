@@ -203,3 +203,56 @@ func TestListPartsStopsAtTheS3PartLimit(t *testing.T) {
 		t.Fatalf("pages requested = %d, want 10 (10000 parts at 1000 per page)", got)
 	}
 }
+
+// A reported checksum is not the same as an attested one. This ListParts response carries a
+// per-part SHA-256 the way a backend that computes checksums would, and the provider must
+// still refuse to attest it unless this exact deployment was configured as having passed the
+// contract test. SeaweedFS 3.85 is why the default is false; it reports nothing, but a
+// hypothetical S3-compatible service that reports without enforcing is the same hazard.
+func TestListPartsAttestsChecksumsOnlyWhenTheBackendIsTrusted(t *testing.T) {
+	const body = `<?xml version="1.0" encoding="UTF-8"?>
+<ListPartsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+  <Bucket>test-bucket</Bucket><Key>tenant/object</Key><UploadId>upload-1</UploadId>
+  <IsTruncated>false</IsTruncated>
+  <Part><PartNumber>1</PartNumber><ETag>"etag-1"</ETag><Size>5</Size>
+    <ChecksumSHA256>u4KAGrZLoDkPvv6uAVbXB3hfd1Ra1b4AVSPiIVppbQo=</ChecksumSHA256></Part>
+</ListPartsResult>`
+	tests := []struct {
+		name            string
+		trust           bool
+		checksumHeaders bool
+		wantAttested    bool
+	}{
+		{name: "default", trust: false, checksumHeaders: false, wantAttested: false},
+		{name: "trusted without signed checksum header", trust: true, checksumHeaders: false, wantAttested: false},
+		{name: "trusted with signed checksum header", trust: true, checksumHeaders: true, wantAttested: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var requests atomic.Int32
+			server := fakeListPartsServer(t, []string{body}, &requests)
+			provider, err := New(context.Background(), Options{
+				Endpoint: server.URL, Region: "us-east-1", Bucket: "test-bucket",
+				AccessKey: "test-access-key", SecretKey: "test-secret-key", UsePathStyle: true,
+				EnableChecksumHeaders: tt.checksumHeaders, TrustPartChecksums: tt.trust,
+			})
+			if err != nil {
+				t.Fatalf("create provider: %v", err)
+			}
+			parts, err := provider.ListParts(context.Background(), "tenant/object", "upload-1")
+			if err != nil {
+				t.Fatalf("list parts: %v", err)
+			}
+			if len(parts) != 1 {
+				t.Fatalf("parts = %+v, want one", parts)
+			}
+			if want := (drive.Checksum{Algorithm: "sha256", Value: "u4KAGrZLoDkPvv6uAVbXB3hfd1Ra1b4AVSPiIVppbQo="}); parts[0].StorageChecksum != want {
+				t.Fatalf("storage checksum = %+v, want the reported %+v", parts[0].StorageChecksum, want)
+			}
+			if parts[0].ChecksumAttested != tt.wantAttested {
+				t.Fatalf("attested = %v, want %v (trust=%v checksumHeaders=%v)",
+					parts[0].ChecksumAttested, tt.wantAttested, tt.trust, tt.checksumHeaders)
+			}
+		})
+	}
+}

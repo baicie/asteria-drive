@@ -549,15 +549,19 @@ type StoredPart struct {
 	ETag       string
 	Size       int64
 	// StorageChecksum is the checksum object storage itself reports for the bytes it
-	// accepted, when the backend supports per-part checksums. It is the only evidence a
-	// resumed client may use to skip a part: it comes from the stored object, not from a
-	// client request that may never have been followed by a successful PUT (ADR-0028).
+	// accepted, when the backend supports per-part checksums.
 	StorageChecksum Checksum
+	// ChecksumAttested is the provider's assertion that StorageChecksum actually describes
+	// the bytes it stored AND that the backend refused any part whose content did not match
+	// the digest it was signed with. A backend can return a checksum it never validated
+	// (SeaweedFS 3.85 ignores the signed header entirely), so "reported" is not "proven":
+	// only a provider that has passed a real-backend contract test may set this (ADR-0029).
+	ChecksumAttested bool
 	// Reusable reports whether this entry carries enough storage-attested evidence for a
 	// resuming client to skip re-sending it. It is false for a part whose backend reports
-	// no checksum, for a part number object storage returned more than once with different
-	// identities, and for a part this service cannot describe exactly. False always means
-	// "re-upload", which costs bandwidth but cannot splice another file's bytes.
+	// no checksum or cannot attest it, for a part number object storage returned more than
+	// once with different identities, and for a part this service cannot describe exactly.
+	// False always means "re-upload", which costs bandwidth but cannot splice two files.
 	Reusable bool
 }
 

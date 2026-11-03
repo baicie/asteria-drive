@@ -781,8 +781,14 @@ func (s *Service) ListUploadParts(ctx context.Context, identity Identity, upload
 //     identity to check against;
 //   - its size is exactly the size this session's declared geometry gives that part, so a
 //     truncated or foreign fragment cannot be mistaken for the real part;
-//   - storage itself reports a checksum for the bytes it accepted. That is the only value
-//     that describes what is stored rather than what a client once promised.
+//   - storage reports a checksum for the bytes it accepted, and the provider attests that
+//     the value describes stored content and that the backend enforced it on the PUT.
+//
+// The attestation matters as much as the value. A backend can answer with a checksum it
+// computed but never validated against the signed digest (SeaweedFS 3.85 computes a part
+// MD5 and ignores x-amz-checksum-sha256 entirely), and an S3-compatible service that merely
+// echoes a header is not proof of stored bytes either. Without a provider contract test
+// against that exact backend there is no attestation, so nothing is skipable.
 //
 // Everything else is returned with Reusable=false so the client re-sends it. The cost is
 // bandwidth; the alternative is trusting a value that a failed PUT never touched.
@@ -799,6 +805,7 @@ func reusableStoredParts(stored []StoredPart, session UploadSession) []StoredPar
 		part := candidates[0]
 		part.Reusable = len(candidates) == 1 &&
 			part.Size == signedPartSize(session, partNumber) &&
+			part.ChecksumAttested &&
 			part.StorageChecksum.Algorithm == "sha256" &&
 			ValidChecksum(part.StorageChecksum)
 		parts = append(parts, part)

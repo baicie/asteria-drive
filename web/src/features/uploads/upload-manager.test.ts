@@ -302,6 +302,42 @@ describe('uploadMultipart error taxonomy', () => {
 
     expect(error.kind).toBe('cancelled')
   })
+
+  // R3.1 (A): a plain network failure is not a user cancel, so the transport still tries to
+  // abort. When that abort fails the caller must be able to tell, because the session may
+  // still be alive and its parts resumable.
+  it('attaches a failed automatic abort to a non-cancellation failure', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      throw new TypeError('Failed to fetch')
+    }))
+    const { gateway, calls } = makeGateway({
+      async abort() {
+        throw new Error('control plane unreachable')
+      },
+    })
+
+    const error = await uploadMultipart(gateway, makeFile(), 'parent', 'key').catch((e) => e)
+
+    expect(error).toBeInstanceOf(UploadFailure)
+    // Cleanup never replaces the primary failure, which is the network error.
+    expect(error.kind).toBe('network')
+    expect(error.cleanup?.uploadId).toBe(session.id)
+    expect(calls.abort).toBe(1)
+  })
+
+  it('keeps no cleanup annotation when the automatic abort succeeds', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      throw new TypeError('Failed to fetch')
+    }))
+    const { gateway, calls } = makeGateway()
+
+    const error = await uploadMultipart(gateway, makeFile(), 'parent', 'key').catch((e) => e)
+
+    expect(error).toBeInstanceOf(UploadError)
+    expect(error).not.toBeInstanceOf(UploadFailure)
+    expect(error.kind).toBe('network')
+    expect(calls.abort).toBe(1)
+  })
 })
 
 describe('uploadMultipart completion semantics', () => {

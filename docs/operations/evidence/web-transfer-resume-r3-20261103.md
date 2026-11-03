@@ -130,9 +130,11 @@ R2 的 `resumeMultipart` 只中断 `AbortController`，从未调用 `gateway.abo
 
 ## 未覆盖 / 风险
 
-- 恢复跳过分片的能力依赖后端报告分片 checksum。SeaweedFS 3.85 不报告，因此该后端上恢复
-  等于全量重传；若未来换用会报告的 S3 兼容实现，跳过路径才生效。跳过路径本身由
-  `internal/drive` 的单测与 `reusable` 判定覆盖，但**没有**在真实 AWS S3 上跑过。
+- 恢复跳过分片的能力依赖后端报告分片 checksum **且**该后端通过 R3.1 的契约鉴定
+  （`ASTERIA_S3_TRUST_PART_CHECKSUMS`，默认 false）。SeaweedFS 3.85 不报告，因此该后端
+  上恢复等于全量重传。跳过路径本身由 `internal/drive` 与 `internal/s3store` 的单测覆盖，
+  但**没有**在真实 AWS S3 上跑过，因此该路径不作为已完成能力宣传（见
+  [R3.1 证据](web-transfer-resume-r3-1-20261103.md)）。
 - `ListParts` 超过 1000 分片的真实分页仍未在 SeaweedFS 上验证（仅 XML 桩覆盖协议）。
 - 多标签页并发恢复未实现互斥。
 - `CI / web-live` 尚未设为 required check。

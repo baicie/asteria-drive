@@ -77,7 +77,7 @@ test.describe('live stack', () => {
     }
   })
 
-  test('resumes an interrupted upload after a reload without re-sending uploaded parts', async ({ page }) => {
+  test('resumes an interrupted upload after a reload and produces exactly the selected bytes', async ({ page }) => {
     // The browser cannot restore a File across a reload, so the scenario is staged the way
     // a real interruption leaves it: a live session created through the API, one part
     // already in S3, and the non-sensitive handle the console writes before its first part.
@@ -177,7 +177,7 @@ test.describe('live stack', () => {
     await expect(page.getByRole('button', { name: '下载' }).first()).toBeVisible()
 
     // Byte-level proof that the resumed object is the selected file and nothing else: the
-    // whole point of ADR-0028 is that a skipped part can never come from another file.
+    // whole point of ADR-0029 is that a reused part can never come from another file.
     const popupPromise = page.context().waitForEvent('page')
     const row = page.locator('.file-row').filter({ hasText: name })
     await row.getByRole('button', { name: '下载' }).click()
@@ -339,10 +339,41 @@ test.describe('live stack', () => {
       partSize: session.part_size,
       createdAt: Date.now(),
     }, token!] as const)
-    await page.route('**/s3/**', async (route) => {
-      // Never answer: the transfer stays "in flight" until the user cancels.
-      await new Promise(() => {})
-    })
+    // Match the real presigned part PUT by its SigV4 query and method, not by a path
+    // prefix: the data plane is SeaweedFS itself (a different host and port from the API),
+    // so any glob over a synthetic `/s3/` path intercepts nothing and the test would race
+    // a real upload instead of holding it. The predicate also makes the intercepted
+    // request auditable in the failure message.
+    let putStarted!: () => void
+    const putInFlight = new Promise<void>((resolve) => { putStarted = resolve })
+    const intercepted: string[] = []
+    // Upload ids whose DELETE the browser sent. Recorded from the request layer so the
+    // assertion is about the wire, not about what the UI says.
+    const deletes: string[] = []
+    await page.route(
+      (url) => url.pathname.startsWith('/api/v1/uploads/'),
+      async (route) => {
+        const request = route.request()
+        if (request.method() === 'DELETE') {
+          deletes.push(decodeURIComponent(new URL(request.url()).pathname.split('/').pop() ?? ''))
+        }
+        await route.continue()
+      },
+    )
+    await page.route(
+      (url) => url.searchParams.has('X-Amz-Signature') && url.searchParams.has('partNumber'),
+      async (route) => {
+        const request = route.request()
+        intercepted.push(`${request.method()} ${new URL(request.url()).pathname}`)
+        if (request.method() !== 'PUT') {
+          await route.continue()
+          return
+        }
+        // Never answer: the part PUT stays in flight until the user cancels.
+        putStarted()
+        await new Promise<void>(() => {})
+      },
+    )
     await page.goto('/')
     await expect(page.getByText('检测到未完成的上传')).toBeVisible()
     await page.evaluate(({ name: fileName, size: total, lastModified: stamp }) => {
@@ -357,9 +388,21 @@ test.describe('live stack', () => {
       input.dispatchEvent(new Event('change', { bubbles: true }))
     }, { name, size, lastModified })
 
+    // The cancel is only meaningful while a part PUT is genuinely in flight. Wait for the
+    // intercepted request rather than for a fixed delay: a cancel that lands before the
+    // transfer starts would pass without ever exercising the abort path.
+    await putInFlight
+    expect(intercepted.length).toBeGreaterThan(0)
+    expect(intercepted[0]).toMatch(/^PUT /)
     await expect(page.getByRole('button', { name: '取消上传' })).toBeVisible({ timeout: 30_000 })
     await page.getByRole('button', { name: '取消上传' }).click()
     await expect(page.getByText(`已取消「${name}」的上传`)).toBeVisible({ timeout: 30_000 })
+
+    // The browser must actually have sent the DELETE. A separate abort request is the only
+    // way the server learns about a cancel during resume, so observe the request itself
+    // rather than inferring it from the resulting state.
+    const aborts = deletes.filter((entry) => entry === session.id)
+    expect(aborts).toHaveLength(1)
 
     // The server must now consider the session aborted. This is the fact the R2 build never
     // established: it stopped the browser and left the multipart upload alive.
@@ -371,6 +414,10 @@ test.describe('live stack', () => {
     }, { timeout: 30_000 }).toMatch(/^(aborted|gone)$/)
     // The handle is gone too, so a reload cannot offer to resume a cancelled upload.
     expect(await page.evaluate(() => window.sessionStorage.getItem('asteria.upload.resume'))).toBeNull()
+    // Nothing was committed: a cancelled upload must not leave a file behind.
+    const children = await page.request.get(`${apiBase}/api/v1/directories/${rootId}/children?limit=200`, { headers: auth })
+    const listing = (await children.json()) as { data: Array<{ name: string }> }
+    expect(listing.data.some((node) => node.name === name)).toBe(false)
   })
 })
 

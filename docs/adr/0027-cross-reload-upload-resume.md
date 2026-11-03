@@ -142,12 +142,13 @@ GET /api/v1/uploads/{id}/parts
   会话归属不符、终止状态、分片大小不一致、取消保留句柄、退出清除句柄、并发探测与
   重复恢复拒绝。
 
-## 内容身份（ADR-0028 补充）
+## 内容身份（ADR-0029 补充）
 
 本 ADR 的客户端句柄只证明“是同一个会话”，不证明“是同一份内容”。恢复时跳过分片必须以
-服务端记录的**分片内容摘要**为准，名称/大小/`lastModified` 只用于快速拒绝明显不符的文件。
-具体方案（签名时绑定 `x-amz-checksum-sha256`、`upload_part_signature` 表、只读清单返回
-`content_sha256`）见 [ADR-0028](0028-resume-content-identity.md)。
+**对象存储自己报告且经后端鉴定的分片摘要**为准，名称/大小/`lastModified` 只用于快速拒绝
+明显不符的文件。ADR-0028 最初提出的“签名摘要即证明”已被
+[ADR-0029](0029-resume-reuses-only-storage-attested-parts.md) 取代；只读清单返回
+`storage_sha256` 与 `reusable`，签名表仅作审计。
 
 ## 未完成依赖
 

@@ -330,8 +330,12 @@ Abort Multipart；真实迁移由维护循环完成。鉴权为 `files:read` + t
 **租户内共享**的只读资源，同租户其他 principal（含 viewer）可读，签名仍要求 `files:write`。
 
 `storage_sha256` 是**对象存储自己**报告的分片摘要，`reusable` 是服务端对该分片能否被
-跳过的判定：仅当分片号在存储中唯一、大小符合会话几何、且存储报告了 checksum 时为 `true`。
+跳过的判定：仅当分片号在存储中唯一、大小符合会话几何、存储报告了 checksum，**且该后端
+通过契约鉴定**（报告值确实描述所存字节，且不匹配摘要的 PUT 会被拒绝）时为 `true`。
 签名时客户端声明的摘要是意图而非事实，不作为证据（[ADR-0029](../adr/0029-resume-reuses-only-storage-attested-parts.md)）。
+后端鉴定由 `ASTERIA_S3_TRUST_PART_CHECKSUMS` 显式开启（默认 false，且要求
+`ASTERIA_S3_CHECKSUM_HEADERS=true`）；未开启时任何 S3 兼容后端——包括 AWS S3——
+都返回 `reusable: false`，客户端全量重传。
 
 恢复的客户端对 `reusable: false` 的分片一律重新签名并重传；对 `reusable: true` 的分片还要
 本地哈希所选文件在该偏移处的字节，只有等于 `storage_sha256` 才跳过。SeaweedFS 3.85 不报告

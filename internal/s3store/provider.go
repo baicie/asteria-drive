@@ -35,13 +35,21 @@ type Options struct {
 	UsePathStyle          bool
 	AutoCreateBucket      bool
 	EnableChecksumHeaders bool
+	// TrustPartChecksums says this exact backend has passed a contract test proving that
+	// (a) ListParts reports the checksum of the stored bytes and (b) a part PUT whose
+	// content does not match the signed checksum is rejected. Only then may a resumed client
+	// skip a part. It defaults to false on purpose: a service that merely returns a
+	// checksum field has not been shown to validate anything, and SeaweedFS 3.85 is a
+	// concrete counter-example that reports nothing and enforces nothing (ADR-0029).
+	TrustPartChecksums bool
 }
 
 type Provider struct {
-	client          *s3.Client
-	presigner       *s3.PresignClient
-	bucket          string
-	checksumHeaders bool
+	client             *s3.Client
+	presigner          *s3.PresignClient
+	bucket             string
+	checksumHeaders    bool
+	trustPartChecksums bool
 }
 
 func New(ctx context.Context, options Options) (*Provider, error) {
@@ -80,6 +88,11 @@ func New(ctx context.Context, options Options) (*Provider, error) {
 	provider := &Provider{
 		client: client, presigner: s3.NewPresignClient(presignClient), bucket: options.Bucket,
 		checksumHeaders: options.Endpoint == "" || options.EnableChecksumHeaders,
+		// Trusting part checksums also requires the header to participate in the signature,
+		// otherwise the "enforcement" half of the contract is not even attempted. Both are
+		// opt-in and both default off; no backend is trusted by default.
+		trustPartChecksums: options.TrustPartChecksums &&
+			(options.Endpoint == "" || options.EnableChecksumHeaders),
 	}
 	if options.AutoCreateBucket {
 		if err := provider.ensureBucket(ctx, options.Region); err != nil {
@@ -212,6 +225,11 @@ func (p *Provider) ListParts(ctx context.Context, key, uploadID string) ([]drive
 			// and resume then re-uploads every part rather than trust a client's promise.
 			if value := aws.ToString(part.ChecksumSHA256); value != "" && drive.ValidChecksum(drive.Checksum{Algorithm: "sha256", Value: value}) {
 				stored.StorageChecksum = drive.Checksum{Algorithm: "sha256", Value: value}
+				// A reported checksum is only evidence when this deployment has been
+				// configured as a backend that was proven to compute it over the stored
+				// bytes and to reject a part that does not match its signature. Without
+				// that attestation a resume re-uploads the part (ADR-0029).
+				stored.ChecksumAttested = p.trustPartChecksums
 			}
 			parts = append(parts, stored)
 		}

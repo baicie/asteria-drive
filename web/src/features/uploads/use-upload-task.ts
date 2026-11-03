@@ -224,8 +224,25 @@ export function useUploadTask({
           // abort: the server status is the only authority on what happened.
           notify(uploadErrorMessage(error), 'error')
         } else {
-          clearResumeHandle(storage)
-          notify(uploadErrorMessage(error), 'error')
+          // A failure that is not a user cancel still triggers an automatic abort. When
+          // that abort also fails, the server session may be alive and its durable parts
+          // are still resumable: dropping the handle would erase the only pointer to them.
+          // The primary failure stays the message; the unconfirmed cleanup is appended.
+          const cleanup = error instanceof UploadFailure ? error.cleanup : undefined
+          if (cleanup) {
+            // No handle was written for this task means there is nothing that could
+            // reconcile the session later; drop any stale entry instead of offering a
+            // resume against the wrong upload. The unconfirmed remote state is still
+            // reported either way: an abort that failed is not a clean failure.
+            if (!resumeHandleWritten) clearResumeHandle(storage)
+            notify(
+              `${uploadErrorMessage(error)}；清理远端上传失败（${uploadErrorMessage(cleanup.cause)}），远端状态尚未确认${resumeHandleWritten ? '，可稍后重新选择文件核对' : ''}`,
+              'error',
+            )
+          } else {
+            clearResumeHandle(storage)
+            notify(uploadErrorMessage(error), 'error')
+          }
         }
       }
     } finally {

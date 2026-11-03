@@ -168,6 +168,7 @@ cd web && npm run typecheck && npm run test:unit && npm run build && npm run tes
 | `ASTERIA_S3_ACCESS_KEY_ID/SECRET_ACCESS_KEY` | Secret；优先短期工作负载凭据 |
 | `ASTERIA_S3_PATH_STYLE` | SeaweedFS 本地环境为 true |
 | `ASTERIA_S3_CHECKSUM_HEADERS` | 默认 false；只有真实契约验证支持 checksum request headers 的后端才启用 |
+| `ASTERIA_S3_TRUST_PART_CHECKSUMS` | 默认 false；仅当该确切后端通过“报告摘要=所存字节、错误摘要 PUT 被拒绝”的契约测试后才启用，且要求 checksum headers 为 true；AWS S3 未在本仓库验证 |
 | `ASTERIA_CURSOR_HMAC_KEY` | Secret，至少 32 bytes |
 | 签名/会话 TTL | 必须在安全上下限内；回收保留期随 SHOULD 维护任务延期 |
 | Body/Part/文件大小上限 | 服务端固定上限，客户端不能提高 |

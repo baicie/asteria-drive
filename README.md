@@ -183,6 +183,7 @@ $tenant.data
 | `ASTERIA_S3_PATH_STYLE` | `true` | 是否使用 path-style addressing |
 | `ASTERIA_S3_AUTO_CREATE_BUCKET` | `false` | 仅建议本地开发启用 |
 | `ASTERIA_S3_CHECKSUM_HEADERS` | `false` | 后端明确兼容 S3 checksum request headers 时启用；SeaweedFS 3.85 保持关闭 |
+| `ASTERIA_S3_TRUST_PART_CHECKSUMS` | `false` | 恢复时允许跳过存储侧可证分片；只有通过真实后端契约鉴定的部署才可开启，且要求 checksum headers=true。AWS S3 路径未在本仓库验证 |
 | `ASTERIA_MAX_FILE_SIZE` | `53687091200` | 单文件上限，bytes；默认 50 GiB |
 | `ASTERIA_PART_SIZE` | `8388608` | 建议分片大小，bytes；必须在 5 MiB 至 5 GiB 之间 |
 | `ASTERIA_UPLOAD_TTL` | `24h` | 上传会话有效期 |

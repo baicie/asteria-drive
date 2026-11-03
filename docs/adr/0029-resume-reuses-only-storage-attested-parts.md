@@ -45,7 +45,13 @@ PostgreSQL + SeaweedFS 上复现：
 1. 该分片号在存储返回中只出现一次（SeaweedFS 对同一分片号的重复 PUT 会保留多个条目，
    完成时由提交的 ETag 决定用哪一份，因而不存在单一已存身份）；
 2. 大小等于会话几何推出的该分片应有大小；
-3. **对象存储自己**报告了该分片的 SHA-256。
+3. **对象存储自己**报告了该分片的 SHA-256；
+4. 该后端被**显式鉴定**为：报告的摘要确实描述它接受的字节，**并且**它拒绝了与签名摘要
+   不符的分片 PUT（`StoredPart.ChecksumAttested`）。
+
+第 4 条是 R3.1 收紧的边界。仅仅“返回了 checksum 字段”不构成证据：一个服务可以报告
+摘要却从不校验上传内容，SeaweedFS 3.85 就是“什么都不报告、什么都不校验”的实例。因此
+computed 与 enforced 必须由后端能力声明承担，而不能从响应形状推断。
 
 `upload_part_signature` 保留但降级为审计记录：记录“客户端何时声明了什么”，**任何**
 读取路径都不再把它当作已存内容的证明。`GET /parts` 返回 `storage_sha256` 与
@@ -76,7 +82,27 @@ PostgreSQL + SeaweedFS 上复现：
 取消作为主错误、清理失败附着其上（`UploadFailure.cleanup`），界面明确提示“未能通知
 服务端”，并把句柄留作唯一线索。
 
-### 4. 契约与迁移
+### 4. 后端能力边界
+
+`internal/s3store` 的 `Options.TrustPartChecksums`（环境变量
+`ASTERIA_S3_TRUST_PART_CHECKSUMS`）默认 **false**，且只有在
+`ASTERIA_S3_CHECKSUM_HEADERS=true`（摘要参与签名）时才可能生效；配置层拒绝
+“trust=true 而 checksum headers=false”的组合，避免静默降级。默认关闭意味着任何
+S3 兼容后端——包括 AWS S3——在未完成本仓库的真实后端契约测试前都保守重传。
+
+| 后端 | 报告的每分片摘要 | 拒绝不匹配摘要的 PUT | `ChecksumAttested` | 恢复行为 |
+| --- | --- | --- | --- | --- |
+| `memory` 测试存储 | 有（对持有的字节计算） | 由实现保证 | 是 | 可跳过合法分片 |
+| SeaweedFS 3.85 | 无 | 否（错误摘要 PUT 返回 200） | 否 | 全量重传 |
+| AWS S3 | 有 | 未在本仓库验证 | 否（除非显式配置） | 默认全量重传 |
+| 其他 S3 兼容服务 | 未知 | 未知 | 否 | 全量重传 |
+
+AWS S3 的分片 checksum 语义虽有公开文档，但本仓库没有任何真实 AWS 环境上的契约测试
+证据，因此**不把 AWS S3 分片跳过宣传为已完成功能**。操作者只有在对自己部署的确切后端
+跑通“错误摘要必须被拒绝 + `ListParts` 摘要必须等于所存字节”的契约测试后，才可以显式
+打开该开关；这属于部署决策，不是代码承诺。
+
+### 5. 契约与迁移
 
 - OpenAPI `ListedPart`：`content_sha256` → `storage_sha256` + `reusable`（`reusable`
   为必填）。这是一次**破坏性字段变更**，随 ADR 一起提交；当前没有外部消费者。
@@ -87,7 +113,9 @@ PostgreSQL + SeaweedFS 上复现：
 ## Consequences
 
 - 在 SeaweedFS 3.85 上，恢复会重传**所有**分片（无存储 checksum），即退化为“重新上传，
-  但保留会话与句柄”。在报告分片 checksum 的 S3 兼容后端上才能跳过可证分片。
+  但保留会话与句柄”。只有在报告分片 checksum **且**通过契约鉴定的后端上才能跳过可证分片。
+- 默认配置下所有 S3 兼容后端（含 AWS S3）都走全量重传路径；分片跳过是显式的、按部署
+  开启的能力，不是默认承诺。
 - 恢复的正确性不再依赖任何单一后端的可选特性，也不依赖客户端的诚实。
 - 签名表不再影响行为，只用于诊断；未来若移除它，不会改变恢复语义。
 
@@ -103,7 +131,11 @@ PostgreSQL + SeaweedFS 上复现：
 ## Verification
 
 - `internal/drive`：重签不改变已存身份、重复分片号不可复用、大小不符不可复用、无存储
-  checksum 不可复用。
+  checksum 不可复用、**报告但未鉴定的 checksum 不可复用**。
+- `internal/s3store`：`ListParts` 仅在 `TrustPartChecksums` 且 checksum 头参与签名时
+  置 `ChecksumAttested`；默认与仅开 checksum headers 两种组合都不鉴定。
+- `internal/config`：`ASTERIA_S3_TRUST_PART_CHECKSUMS` 默认 false；与
+  `ASTERIA_S3_CHECKSUM_HEADERS=false` 组合时启动失败。
 - `internal/server`：真实 PostgreSQL + SeaweedFS 的 `TestLiveReSignKeepsStoredPartIdentity`
   复现 R2 场景并要求最终对象逐字节等于重新选择的文件。
 - Web 单测：`reusable` 为假必须重传；cancel 必须 DELETE；abort 失败如实上报并保留句柄。

@@ -73,6 +73,7 @@ func main() {
 			Region: cfg.S3Region, Bucket: cfg.S3Bucket,
 			AccessKey: cfg.S3AccessKey, SecretKey: cfg.S3SecretKey, UsePathStyle: cfg.S3PathStyle,
 			AutoCreateBucket: cfg.S3AutoCreate, EnableChecksumHeaders: cfg.S3ChecksumHeaders,
+			TrustPartChecksums: cfg.S3TrustPartChecksums,
 		})
 		if err != nil {
 			logger.Error("S3 initialization failed", "error", err)

@@ -329,6 +329,55 @@ func TestListUploadPartsDuplicatePartNumbersAreNotReusable(t *testing.T) {
 	}
 }
 
+// A backend can report a checksum it never validated. The listing must keep that checksum
+// visible for diagnostics but must not call the part reusable, because nothing proves the
+// reported digest describes an accepted PUT or that a mismatched PUT was rejected. This is
+// the provider-level half of ADR-0029; the s3store flag is the deployment-level half.
+func TestListUploadPartsDoesNotTrustAnUnattestedReportedChecksum(t *testing.T) {
+	ctx := context.Background()
+	fixture := newPartsFixtureWithStorage(t, nil, func(storage *memory.Storage) drive.StorageProvider {
+		return reportedButUnattestedStorage{StorageProvider: storage}
+	})
+	payload := []byte("abcde")
+	upload := fixture.createUpload(t, "reported.bin", int64(len(payload)))
+	if _, err := fixture.storage.PutPart(upload.StorageUploadID, 1, payload); err != nil {
+		t.Fatalf("put part: %v", err)
+	}
+	listing, err := fixture.service.ListUploadParts(ctx, fixture.identity, upload.ID, 0)
+	if err != nil {
+		t.Fatalf("list parts: %v", err)
+	}
+	if len(listing.Parts) != 1 {
+		t.Fatalf("parts = %+v, want one", listing.Parts)
+	}
+	if want := sha256Checksum(payload); listing.Parts[0].StorageChecksum != want {
+		t.Fatalf("reported checksum = %+v, want %+v", listing.Parts[0].StorageChecksum, want)
+	}
+	if listing.Parts[0].ChecksumAttested {
+		t.Fatal("a provider that did not attest its checksum must not be recorded as attested")
+	}
+	if listing.Parts[0].Reusable {
+		t.Fatal("an unattested reported checksum must not make a part skippable on resume")
+	}
+}
+
+// reportedButUnattestedStorage reports a real checksum over the bytes it holds, but does not
+// claim the backend ever validated a signed part PUT against it.
+type reportedButUnattestedStorage struct {
+	drive.StorageProvider
+}
+
+func (s reportedButUnattestedStorage) ListParts(ctx context.Context, key, uploadID string) ([]drive.StoredPart, error) {
+	parts, err := s.StorageProvider.ListParts(ctx, key, uploadID)
+	if err != nil {
+		return nil, err
+	}
+	for index := range parts {
+		parts[index].ChecksumAttested = false
+	}
+	return parts, nil
+}
+
 // unattestedStorage behaves like a backend that never reports per-part checksums.
 type unattestedStorage struct {
 	drive.StorageProvider

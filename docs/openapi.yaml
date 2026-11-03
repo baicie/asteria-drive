@@ -2240,15 +2240,19 @@ components:
             Base64 SHA-256 reported by object storage for the bytes it accepted, or empty
             when the backend reports none. It is never a digest the client declared: a
             signature describes a request that may not have been followed by a successful
-            PUT, and re-signing a part number does not touch storage (ADR-0028).
+            PUT, and re-signing a part number does not touch storage (ADR-0029).
           pattern: '^([A-Za-z0-9+/]{43}=)?$'
         reusable:
           type: boolean
           description: |
             Whether this part may be skipped when resuming. True only when the part number
-            is unique in storage, its size matches the session geometry, and storage
-            reported a checksum for it. A client MUST re-upload every part where this is
-            false; doing so can cost bandwidth but can never splice another file's bytes.
+            is unique in storage, its size matches the session geometry, storage reported a
+            checksum for it, and the deployment has attested that this backend really
+            computes that checksum over the stored bytes and rejects a part whose content
+            does not match its signed digest. Unattested backends, including AWS S3 by
+            default, therefore report false for every part. A client MUST re-upload every
+            part where this is false; doing so can cost bandwidth but can never splice
+            another file's bytes.
     UploadParts:
       type: object
       additionalProperties: false

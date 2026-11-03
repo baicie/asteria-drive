@@ -22,7 +22,8 @@
         "TestRepositoryRestoreChildConflictsWhileOriginalParentIsTrashed",
         "TestRepositorySequentialPurgeSharedBlobPlansLastEffectiveReference",
         "TestRepositoryPartSignaturesSurviveForwardMigration",
-        "TestRepositoryUploadPartsContract"
+        "TestRepositoryUploadPartsContract",
+        "TestBaseline0003DataSurvivesForwardMigration"
       ]
     },
     {
