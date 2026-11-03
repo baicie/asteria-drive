@@ -117,6 +117,17 @@ R2 的 `resumeMultipart` 只中断 `AbortController`，从未调用 `gateway.abo
 | `npm run test:e2e -- grep "live stack"`（真实栈，`ASTERIA_S3_CHECKSUM_HEADERS=true`） | 4 passed（上传/下载、恢复、P0 混合内容、**取消恢复触达服务端**） |
 | `npm run lint:openapi` / `verify-openapi-compat` / `lint:actions` | 通过 |
 
+## CI / Security（远端，提交 `33b059c`）
+
+| 检查 | 结果 | 链接 |
+| --- | --- | --- |
+| `CI` | success：quality / race / web / api-contract / integration / **web-live** 全部通过 | <https://github.com/baicie/asteria-drive/actions/runs/41602026483> |
+| `Security` | success：codeql / codeql-web / dependency-review / govulncheck | <https://github.com/baicie/asteria-drive/actions/runs/41602026564> |
+
+`CI / integration` 输出 `verified 24 required integration tests across 3 packages`；
+`CI / web-live` 输出 `Running 4 tests using 1 worker` → `4 passed`，即本轮新增的
+“取消恢复触达服务端”用例已在远端真实栈上运行，而非本地专属。
+
 ## 未覆盖 / 风险
 
 - 恢复跳过分片的能力依赖后端报告分片 checksum。SeaweedFS 3.85 不报告，因此该后端上恢复
