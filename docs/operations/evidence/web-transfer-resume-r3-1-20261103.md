@@ -188,10 +188,11 @@ ok 4 ... cancelling a resume aborts its multipart upload on the server
 | --- | --- | --- | --- |
 | `ce67fbd`（代码） | [41611040615](https://github.com/baicie/asteria-drive/actions/runs/41611040615) | [41611040682](https://github.com/baicie/asteria-drive/actions/runs/41611040682) | 全部通过 |
 | `366a80f`（证据初版） | [41611739001](https://github.com/baicie/asteria-drive/actions/runs/41611739001) | [41611738627](https://github.com/baicie/asteria-drive/actions/runs/41611738627) | 全部通过 |
-| `33d0c2f`（证据更新，代码与 `ce67fbd` 相同） | [41612387677](https://github.com/baicie/asteria-drive/actions/runs/41612387677) | [41612387766](https://github.com/baicie/asteria-drive/actions/runs/41612387766) | 全部通过 |
+| `33d0c2f`（证据更新） | [41612387677](https://github.com/baicie/asteria-drive/actions/runs/41612387677) | [41612387766](https://github.com/baicie/asteria-drive/actions/runs/41612387766) | 全部通过 |
+| `079a678`（最终代码提交） | [41613535873](https://github.com/baicie/asteria-drive/actions/runs/41613535873) | [41613535904](https://github.com/baicie/asteria-drive/actions/runs/41613535904) | 全部通过 |
 
-三次运行的代码内容相同；`ce67fbd` 之后的提交只修改本证据文档。`CI / integration` 在
-`33d0c2f` 上输出 `verified 25 required integration tests across 3 packages`；
+四次运行的代码内容相同；`ce67fbd` 之后的提交只修改文档（证据与合并清单），不改变代码内容。`CI / integration` 在
+`33d0c2f` 与 `079a678` 上均输出 `verified 25 required integration tests across 3 packages`；
 `CI / web-live` 输出 `Running 4 tests using 1 worker` → `4 passed`，即 B 修复后的取消用例与
 默认保守恢复路径均在远端真实栈上运行。上表中每个提交的六个 CI job 与四个 Security job
 均为 success。
@@ -212,5 +213,16 @@ ok 4 ... cancelling a resume aborts its multipart upload on the server
 
 ## 合并建议
 
-在 `aeffd58` 的 `CI` 与 `Security` 均通过、且独立审查确认本证据后，建议合并 PR #97；
-随后由 #97 合并后再处理 #96 的叠加关系。本次交付不执行合并、不发布、不操作 Staging。
+独立审查已确认 R3.1 核心正确性门禁通过，无需继续开发 R3.2。合并顺序固定为
+**先 #96、后 #97**：
+
+1. 先合并 #96（HEAD `15cd5f5`）到 `main`；
+2. 再合并 #97（独立增量，HEAD 以合并准备后的实际提交为准）到 `main`。
+
+#96 是 #97 的基底；若颠倒顺序，#97 会把 #96 的全部 Web 改动一并带入，PR #96 随后将无
+内容可合。若 #96 使用 Squash，必须先按 `git rebase --onto origin/main 15cd5f5` 重放 #97
+的独立增量并 `--force-with-lease` 推送，待新 HEAD 的 CI/Security 全绿后再合并 #97；
+禁止用 “Update branch” 把 #96 内容重新合入 #97。完整清单、预期 SHA 与回滚步骤见
+[merge-plan-96-97-20261103.md](merge-plan-96-97-20261103.md)。
+
+本次交付不执行合并、不发布、不操作 Staging；等待用户明确授权。
