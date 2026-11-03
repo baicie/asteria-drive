@@ -434,8 +434,9 @@ func (r *Repository) UploadParts(ctx context.Context, identity drive.Identity, i
 }
 
 // RecordPartSignature persists the digest a client declared for a part it is about to
-// upload. The latest declaration wins: the storage PUT that follows is what decides which
-// bytes part N holds, and it is bound to the most recent signature.
+// upload. The latest declaration wins. This is an audit record only: the storage PUT that
+// follows decides which bytes part N holds, and that PUT may fail or never happen, so a
+// row here is never evidence of stored content (ADR-0028, R3).
 func (r *Repository) RecordPartSignature(ctx context.Context, identity drive.Identity, id string, part drive.PartSignature, now time.Time) error {
 	if part.PartNumber < 1 || part.PartNumber > drive.MaxUploadParts || part.Size <= 0 || !drive.ValidChecksum(drive.Checksum{Algorithm: "sha256", Value: part.SHA256}) {
 		return drive.E(drive.CodeInvalidRequest, "part signature is invalid")

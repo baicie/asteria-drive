@@ -571,9 +571,11 @@ type liveUploadPartsResponse struct {
 }
 
 type liveListedPart struct {
-	PartNumber int    `json:"part_number"`
-	ETag       string `json:"etag"`
-	Size       int64  `json:"size"`
+	PartNumber    int    `json:"part_number"`
+	ETag          string `json:"etag"`
+	Size          int64  `json:"size"`
+	StorageSHA256 string `json:"storage_sha256"`
+	Reusable      bool   `json:"reusable"`
 }
 
 type liveDownloadResponse struct {

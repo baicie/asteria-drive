@@ -312,7 +312,10 @@ SHA-256 值使用标准 Base64 编码的 32-byte 摘要。后端返回并验证�
     "upload_id": "…",
     "status": "uploading",
     "part_size": 8388608,
-    "parts": [{ "part_number": 1, "etag": "…", "size": 8388608 }],
+    "parts": [{
+      "part_number": 1, "etag": "…", "size": 8388608,
+      "storage_sha256": "…", "reusable": true
+    }],
     "complete": true
   }
 }
@@ -326,9 +329,13 @@ SHA-256 值使用标准 Base64 编码的 32-byte 摘要。后端返回并验证�
 Abort Multipart；真实迁移由维护循环完成。鉴权为 `files:read` + tenant 匹配——会话是
 **租户内共享**的只读资源，同租户其他 principal（含 viewer）可读，签名仍要求 `files:write`。
 
-每个分片可带 `content_sha256`（该分片签名时绑定的摘要）。缺失表示服务端没有完整性证据，
-恢复的客户端必须重传该分片；只有摘要与当前文件对应字节一致时才可跳过
-（[ADR-0028](../adr/0028-resume-content-identity.md)）。
+`storage_sha256` 是**对象存储自己**报告的分片摘要，`reusable` 是服务端对该分片能否被
+跳过的判定：仅当分片号在存储中唯一、大小符合会话几何、且存储报告了 checksum 时为 `true`。
+签名时客户端声明的摘要是意图而非事实，不作为证据（[ADR-0029](../adr/0029-resume-reuses-only-storage-attested-parts.md)）。
+
+恢复的客户端对 `reusable: false` 的分片一律重新签名并重传；对 `reusable: true` 的分片还要
+本地哈希所选文件在该偏移处的字节，只有等于 `storage_sha256` 才跳过。SeaweedFS 3.85 不报告
+分片 checksum，因此在该后端上恢复会重传全部分片——这是有意的安全降级。
 
 Web 客户端只持久化非敏感会话句柄（`sessionStorage`，退出登录清除），恢复时重新鉴权并
 重新读取分片清单；禁止通过持久化 presigned URL、Token 或 S3 凭据实现恢复。会话进入

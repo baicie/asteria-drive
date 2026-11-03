@@ -96,9 +96,9 @@ type Repository interface {
 	// empty slice when completion has not been requested yet.
 	UploadParts(context.Context, Identity, string) ([]CompletedPart, error)
 	// RecordPartSignature stores the content identity a client declared for a part when
-	// it requested a signature. Re-signing the same number replaces the previous digest:
-	// the storage PUT that follows is what decides which bytes part N holds, and the
-	// signature recorded last is the one that PUT will have been bound to.
+	// it requested a signature. Re-signing the same number replaces the previous digest.
+	// The row records intent for audit and diagnosis only: a signature can be issued and
+	// its PUT never arrive, so resume must never read it back as proof of stored bytes.
 	RecordPartSignature(context.Context, Identity, string, PartSignature, time.Time) error
 	// PartSignatures returns every recorded signature for a session.
 	PartSignatures(context.Context, Identity, string) ([]PartSignature, error)
@@ -129,8 +129,9 @@ type StorageProvider interface {
 	SignUploadPart(context.Context, string, string, int, Checksum, time.Duration) (SignedPart, bool, error)
 	CompleteMultipart(context.Context, string, string, []CompletedPart) (ObjectInfo, error)
 	AbortMultipart(context.Context, string, string) error
-	// ListParts returns the parts object storage has accepted for a multipart upload.
-	// It must be read-only: it never signs, mutates, or completes anything.
+	// ListParts returns the parts object storage has accepted for a multipart upload,
+	// including the checksum storage itself reports for each part when the backend keeps
+	// one. It must be read-only: it never signs, mutates, or completes anything.
 	ListParts(context.Context, string, string) ([]StoredPart, error)
 	StatObject(context.Context, string) (ObjectInfo, error)
 	SignDownload(context.Context, string, string, time.Duration) (SignedDownload, error)

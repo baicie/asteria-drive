@@ -160,6 +160,10 @@ func (s *Storage) ListParts(_ context.Context, key, uploadID string) ([]drive.St
 		hash := sha256.Sum256(data)
 		parts = append(parts, drive.StoredPart{
 			PartNumber: partNumber, ETag: `"` + hex.EncodeToString(hash[:16]) + `"`, Size: int64(len(data)),
+			// The fake storage knows the bytes it holds, so it reports them the way S3
+			// reports a checksum it computed. This is storage evidence, not a client
+			// declaration: it changes only when PutPart actually replaces the bytes.
+			StorageChecksum: drive.Checksum{Algorithm: "sha256", Value: base64.StdEncoding.EncodeToString(hash[:])},
 		})
 	}
 	sort.Slice(parts, func(i, j int) bool { return parts[i].PartNumber < parts[j].PartNumber })

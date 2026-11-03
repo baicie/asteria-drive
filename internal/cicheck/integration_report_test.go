@@ -20,9 +20,9 @@ func TestRepositoryIntegrationManifestCoverage(t *testing.T) {
 	}
 
 	expectedCounts := map[string]int{
-		"github.com/baicie/asteria-drive/internal/postgres": 19,
+		"github.com/baicie/asteria-drive/internal/postgres": 20,
 		"github.com/baicie/asteria-drive/internal/s3store":  1,
-		"github.com/baicie/asteria-drive/internal/server":   2,
+		"github.com/baicie/asteria-drive/internal/server":   3,
 	}
 	if len(manifest.Packages) != len(expectedCounts) {
 		t.Fatalf("repository manifest has %d packages, want %d", len(manifest.Packages), len(expectedCounts))

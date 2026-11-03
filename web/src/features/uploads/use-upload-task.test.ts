@@ -255,6 +255,36 @@ describe('resume handle lifecycle on a fresh upload', () => {
     expect(readResumeHandle(storage, NOW)).toBeNull()
   })
 
+  // R3 P1: the same rule on the first upload as on a resume. A cancel that could not reach
+  // the server is not a cancel, and the handle is the only pointer to the live session.
+  it('keeps the handle and reports an abort failure instead of a clean cancel', async () => {
+    const storage = memoryStorage()
+    const { task, notices } = makeTask(storage)
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
+      const url = String(input)
+      if (url.includes('/parts/sign')) {
+        const part = JSON.parse(String(init.body)).part_number as number
+        return json({ data: { part_number: part, method: 'PUT', url: `https://s3.test/part/${part}`, required_headers: {} } })
+      }
+      if (url.includes('s3.test')) {
+        return new Promise<Response>((_resolve, reject) => {
+          init.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')))
+        })
+      }
+      if (init.method === 'DELETE') throw new TypeError('control plane unreachable')
+      return json({ data: { id: 'upload-1', status: 'created', part_size: PART_SIZE, expected_size: 10 } })
+    }))
+
+    const started = task.start(makeFile())
+    await vi.waitFor(() => expect(storage.data.get(RESUME_STORAGE_KEY)).toBeTruthy())
+    task.cancel()
+    await started
+
+    expect(notices.some((entry) => entry.kind === 'error' && entry.text.includes('未能通知服务端'))).toBe(true)
+    expect(notices.some((entry) => entry.text.includes('已取消'))).toBe(false)
+    expect(readResumeHandle(storage, NOW)).toMatchObject({ uploadId: 'upload-1' })
+  })
+
   it('drops the handle when the server refuses the upload for good', async () => {
     const storage = memoryStorage()
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
@@ -580,6 +610,90 @@ describe('resuming from the banner', () => {
 
     expect(task.failureKind.value).toBe('network')
     // A network loss is not a reason to throw away durable parts.
+    expect(task.pendingResume.value).not.toBeNull()
+    expect(readResumeHandle(storage, NOW)).not.toBeNull()
+  })
+
+  // R3 P1: the R2 hook aborted only its local controller, so a cancel during a resume left
+  // the server's multipart upload alive. The DELETE is the observable fact that matters.
+  it('cancels a resume by telling the server to abort, then drops the offer', async () => {
+    const storage = memoryStorage()
+    const { task, notices } = makeTask(storage)
+    await primePending(task, storage)
+
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const deletes: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
+      const url = String(input)
+      if (url.endsWith('/parts') && (init.method ?? 'GET') === 'GET') {
+        return json({ data: { upload_id: 'upload-1', status: 'uploading', part_size: PART_SIZE, parts: [], complete: true } })
+      }
+      if (url.includes('/parts/sign')) {
+        const part = JSON.parse(String(init.body)).part_number as number
+        return json({ data: { part_number: part, method: 'PUT', url: `https://s3.test/part/${part}`, required_headers: {} } })
+      }
+      if (url.includes('s3.test')) {
+        // Stall the transfer so the cancel happens while it is genuinely in flight.
+        await gate
+        return new Response(null, { status: 200, headers: { ETag: '"part"' } })
+      }
+      if (url.endsWith('/api/v1/uploads/upload-1') && init.method === 'DELETE') {
+        deletes.push(url)
+        return new Response(null, { status: 204 })
+      }
+      return json({ data: null })
+    }))
+
+    const resuming = task.resume(makeFile())
+    await vi.waitFor(() => expect(task.phase.value).toBe('uploading'))
+    task.cancel()
+    release()
+    await resuming
+
+    expect(deletes).toHaveLength(1)
+    expect(task.pendingResume.value).toBeNull()
+    expect(readResumeHandle(storage, NOW)).toBeNull()
+    expect(notices.some((entry) => entry.text.includes('已取消'))).toBe(true)
+    expect(task.failureKind.value).toBe('cancelled')
+  })
+
+  it('keeps the offer and reports the failure when the abort itself fails', async () => {
+    const storage = memoryStorage()
+    const { task, notices } = makeTask(storage)
+    await primePending(task, storage)
+
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
+      const url = String(input)
+      if (url.endsWith('/parts') && (init.method ?? 'GET') === 'GET') {
+        return json({ data: { upload_id: 'upload-1', status: 'uploading', part_size: PART_SIZE, parts: [], complete: true } })
+      }
+      if (url.includes('/parts/sign')) {
+        const part = JSON.parse(String(init.body)).part_number as number
+        return json({ data: { part_number: part, method: 'PUT', url: `https://s3.test/part/${part}`, required_headers: {} } })
+      }
+      if (url.includes('s3.test')) {
+        await gate
+        return new Response(null, { status: 200, headers: { ETag: '"part"' } })
+      }
+      if (url.endsWith('/api/v1/uploads/upload-1') && init.method === 'DELETE') {
+        throw new TypeError('control plane unreachable')
+      }
+      return json({ data: null })
+    }))
+
+    const resuming = task.resume(makeFile())
+    await vi.waitFor(() => expect(task.phase.value).toBe('uploading'))
+    task.cancel()
+    release()
+    await resuming
+
+    // The user must not be told the upload is gone when the server was never told.
+    expect(notices.some((entry) => entry.kind === 'error' && entry.text.includes('未能通知服务端'))).toBe(true)
+    expect(notices.some((entry) => entry.text.includes('已取消'))).toBe(false)
+    // The session may still exist, so the offer and handle stay for verification.
     expect(task.pendingResume.value).not.toBeNull()
     expect(readResumeHandle(storage, NOW)).not.toBeNull()
   })

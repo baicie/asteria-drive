@@ -2220,7 +2220,7 @@ components:
     ListedPart:
       type: object
       additionalProperties: false
-      required: [part_number, etag, size]
+      required: [part_number, etag, size, reusable]
       properties:
         part_number:
           type: integer
@@ -2234,14 +2234,21 @@ components:
           type: integer
           format: int64
           minimum: 0
-        content_sha256:
+        storage_sha256:
           type: string
           description: |
-            Base64 SHA-256 the part was signed with. Empty or omitted means the server
-            holds no integrity evidence for this part; a resuming client MUST re-upload
-            such a part rather than skip it (ADR-0028). Present only when the storage
-            backend enforces the signed checksum on the PUT.
+            Base64 SHA-256 reported by object storage for the bytes it accepted, or empty
+            when the backend reports none. It is never a digest the client declared: a
+            signature describes a request that may not have been followed by a successful
+            PUT, and re-signing a part number does not touch storage (ADR-0028).
           pattern: '^([A-Za-z0-9+/]{43}=)?$'
+        reusable:
+          type: boolean
+          description: |
+            Whether this part may be skipped when resuming. True only when the part number
+            is unique in storage, its size matches the session geometry, and storage
+            reported a checksum for it. A client MUST re-upload every part where this is
+            false; doing so can cost bandwidth but can never splice another file's bytes.
     UploadParts:
       type: object
       additionalProperties: false

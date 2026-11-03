@@ -524,6 +524,11 @@ export async function resumeMultipart(
   options.signal?.addEventListener('abort', externalAbort, { once: true })
   if (options.signal?.aborted) controller.abort()
 
+  // True once a completion request may have reached the server. From that point on a
+  // cancellation must not abort the multipart upload: the object may already be committed
+  // or about to be, and aborting would destroy a result the user cannot see (ADR-0011).
+  let completing = false
+
   try {
     ensureNotAborted(controller.signal)
     let listing: UploadPartsListing
@@ -546,6 +551,7 @@ export async function resumeMultipart(
       // `parts` here is the control plane's frozen completion list. It is the only payload
       // that can be replayed without re-uploading anything.
       options.onPhase?.('completing')
+      completing = true
       await completeWithRetries(gateway, handle.uploadId, plan.parts.map(toCompletedPart), options)
       return { outcome: 'committed' }
     }
@@ -566,21 +572,40 @@ export async function resumeMultipart(
       if (index < 0 || index >= partCount) continue
       if (!listed.etag) continue
       if (listed.size !== expectedPartSize(file.size, partSize, index)) continue
-      // No recorded digest means no proof that this part holds the selected file's bytes.
-      // Re-uploading it is the only safe answer; skipping it could mix two files.
+      // The server's reuse decision is a necessary condition, not a substitute for local
+      // verification: it says storage reported a checksum for a uniquely stored part, and
+      // the hash below proves that checksum is this file's bytes at this offset. Both are
+      // required. A part missing either one is re-sent, so an absent or stale proof costs
+      // bandwidth and can never mix two files (ADR-0028).
+      if (!listed.reusable) continue
       ensureNotAborted(controller.signal)
       const proof = await verifier(file.slice(index * partSize, index * partSize + listed.size))
-      if (!listed.content_sha256 || proof.value !== listed.content_sha256) continue
+      if (!listed.storage_sha256 || proof.value !== listed.storage_sha256) continue
       completed[index] = toCompletedPart(listed)
     }
 
     options.onPhase?.('uploading')
-    const beforeSend = completed.reduce((count, part) => (part === undefined ? count : count + 1), 0)
+    const beforeSend = completed.reduce<number>((count, part) => (part === undefined ? count : count + 1), 0)
     await uploadRemainingParts(gateway, session, file, completed, controller, options)
+    completing = true
     await completeWithRetries(gateway, session.id, completed, options)
     // What this resume actually transmitted: the parts that were still missing at the
     // moment it started sending. Parts verified from storage are not "uploaded parts".
     return { outcome: 'resumed', uploadedParts: partCount - beforeSend, totalParts: partCount }
+  } catch (error) {
+    // A cancel during a resume is a real cancel: the caller asked to give the whole upload
+    // up, so the server must abort the multipart upload. An interruption while the transfer
+    // itself fails keeps the session, because a durable set of parts is exactly what the
+    // user needs to try again. Completion is never aborted (ADR-0011).
+    const primary = error instanceof UploadError ? error : classifyFetchError(error)
+    // A pause keeps everything, exactly like it does for a first upload.
+    if (isCancellation(primary) && options.interruption?.() !== 'pause' && !completing) {
+      const cleanup = await abortQuietly(gateway, handle.uploadId)
+      // An abort that failed must not be reported as a successful cancel: the caller has to
+      // know the session may still exist so it can retry or surface the failure.
+      if (cleanup) throw new UploadFailure(primary, cleanup)
+    }
+    throw primary
   } finally {
     options.signal?.removeEventListener('abort', externalAbort)
   }

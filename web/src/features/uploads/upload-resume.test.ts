@@ -38,7 +38,7 @@ function listing(overrides: Partial<UploadPartsListing> = {}): UploadPartsListin
     upload_id: 'upload-1',
     status: 'uploading',
     part_size: 5,
-    parts: [{ part_number: 1, etag: '"etag-1"', size: 5 }],
+    parts: [{ part_number: 1, etag: '"etag-1"', size: 5, storage_sha256: 'sha', reusable: true }],
     complete: true,
     ...overrides,
   }
@@ -187,7 +187,7 @@ describe('planResume', () => {
     expect(plan).toEqual({
       action: 'resume',
       uploadId: 'upload-1',
-      uploaded: [{ part_number: 1, etag: '"etag-1"', size: 5 }],
+      uploaded: listing().parts,
       status: 'uploading',
     })
   })
@@ -203,7 +203,7 @@ describe('planResume', () => {
       expect(plan).toEqual({
         action: 'complete',
         uploadId: 'upload-1',
-        parts: [{ part_number: 1, etag: '"etag-1"', size: 5 }],
+        parts: listing().parts,
       })
     }
   })

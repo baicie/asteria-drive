@@ -18,7 +18,8 @@ type listedPart struct {
 	PartNumber    int    `json:"part_number"`
 	ETag          string `json:"etag"`
 	Size          int64  `json:"size"`
-	ContentSHA256 string `json:"content_sha256"`
+	StorageSHA256 string `json:"storage_sha256"`
+	Reusable      bool   `json:"reusable"`
 }
 
 type uploadPartsPayload struct {

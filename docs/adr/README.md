@@ -33,7 +33,8 @@
 | [0025](0025-go-toolchain-security-refresh-2026-10.md) | 2026-10 Go toolchain and dependency security refresh | Accepted |
 | [0026](0026-openapi-checksum-variants.md) | OpenAPI checksum variant clarification | Proposed |
 | [0027](0027-cross-reload-upload-resume.md) | Cross-reload upload resume protocol and additive ListParts endpoint | Accepted |
-| [0028](0028-resume-content-identity.md) | Content identity for resumed parts, read-only listing, non-cacheable signed URLs | Accepted |
+| [0028](0028-resume-content-identity.md) | Content identity for resumed parts, read-only listing, non-cacheable signed URLs | Superseded in part by 0029 |
+| [0029](0029-resume-reuses-only-storage-attested-parts.md) | Resume reuses only parts whose checksum object storage itself reports | Accepted |
 
 ## Conventions
 

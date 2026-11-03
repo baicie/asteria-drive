@@ -5,6 +5,7 @@ import type { BusyTracker } from '../../lib/busy'
 import { newIdempotencyKey } from '../../lib/idempotency'
 import {
   UploadError,
+  UploadFailure,
   resumeMultipart,
   uploadErrorMessage,
   uploadMultipart,
@@ -206,8 +207,14 @@ export function useUploadTask({
           // The handle was written when the session was created, so it is already on disk
           // in both cases. What differs is the server side: a pause left the multipart
           // upload alive, a cancel aborted it, so only a pause may offer a resume.
+          const cleanup = error instanceof UploadFailure ? error.cleanup : undefined
           if (pausing && resumeHandleWritten) {
             notify(`已暂停「${file.name}」，可刷新后继续上传`)
+          } else if (!pausing && cleanup) {
+            // The local transfer stopped, but the server was not told. Claiming a clean
+            // cancel here would hide a still-live multipart upload from the user, and
+            // dropping the handle would erase the only pointer to the session.
+            notify(`取消上传时未能通知服务端（${uploadErrorMessage(cleanup.cause)}），该会话可能仍然存在`, 'error')
           } else {
             clearResumeHandle(storage)
             notify(pausing ? `已暂停「${file.name}」` : `已取消「${file.name}」的上传`)
@@ -305,6 +312,9 @@ export function useUploadTask({
       const outcome = await resumeMultipart(makeGateway(uploadToken), pending.handle, file, {
         signal: controller.signal,
         digest: webCryptoPartDigest,
+        // The same pause/cancel distinction as a first upload. Without it a cancel during a
+        // resume would only stop the local transfer and leave the server session alive.
+        interruption: () => (pausing ? 'pause' : 'cancel'),
         onProgress: (value) => {
           if (abort.value === controller) progress.value = value
         },
@@ -325,12 +335,31 @@ export function useUploadTask({
         const uploadError = error instanceof UploadError ? error : null
         failureKind.value = uploadError?.kind ?? null
         failureUploadId.value = uploadError?.context.uploadId ?? null
-        if (uploadError?.kind === 'storage-rejected' || uploadError?.kind === 'non-retryable') {
+        const cleanup = error instanceof UploadFailure ? error.cleanup : undefined
+        if (uploadError?.kind === 'cancelled') {
+          // A pause keeps the offer and the handle; a cancel drops both, because the server
+          // session was aborted. A cancel whose abort failed is NOT reported as a clean
+          // cancel: the session may still exist, so the offer stays and the user sees why.
+          if (pausing) {
+            notify(`已暂停「${pending.handle.fileName}」，可刷新后继续上传`)
+          } else if (cleanup) {
+            // Keep the handle: it is the only pointer to a session the server may still
+            // hold, so it is both the evidence and the way to finish cancelling.
+            notify(`取消上传时未能通知服务端（${uploadErrorMessage(cleanup.cause)}），该会话可能仍然存在`, 'error')
+          } else {
+            pendingResume.value = null
+            clearResumeHandle(storage)
+            notify(`已取消「${pending.handle.fileName}」的上传`)
+          }
+        } else if (uploadError?.kind === 'storage-rejected' || uploadError?.kind === 'non-retryable') {
           // The session is unusable; do not keep offering a resume that cannot work.
           pendingResume.value = null
           clearResumeHandle(storage)
+          notify(uploadErrorMessage(error), 'error')
+        } else {
+          // A transient failure keeps both the offer and the durable parts for another try.
+          notify(uploadErrorMessage(error), 'error')
         }
-        notify(uploadErrorMessage(error), 'error')
       }
       return null
     } finally {
@@ -338,6 +367,7 @@ export function useUploadTask({
         abort.value = null
         phase.value = null
         cancelling.value = false
+        pausing = false
         busy.end(UPLOAD_KEY)
         progress.value = 0
       }

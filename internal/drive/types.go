@@ -531,10 +531,10 @@ type CompletedPart struct {
 	Size       int64    `json:"size,omitempty"`
 }
 
-// PartSignature is the content identity a client committed to when it asked for a part's
-// signature. It is the only evidence that a part already in storage holds the bytes of
-// the file being resumed rather than those of a different file with the same name, size
-// and lastModified (ADR-0028).
+// PartSignature is the content identity a client declared when it asked for a part's
+// signature. It is an audit record of what the client promised, not proof of what storage
+// accepted: a signature can be issued and the PUT that was supposed to follow it can be
+// interrupted. Resume therefore never reads it back (ADR-0028).
 type PartSignature struct {
 	PartNumber int
 	Size       int64
@@ -548,10 +548,17 @@ type StoredPart struct {
 	PartNumber int
 	ETag       string
 	Size       int64
-	// ContentSHA256 is the digest the client declared when this part was signed, or empty
-	// when the part has no recorded signature. Empty means "no integrity evidence":
-	// callers must not skip such a part on resume.
-	ContentSHA256 string
+	// StorageChecksum is the checksum object storage itself reports for the bytes it
+	// accepted, when the backend supports per-part checksums. It is the only evidence a
+	// resumed client may use to skip a part: it comes from the stored object, not from a
+	// client request that may never have been followed by a successful PUT (ADR-0028).
+	StorageChecksum Checksum
+	// Reusable reports whether this entry carries enough storage-attested evidence for a
+	// resuming client to skip re-sending it. It is false for a part whose backend reports
+	// no checksum, for a part number object storage returned more than once with different
+	// identities, and for a part this service cannot describe exactly. False always means
+	// "re-upload", which costs bandwidth but cannot splice another file's bytes.
+	Reusable bool
 }
 
 // UploadPartListing is the merged view of the parts a resumed client already uploaded.

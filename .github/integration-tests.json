@@ -21,6 +21,7 @@
         "TestRepositoryOIDCMemberContract",
         "TestRepositoryRestoreChildConflictsWhileOriginalParentIsTrashed",
         "TestRepositorySequentialPurgeSharedBlobPlansLastEffectiveReference",
+        "TestRepositoryPartSignaturesSurviveForwardMigration",
         "TestRepositoryUploadPartsContract"
       ]
     },
@@ -34,7 +35,8 @@
       "package": "github.com/baicie/asteria-drive/internal/server",
       "tests": [
         "TestLiveHTTPPostgresSeaweedFSEndToEnd",
-        "TestLiveHTTPConcurrentUploadSessionBaseline"
+        "TestLiveHTTPConcurrentUploadSessionBaseline",
+        "TestLiveReSignKeepsStoredPartIdentity"
       ]
     }
   ]

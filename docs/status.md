@@ -67,6 +67,9 @@ KMS 或 secret-controller 轮换、公网 TLS ingress、生产监控/SIEM 与外
 - R2 正确性加固的命令、复现与修复证据见
   [web-transfer-resume-r2-20261103](operations/evidence/web-transfer-resume-r2-20261103.md)：
   内容身份、只读端点、缓存头、分页边界与暂停/取消语义。
+- R3 收口了 R2 的完整性判定缺陷（签名摘要曾被当作存储内容证明）并统一取消语义，证据见
+  [web-transfer-resume-r3-20261103](operations/evidence/web-transfer-resume-r3-20261103.md)；
+  决策见 [ADR-0029](adr/0029-resume-reuses-only-storage-attested-parts.md)。
 
 2026-10-22，本地复核 `go test ./...`、`go vet ./...`、`go build ./...`、`web/` 的
 `vue-tsc`/Vite production build、GitHub Actions workflow lint、OpenAPI lint、

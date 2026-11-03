@@ -200,11 +200,20 @@ func (p *Provider) ListParts(ctx context.Context, key, uploadID string) ([]drive
 			return nil, mapError(err, "could not list multipart parts")
 		}
 		for _, part := range output.Parts {
-			parts = append(parts, drive.StoredPart{
+			stored := drive.StoredPart{
 				PartNumber: int(aws.ToInt32(part.PartNumber)),
 				ETag:       aws.ToString(part.ETag),
 				Size:       aws.ToInt64(part.Size),
-			})
+			}
+			// Only a checksum the storage service itself reports for the accepted bytes is
+			// evidence of content identity. A missing value is not an error: AWS S3 returns
+			// it when the multipart upload was created with a checksum algorithm, while
+			// SeaweedFS 3.85 never does (verified against 3.85 with all four algorithms),
+			// and resume then re-uploads every part rather than trust a client's promise.
+			if value := aws.ToString(part.ChecksumSHA256); value != "" && drive.ValidChecksum(drive.Checksum{Algorithm: "sha256", Value: value}) {
+				stored.StorageChecksum = drive.Checksum{Algorithm: "sha256", Value: value}
+			}
+			parts = append(parts, stored)
 		}
 		if len(parts) >= drive.MaxUploadParts {
 			parts = parts[:drive.MaxUploadParts]

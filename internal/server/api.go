@@ -682,9 +682,14 @@ type listedPartResponse struct {
 	PartNumber int    `json:"part_number"`
 	ETag       string `json:"etag"`
 	Size       int64  `json:"size"`
-	// ContentSHA256 is the digest this part was signed with, or "" when the server holds
-	// no integrity evidence. A resuming client must not skip a part without it.
-	ContentSHA256 string `json:"content_sha256,omitempty"`
+	// StorageSHA256 is the digest object storage reports for the bytes it accepted, or ""
+	// when the backend reports none. It is never a digest the client declared: that would
+	// describe a request, not the stored part (ADR-0028).
+	StorageSHA256 string `json:"storage_sha256,omitempty"`
+	// Reusable says whether the server considers this part skippable: it is unique for its
+	// part number, its size matches the session geometry and storage reported a checksum.
+	// A client must re-upload every part where this is false.
+	Reusable bool `json:"reusable"`
 }
 
 type uploadPartsResponse struct {
@@ -715,7 +720,8 @@ func (a *api) listUploadParts(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, part := range listing.Parts {
 		response.Parts = append(response.Parts, listedPartResponse{
-			PartNumber: part.PartNumber, ETag: part.ETag, Size: part.Size, ContentSHA256: part.ContentSHA256,
+			PartNumber: part.PartNumber, ETag: part.ETag, Size: part.Size,
+			StorageSHA256: part.StorageChecksum.Value, Reusable: part.Reusable,
 		})
 	}
 	// A part listing is derived from a live upload session and changes as parts land; no

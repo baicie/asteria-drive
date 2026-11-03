@@ -526,7 +526,10 @@ function signedPart(partNumber: number, bytes: string, etag = `"etag-${partNumbe
     part_number: partNumber,
     etag,
     size: bytes.length,
-    content_sha256: `test:${bytes.length}:${bytes}`,
+    // The server reports what storage holds; `reusable` is its own proof that this is a
+    // single, correctly sized part with a storage-reported checksum.
+    storage_sha256: `test:${bytes.length}:${bytes}`,
+    reusable: true,
   }
 }
 
@@ -588,8 +591,9 @@ describe('resumeMultipart', () => {
     const file = resumeFile()
     const { gateway, calls } = makeGateway({
       async parts() {
-        // No content_sha256: the server cannot prove these bytes belong to this file.
-        return listing({ parts: [{ part_number: 1, etag: '"etag-1"', size: 5 }] })
+        // Not reusable: the server has no storage-attested checksum for this part, so it
+        // cannot prove the stored bytes belong to this file.
+        return listing({ parts: [{ part_number: 1, etag: '"etag-1"', size: 5, reusable: false }] })
       },
     })
 
@@ -617,9 +621,11 @@ describe('resumeMultipart', () => {
   it('completes immediately without uploading when the session was completing', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { status: 200, headers: { ETag: '"x"' } })))
     const file = resumeFile()
+    // The frozen completion list is replayed verbatim; its entries carry no reuse claim,
+    // because completion is never resumed from (ADR-0028).
     const frozen = [
-      { part_number: 1, etag: '"etag-1"', size: 5 },
-      { part_number: 2, etag: '"etag-2"', size: 5 },
+      { part_number: 1, etag: '"etag-1"', size: 5, reusable: false },
+      { part_number: 2, etag: '"etag-2"', size: 5, reusable: false },
     ]
     const { gateway, calls } = makeGateway({
       async parts() {
@@ -631,7 +637,10 @@ describe('resumeMultipart', () => {
 
     expect(result).toEqual({ outcome: 'committed' })
     expect(calls.sign).toEqual([])
-    expect(calls.completeParts).toEqual([frozen])
+    expect(calls.completeParts).toEqual([[
+      { part_number: 1, etag: '"etag-1"', size: 5 },
+      { part_number: 2, etag: '"etag-2"', size: 5 },
+    ]])
   })
 
   it('reports a committed session without touching storage again', async () => {
@@ -639,7 +648,7 @@ describe('resumeMultipart', () => {
     const file = resumeFile()
     const { gateway, calls } = makeGateway({
       async parts() {
-        return listing({ status: 'committed', parts: [{ part_number: 1, etag: '"a"', size: 5 }] })
+        return listing({ status: 'committed', parts: [{ part_number: 1, etag: '"a"', size: 5, reusable: false }] })
       },
     })
 
@@ -699,7 +708,7 @@ describe('resumeMultipart', () => {
     const file = resumeFile()
     const { gateway, calls } = makeGateway({
       async parts() {
-        return listing({ parts: [{ part_number: 1, etag: '"stale"', size: 4, content_sha256: 'test:4:abcd' }] })
+        return listing({ parts: [{ part_number: 1, etag: '"stale"', size: 4, storage_sha256: 'test:4:abcd', reusable: true }] })
       },
     })
 
@@ -776,7 +785,9 @@ describe('resumeMultipart', () => {
     expect(calls.sign).toEqual([])
   })
 
-  it('cancels a resume without aborting the session', async () => {
+  // R3: the R2 implementation only stopped the local transfer on cancel, leaving the
+  // multipart upload alive on the server. A cancel must reach the control plane.
+  it('cancels a resume by aborting the server session', async () => {
     const controller = new AbortController()
     const file = resumeFile()
     const { gateway, calls } = makeGateway({
@@ -791,7 +802,70 @@ describe('resumeMultipart', () => {
 
     expect(error).toBeInstanceOf(UploadCancelledError)
     expect(calls.sign).toEqual([])
+    expect(calls.abort).toBe(1)
+  })
+
+  it('pauses a resume without aborting the server session', async () => {
+    const controller = new AbortController()
+    const file = resumeFile()
+    const { gateway, calls } = makeGateway({
+      async parts() {
+        controller.abort()
+        return listing({ parts: [signedPart(1, 'abcde')] })
+      },
+    })
+
+    const error = await resumeMultipart(gateway, makeHandle(file), file, {
+      signal: controller.signal,
+      digest: testDigest,
+      interruption: () => 'pause',
+    }).catch((e) => e)
+
+    expect(error).toBeInstanceOf(UploadCancelledError)
     expect(calls.abort).toBe(0)
+  })
+
+  it('never aborts a resume whose completion may already have reached the server', async () => {
+    const controller = new AbortController()
+    const file = resumeFile()
+    const { gateway, calls } = makeGateway({
+      async parts() {
+        return listing({ status: 'object_completed', parts: [signedPart(1, 'abcde'), signedPart(2, 'fghij')] })
+      },
+      async complete() {
+        controller.abort()
+        throw new Error('connection lost')
+      },
+    })
+
+    const error = await resumeMultipart(gateway, makeHandle(file), file, { signal: controller.signal, digest: testDigest })
+      .catch((e) => e)
+
+    expect(error).toBeInstanceOf(UploadError)
+    expect(calls.abort).toBe(0)
+  })
+
+  it('reports a failed abort instead of claiming a clean cancel', async () => {
+    const controller = new AbortController()
+    const file = resumeFile()
+    const { gateway } = makeGateway({
+      async parts() {
+        controller.abort()
+        return listing({ parts: [signedPart(1, 'abcde')] })
+      },
+      async abort() {
+        throw new Error('control plane is unreachable')
+      },
+    })
+
+    const error = await resumeMultipart(gateway, makeHandle(file), file, { signal: controller.signal, digest: testDigest })
+      .catch((e) => e)
+
+    // The cancellation stays the primary error, and the failed cleanup is attached rather
+    // than replacing it or being silently dropped.
+    expect(error).toBeInstanceOf(UploadFailure)
+    expect((error as UploadFailure).kind).toBe('cancelled')
+    expect((error as UploadFailure).cleanup?.uploadId).toBe('upload-1')
   })
 
   it('reports an unknown completion after the bounded attempts and never aborts', async () => {

@@ -42,11 +42,18 @@ export interface ListedPart {
   etag: string
   size: number
   /**
-   * Base64 SHA-256 this part was signed with, or absent when the server holds no
-   * integrity evidence for it. A part without it must never be skipped on resume: its
-   * bytes cannot be proven to belong to the file the user just re-selected (ADR-0028).
+   * Base64 SHA-256 object storage reports for the bytes it accepted, or absent when the
+   * backend reports none. This is the only digest that may justify skipping a part: a
+   * digest the client declared when signing describes a request, not the stored bytes,
+   * and re-signing a part number never touches storage (ADR-0028).
    */
-  content_sha256?: string
+  storage_sha256?: string
+  /**
+   * Whether the server proved this part may be skipped: unique for its part number, the
+   * right size for the session geometry, and carrying a storage-reported checksum.
+   * A part where this is false must be re-uploaded.
+   */
+  reusable: boolean
 }
 
 export interface UploadPartsListing {
