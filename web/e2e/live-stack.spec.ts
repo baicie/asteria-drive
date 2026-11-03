@@ -13,6 +13,7 @@
  * preview server so the console keeps using same-origin requests.
  */
 import { expect, test } from '@playwright/test'
+import { createHash } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 
 const apiBase = process.env.ASTERIA_E2E_API
@@ -94,26 +95,39 @@ test.describe('live stack', () => {
     const session = ((await created.json()) as { data: { id: string; part_size: number } }).data
 
     // Upload only part 1 through the real signed data plane.
+    const firstChunk = payload.subarray(0, session.part_size)
     const signedResponse = await page.request.post(`${apiBase}/api/v1/uploads/${session.id}/parts/sign`, {
       headers: { ...auth, 'Content-Type': 'application/json' },
-      data: { part_number: 1 },
+      // The digest is what binds part 1 to these bytes for every later resume.
+      data: {
+        part_number: 1,
+        checksum: { algorithm: 'sha256', value: createHash('sha256').update(firstChunk).digest('base64') },
+      },
     })
-    const signed = ((await signedResponse.json()) as { data: { url: string; method: string } }).data
+    const signed = ((await signedResponse.json()) as {
+      data: { url: string; method: string; required_headers?: Record<string, string> }
+    }).data
     const firstPart = await page.request.fetch(signed.url, {
       method: signed.method,
-      data: payload.subarray(0, session.part_size),
+      headers: signedHeaders(signed.required_headers),
+      data: firstChunk,
     })
     expect(firstPart.status()).toBe(200)
 
-    // The server must report exactly the part that landed.
+    // The server must report exactly the part that landed, and it must carry the digest
+    // the part was signed with — without it the client may not skip the part.
     const listedResponse = await page.request.get(`${apiBase}/api/v1/uploads/${session.id}/parts`, { headers: auth })
     expect(listedResponse.status()).toBe(200)
     expect(listedResponse.headers()['cache-control']).toBe('no-store')
     const listed = ((await listedResponse.json()) as {
-      data: { parts: Array<{ part_number: number }>; complete: boolean; part_size: number }
+      data: { parts: Array<{ part_number: number; content_sha256?: string }>; complete: boolean; part_size: number }
     }).data
     expect(listed.complete).toBe(true)
     expect(listed.parts.map((part) => part.part_number)).toEqual([1])
+    expect(listed.parts[0].content_sha256).toMatch(/^[A-Za-z0-9+/]{43}=$/)
+    expect(listed.parts[0].content_sha256).toBe(
+      createHash('sha256').update(payload.subarray(0, session.part_size)).digest('base64'),
+    )
 
     const lastModified = Date.now()
     await page.addInitScript(([handle, bearer]) => {
@@ -155,6 +169,21 @@ test.describe('live stack', () => {
     }, { name, size: payload.length, lastModified })
     await expect(page.getByText(`已恢复并完成「${name}」的上传`)).toBeVisible({ timeout: 120_000 })
     await expect(page.getByRole('button', { name: '下载' }).first()).toBeVisible()
+
+    // Byte-level proof that the resumed object is the selected file and nothing else: the
+    // whole point of ADR-0028 is that a skipped part can never come from another file.
+    const popupPromise = page.context().waitForEvent('page')
+    const row = page.locator('.file-row').filter({ hasText: name })
+    await row.getByRole('button', { name: '下载' }).click()
+    const popup = await popupPromise
+    const download = await Promise.race([
+      popup.waitForEvent('download', { timeout: 30_000 }),
+      page.waitForEvent('download', { timeout: 30_000 }),
+    ])
+    const downloaded = await readFile((await download.path())!)
+    expect(downloaded.length).toBe(payload.length)
+    expect(downloaded.equals(payload)).toBe(true)
+
     await expect.poll(async () => {
       const listingResponse = await page.request.get(
         `${apiBase}/api/v1/directories/${rootId}/children?limit=200`,
@@ -167,7 +196,113 @@ test.describe('live stack', () => {
     // Nothing is left behind: the handle is gone and the committed object is the right size.
     expect(await page.evaluate(() => window.sessionStorage.getItem('asteria.upload.resume'))).toBeNull()
   })
+
+  test('refuses to splice a different file into a resumed session (P0 mixed content)', async ({ page }) => {
+    // Files A and B agree on name, size and lastModified but differ in every byte of part 1.
+    // The only thing that can tell them apart is the digest each part was signed with.
+    const size = 8 * 1024 * 1024 + 11
+    const payloadA = Buffer.alloc(size)
+    const payloadB = Buffer.alloc(size)
+    for (let index = 0; index < size; index += 1) {
+      payloadA[index] = (index * 7) % 251
+      payloadB[index] = (index * 11 + 3) % 251
+    }
+    expect(payloadA.equals(payloadB)).toBe(false)
+    const name = `mixed-${Date.now()}.bin`
+    const lastModified = Date.now()
+    const rootId = await rootDirectoryId(page, apiBase!, token!)
+    const auth = { Authorization: `Bearer ${token}` }
+
+    const created = await page.request.post(`${apiBase}/api/v1/uploads`, {
+      headers: { ...auth, 'Content-Type': 'application/json', 'Idempotency-Key': `mixed-${Date.now()}` },
+      data: { parent_id: rootId, name, size, mime_type: 'application/octet-stream' },
+    })
+    expect(created.status()).toBe(201)
+    const session = ((await created.json()) as { data: { id: string; part_size: number } }).data
+
+    // A's part 1 goes to storage, bound to A's digest at signing time.
+    const chunkA = payloadA.subarray(0, session.part_size)
+    const signedResponse = await page.request.post(`${apiBase}/api/v1/uploads/${session.id}/parts/sign`, {
+      headers: { ...auth, 'Content-Type': 'application/json' },
+      data: {
+        part_number: 1,
+        checksum: { algorithm: 'sha256', value: createHash('sha256').update(chunkA).digest('base64') },
+      },
+    })
+    expect(signedResponse.status()).toBe(200)
+    const signed = ((await signedResponse.json()) as {
+      data: { url: string; method: string; required_headers?: Record<string, string> }
+    }).data
+    const putA = await page.request.fetch(signed.url, {
+      method: signed.method,
+      headers: signedHeaders(signed.required_headers),
+      data: chunkA,
+    })
+    expect(putA.status()).toBe(200)
+
+    const listed = ((await (await page.request.get(`${apiBase}/api/v1/uploads/${session.id}/parts`, { headers: auth })).json()) as {
+      data: { parts: Array<{ part_number: number; content_sha256?: string }> }
+    }).data
+    expect(listed.parts[0].content_sha256).toBe(createHash('sha256').update(chunkA).digest('base64'))
+
+    // Seed the handle, then hand the console file B under A's identity.
+    await page.addInitScript(([handle, bearer]) => {
+      window.sessionStorage.setItem('asteria.upload.resume', JSON.stringify(handle))
+      window.localStorage.setItem('asteria.token', bearer)
+    }, [{
+      version: 1,
+      uploadId: session.id,
+      tenantId: '',
+      parentId: rootId,
+      parentName: '根目录',
+      fileName: name,
+      size,
+      lastModified,
+      partSize: session.part_size,
+      createdAt: Date.now(),
+    }, token!] as const)
+
+    await page.goto('/')
+    await expect(page.getByText('检测到未完成的上传')).toBeVisible()
+    await page.evaluate(({ name: fileName, size: total, lastModified: stamp }) => {
+      const bytes = new Uint8Array(total)
+      for (let index = 0; index < total; index += 1) bytes[index] = (index * 11 + 3) % 251
+      const file = new File([bytes], fileName, { type: 'application/octet-stream', lastModified: stamp })
+      const inputs = document.querySelectorAll<HTMLInputElement>('input[type="file"]')
+      const input = inputs[inputs.length - 1]
+      const transfer = new DataTransfer()
+      transfer.items.add(file)
+      input.files = transfer.files
+      input.dispatchEvent(new Event('change', { bubbles: true }))
+    }, { name, size, lastModified })
+    await expect(page.getByText(`已恢复并完成「${name}」的上传`)).toBeVisible({ timeout: 120_000 })
+
+    // The object must be B, end to end: A's part 1 was re-uploaded, never spliced in.
+    const popupPromise = page.context().waitForEvent('page')
+    const row = page.locator('.file-row').filter({ hasText: name })
+    await row.getByRole('button', { name: '下载' }).click()
+    const popup = await popupPromise
+    const download = await Promise.race([
+      popup.waitForEvent('download', { timeout: 30_000 }),
+      page.waitForEvent('download', { timeout: 30_000 }),
+    ])
+    const downloaded = await readFile((await download.path())!)
+    expect(downloaded.length).toBe(size)
+    expect(downloaded.equals(payloadB)).toBe(true)
+    expect(downloaded.equals(payloadA)).toBe(false)
+  })
 })
+
+
+/** Forward the signed headers a presigned PUT requires, without trying to set Host. */
+function signedHeaders(required: Record<string, string> | undefined): Record<string, string> {
+  const headers: Record<string, string> = {}
+  for (const [name, value] of Object.entries(required ?? {})) {
+    if (name.toLowerCase() === 'host') continue
+    headers[name] = value
+  }
+  return headers
+}
 
 async function rootDirectoryId(page: import('@playwright/test').Page, base: string, bearer: string) {
   const response = await page.request.get(`${base}/api/v1/tenant`, { headers: { Authorization: `Bearer ${bearer}` } })

@@ -3,17 +3,22 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/baicie/asteria-drive/internal/auth"
 
 	"github.com/baicie/asteria-drive/internal/drive"
 )
 
 type listedPart struct {
-	PartNumber int    `json:"part_number"`
-	ETag       string `json:"etag"`
-	Size       int64  `json:"size"`
+	PartNumber    int    `json:"part_number"`
+	ETag          string `json:"etag"`
+	Size          int64  `json:"size"`
+	ContentSHA256 string `json:"content_sha256"`
 }
 
 type uploadPartsPayload struct {
@@ -174,4 +179,150 @@ func completeSinglePartUpload(t *testing.T, api testAPI, parentID, name string, 
 		t.Fatalf("complete upload status=%d: %s", recorder.Code, recorder.Body.String())
 	}
 	return completed, upload
+}
+
+// The listing is a GET: it must never transition the session or abort the multipart upload
+// merely because the clock has passed the TTL. Maintenance owns that transition.
+func TestUploadPartsListingIsReadOnlyForAnElapsedSession(t *testing.T) {
+	api := newTestAPI(t)
+	directory := createDirectory(t, api, "readonly-elapsed")
+	upload := createUpload(t, api, directory.ID, "elapsed.bin", 4)
+	session := readUploadSession(t, api, upload.ID)
+	putUploadPart(t, api, session.StorageUploadID, 1, []byte("data"))
+
+	// The listing carries the effective status. The control plane reads it through the
+	// same clock the service uses, so the fixture moves that clock forward instead of
+	// writing the row: writing it would be exactly the side effect under test.
+	api.clock.now = api.clock.now.Add(2 * time.Hour)
+	t.Cleanup(func() { api.clock.now = api.clock.now.Add(-2 * time.Hour) })
+
+	payload := decodeData[uploadPartsPayload](t, api.request(t, http.MethodGet, "/api/v1/uploads/"+upload.ID+"/parts", testTokenA, nil, nil))
+	if payload.Status != string(drive.UploadExpired) || len(payload.Parts) != 0 {
+		t.Fatalf("elapsed listing = %+v, want expired with no parts", payload)
+	}
+	after := readUploadSession(t, api, upload.ID)
+	if after.Status != drive.UploadCreated {
+		t.Fatalf("GET persisted a status change: %s", after.Status)
+	}
+	if after.UpdatedAt.After(session.UpdatedAt) {
+		t.Fatalf("GET touched the session row: updated_at %s -> %s", session.UpdatedAt, after.UpdatedAt)
+	}
+	if _, err := api.storage.ListParts(context.Background(), session.ObjectKey, session.StorageUploadID); err != nil {
+		t.Fatalf("GET aborted the multipart upload: %v", err)
+	}
+}
+
+// Signed URLs are short-lived bearer credentials; no cache may outlive the signature.
+func TestSignedURLResponsesAreNotCacheable(t *testing.T) {
+	api := newTestAPI(t)
+	directory := createDirectory(t, api, "no-store")
+
+	// Signing happens on a live session; a committed one cannot be signed any more.
+	live := createUpload(t, api, directory.ID, "live.bin", 5)
+	sign := api.request(t, http.MethodPost, "/api/v1/uploads/"+live.ID+"/parts/sign", testTokenA, map[string]any{"part_number": 1}, nil)
+	if sign.Code != http.StatusOK {
+		t.Fatalf("sign part status=%d: %s", sign.Code, sign.Body.String())
+	}
+	if got := sign.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("signing Cache-Control = %q, want no-store", got)
+	}
+
+	_, upload := completeSinglePartUpload(t, api, directory.ID, "cached.bin", []byte("payload"))
+	committed := readUploadSession(t, api, upload.ID)
+	if committed.CommittedNodeID == "" {
+		t.Fatal("completed upload has no committed file id")
+	}
+	download := api.request(t, http.MethodPost, "/api/v1/files/"+committed.CommittedNodeID+"/download-authorizations", testTokenA, nil, nil)
+	if download.Code != http.StatusCreated {
+		t.Fatalf("download authorization status=%d: %s", download.Code, download.Body.String())
+	}
+	if got := download.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("download authorization Cache-Control = %q, want no-store", got)
+	}
+}
+
+// A session is tenant-scoped, not principal-scoped: any member of the same tenant may read
+// it, and a viewer may read the listing but never sign. This is the documented contract,
+// so it is pinned here rather than left to prose.
+func TestUploadPartsListingIsTenantSharedAndReadOnlyForViewers(t *testing.T) {
+	base := newTestAPI(t)
+	ctx := context.Background()
+	issuer := "https://issuer.resume.test"
+	now := time.Now().UTC()
+	members := []struct {
+		token       string
+		principalID string
+		role        drive.AccessRole
+	}{
+		{token: "resume-viewer-token", principalID: testPrincipalC, role: drive.RoleViewer},
+		{token: "resume-editor-token", principalID: testPrincipalD, role: drive.RoleEditor},
+	}
+	verifier := make(testOIDCVerifier, len(members))
+	for _, member := range members {
+		if _, err := base.repository.EnsureOIDCMember(ctx, drive.OIDCMemberSeed{
+			PrincipalID: member.principalID, TenantID: testTenantA, Issuer: issuer, Subject: member.token,
+			DisplayName: member.token, Role: member.role, Now: now,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		verifier[member.token] = auth.OIDCClaims{
+			Issuer: issuer, Subject: member.token, Audience: []string{"asteria-api"}, ExpiresAt: now.Add(time.Hour),
+		}
+	}
+	resolver := func(ctx context.Context, issuer, subject, tenantID string) (auth.Principal, error) {
+		record, err := base.repository.ResolveOIDCPrincipal(ctx, issuer, subject, tenantID)
+		if err != nil {
+			return auth.Principal{}, err
+		}
+		return auth.Principal{Identity: record.Identity, TenantDisplayName: record.TenantDisplayName, Role: record.Role}, nil
+	}
+	authenticator, err := auth.NewOIDCWithVerifier(issuer, "asteria-api", verifier, resolver)
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpServer, err := New(Options{Address: ":0", Service: base.service, Authenticator: authenticator, Logger: slog.Default(), ReadHeaderTimeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	api := base
+	api.handler = httpServer.Handler()
+	headers := map[string]string{auth.TenantHeader: testTenantA}
+
+	// The upload is created by the editor member; the viewer then reads it.
+	created := api.request(t, http.MethodPost, "/api/v1/directories", "resume-editor-token", map[string]any{
+		"parent_id": base.tenantA.RootNodeID, "name": "shared",
+	}, headers)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("editor directory status=%d: %s", created.Code, created.Body.String())
+	}
+	directory := decodeData[nodeResponse](t, created)
+	createdUpload := api.request(t, http.MethodPost, "/api/v1/uploads", "resume-editor-token", map[string]any{
+		"parent_id": directory.ID, "name": "shared.bin", "size": 5, "mime_type": "application/octet-stream",
+	}, headers)
+	if createdUpload.Code != http.StatusCreated {
+		t.Fatalf("editor upload status=%d: %s", createdUpload.Code, createdUpload.Body.String())
+	}
+	upload := decodeData[uploadResponse](t, createdUpload)
+	identity := drive.Identity{TenantID: testTenantA, PrincipalID: testPrincipalD}
+	session, err := base.service.Upload(ctx, identity, upload.ID)
+	if err != nil {
+		t.Fatalf("read upload session: %v", err)
+	}
+	putUploadPart(t, api, session.StorageUploadID, 1, []byte("hello"))
+
+	// A viewer can read the part listing of a session created by another principal.
+	viewerListing := api.request(t, http.MethodGet, "/api/v1/uploads/"+upload.ID+"/parts", "resume-viewer-token", nil, headers)
+	if viewerListing.Code != http.StatusOK {
+		t.Fatalf("viewer listing status=%d: %s", viewerListing.Code, viewerListing.Body.String())
+	}
+	// But signing is a write and stays forbidden.
+	viewerSign := api.request(t, http.MethodPost, "/api/v1/uploads/"+upload.ID+"/parts/sign", "resume-viewer-token", map[string]any{"part_number": 1}, headers)
+	if viewerSign.Code != http.StatusForbidden {
+		t.Fatalf("viewer signing status=%d, want 403: %s", viewerSign.Code, viewerSign.Body.String())
+	}
+	// An editor of the same tenant may read the very same session.
+	editorListing := api.request(t, http.MethodGet, "/api/v1/uploads/"+upload.ID+"/parts", "resume-editor-token", nil, headers)
+	if editorListing.Code != http.StatusOK {
+		t.Fatalf("editor listing status=%d: %s", editorListing.Code, editorListing.Body.String())
+	}
 }

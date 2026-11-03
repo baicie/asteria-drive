@@ -38,11 +38,11 @@ func TestMigrateIsIdempotent(t *testing.T) {
 	if err := conn.QueryRow(ctx, `
 		SELECT count(*) FROM information_schema.tables
 		WHERE table_schema=current_schema()
-		  AND table_name IN ('tenant','file_node','blob','file_version','upload_session','upload_part','principal','tenant_member')`,
+		  AND table_name IN ('tenant','file_node','blob','file_version','upload_session','upload_part','principal','tenant_member','upload_part_signature')`,
 	).Scan(&tables); err != nil {
 		t.Fatalf("count MVP tables: %v", err)
 	}
-	if migrations != 3 || tables != 8 {
+	if migrations != 4 || tables != 9 {
 		t.Fatalf("unexpected migration result: migrations=%d tables=%d", migrations, tables)
 	}
 }

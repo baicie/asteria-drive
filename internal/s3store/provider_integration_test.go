@@ -72,7 +72,7 @@ func TestProviderSeaweedFSContract(t *testing.T) {
 	completedParts := make([]drive.CompletedPart, 0, len(partBodies))
 	for index, body := range partBodies {
 		partNumber := index + 1
-		signed, err := provider.SignUploadPart(ctx, key, uploadID, partNumber, drive.Checksum{}, 5*time.Minute)
+		signed, _, err := provider.SignUploadPart(ctx, key, uploadID, partNumber, drive.Checksum{}, 5*time.Minute)
 		if err != nil {
 			t.Fatalf("sign upload part %d: %v", partNumber, err)
 		}

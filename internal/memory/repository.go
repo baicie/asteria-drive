@@ -19,6 +19,7 @@ type Repository struct {
 	versions           map[string]drive.FileVersion
 	uploads            map[string]drive.UploadSession
 	parts              map[string][]drive.CompletedPart
+	partSignatures     map[string]map[int]drive.PartSignature
 	idempotency        map[string]drive.IdempotencyRecord
 	uploadMaintenance  map[string]maintenanceLease
 	recycleMaintenance map[string]maintenanceLease
@@ -38,6 +39,7 @@ func NewRepository() *Repository {
 		members: make(map[string]drive.PrincipalRecord), nodes: make(map[string]drive.Node),
 		blobs: make(map[string]drive.Blob), versions: make(map[string]drive.FileVersion),
 		uploads: make(map[string]drive.UploadSession), parts: make(map[string][]drive.CompletedPart),
+		partSignatures: make(map[string]map[int]drive.PartSignature),
 		idempotency:       make(map[string]drive.IdempotencyRecord),
 		uploadMaintenance: make(map[string]maintenanceLease), recycleMaintenance: make(map[string]maintenanceLease),
 		invitations: make(map[string]drive.TenantInvitation), invitationTokens: make(map[string]string),
@@ -542,6 +544,43 @@ func (r *Repository) UploadParts(_ context.Context, identity drive.Identity, id 
 		return []drive.CompletedPart{}, nil
 	}
 	return append([]drive.CompletedPart(nil), parts...), nil
+}
+
+func (r *Repository) RecordPartSignature(_ context.Context, identity drive.Identity, id string, part drive.PartSignature, _ time.Time) error {
+	if part.PartNumber < 1 || part.PartNumber > drive.MaxUploadParts || part.Size <= 0 ||
+		!drive.ValidChecksum(drive.Checksum{Algorithm: "sha256", Value: part.SHA256}) {
+		return drive.E(drive.CodeInvalidRequest, "part signature is invalid")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, err := r.uploadFor(identity, id); err != nil {
+		return err
+	}
+	signatures := r.partSignatures[id]
+	if signatures == nil {
+		signatures = make(map[int]drive.PartSignature)
+		r.partSignatures[id] = signatures
+	}
+	signatures[part.PartNumber] = part
+	return nil
+}
+
+func (r *Repository) PartSignatures(_ context.Context, identity drive.Identity, id string) ([]drive.PartSignature, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if _, err := r.uploadFor(identity, id); err != nil {
+		return nil, err
+	}
+	signatures := r.partSignatures[id]
+	ordered := make([]drive.PartSignature, 0, len(signatures))
+	for partNumber := 1; partNumber <= drive.MaxUploadParts; partNumber++ {
+		signature, ok := signatures[partNumber]
+		if !ok {
+			continue
+		}
+		ordered = append(ordered, signature)
+	}
+	return ordered, nil
 }
 
 func (r *Repository) MarkUploadCleanupComplete(_ context.Context, identity drive.Identity, id string, now time.Time) error {

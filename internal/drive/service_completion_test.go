@@ -451,7 +451,7 @@ func TestAbortUploadPersistsTerminalStateAndRetriesStorageCleanup(t *testing.T) 
 	if aborted.Status != drive.UploadAborted {
 		t.Fatalf("upload status=%s after cleanup failure, want aborted", aborted.Status)
 	}
-	if _, err := storage.Storage.SignUploadPart(ctx, upload.ObjectKey, upload.StorageUploadID, 1, drive.Checksum{}, time.Minute); err != nil {
+	if _, _, err := storage.Storage.SignUploadPart(ctx, upload.ObjectKey, upload.StorageUploadID, 1, drive.Checksum{}, time.Minute); err != nil {
 		t.Fatalf("first failed cleanup unexpectedly removed multipart upload: %v", err)
 	}
 	if err := service.AbortUpload(ctx, identity, upload.ID); err != nil {
@@ -460,7 +460,7 @@ func TestAbortUploadPersistsTerminalStateAndRetriesStorageCleanup(t *testing.T) 
 	if storage.abortCalls.Load() != 2 {
 		t.Fatalf("abort calls=%d, want 2", storage.abortCalls.Load())
 	}
-	if _, err := storage.Storage.SignUploadPart(ctx, upload.ObjectKey, upload.StorageUploadID, 1, drive.Checksum{}, time.Minute); drive.CodeOf(err) != drive.CodeNotFound {
+	if _, _, err := storage.Storage.SignUploadPart(ctx, upload.ObjectKey, upload.StorageUploadID, 1, drive.Checksum{}, time.Minute); drive.CodeOf(err) != drive.CodeNotFound {
 		t.Fatalf("multipart upload still exists after retry: code=%s err=%v", drive.CodeOf(err), err)
 	}
 }
@@ -542,7 +542,7 @@ func TestExpiredUploadIsMarkedAndMultipartIsAborted(t *testing.T) {
 	if expired.Status != drive.UploadExpired {
 		t.Fatalf("expired upload status=%s, want expired", expired.Status)
 	}
-	if _, err := storage.SignUploadPart(ctx, upload.ObjectKey, upload.StorageUploadID, 1, drive.Checksum{}, time.Minute); drive.CodeOf(err) != drive.CodeNotFound {
+	if _, _, err := storage.SignUploadPart(ctx, upload.ObjectKey, upload.StorageUploadID, 1, drive.Checksum{}, time.Minute); drive.CodeOf(err) != drive.CodeNotFound {
 		t.Fatalf("expired multipart upload still exists: code=%s err=%v", drive.CodeOf(err), err)
 	}
 }
@@ -578,7 +578,7 @@ func TestCreateUploadUsesDetachedContextForCompensatingAbort(t *testing.T) {
 	if !storage.aborted {
 		t.Fatal("multipart upload was not compensated after repository failure")
 	}
-	if _, err := storage.Storage.SignUploadPart(context.Background(), storage.lastKey, storage.lastUploadID, 1, drive.Checksum{}, time.Minute); drive.CodeOf(err) != drive.CodeNotFound {
+	if _, _, err := storage.Storage.SignUploadPart(context.Background(), storage.lastKey, storage.lastUploadID, 1, drive.Checksum{}, time.Minute); drive.CodeOf(err) != drive.CodeNotFound {
 		t.Fatalf("compensated multipart upload still exists: code=%s err=%v", drive.CodeOf(err), err)
 	}
 }
@@ -706,7 +706,7 @@ func TestCompleteUploadDeterministicStorageRejectionFailsAndAborts(t *testing.T)
 	if failed.Status != drive.UploadFailed || failed.FailureCode != "storage_rejected" {
 		t.Fatalf("failed session=%+v", failed)
 	}
-	if _, err := storage.SignUploadPart(ctx, upload.ObjectKey, upload.StorageUploadID, 1, drive.Checksum{}, time.Minute); drive.CodeOf(err) != drive.CodeNotFound {
+	if _, _, err := storage.SignUploadPart(ctx, upload.ObjectKey, upload.StorageUploadID, 1, drive.Checksum{}, time.Minute); drive.CodeOf(err) != drive.CodeNotFound {
 		t.Fatalf("rejected multipart was not aborted: code=%s err=%v", drive.CodeOf(err), err)
 	}
 	if _, err := service.CompleteUpload(ctx, identity, upload.ID, []drive.CompletedPart{wrong}); drive.CodeOf(err) != drive.CodeInvalidState {

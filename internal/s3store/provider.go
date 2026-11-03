@@ -7,6 +7,7 @@ import (
 	"mime"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,6 +19,11 @@ import (
 	"github.com/aws/smithy-go"
 	"github.com/baicie/asteria-drive/internal/drive"
 )
+
+// maxListPartsPages bounds the ListParts cursor loop. S3 pages hold up to 1000 parts, so
+// 20 pages cover the 10,000-part limit with headroom; anything beyond that is a cursor
+// that is not making progress, not a legitimate upload.
+const maxListPartsPages = 20
 
 type Options struct {
 	Endpoint              string
@@ -116,23 +122,28 @@ func (p *Provider) CreateMultipart(ctx context.Context, key, mimeType string, ch
 	return *output.UploadId, nil
 }
 
-func (p *Provider) SignUploadPart(ctx context.Context, key, uploadID string, partNumber int, checksum drive.Checksum, ttl time.Duration) (drive.SignedPart, error) {
+func (p *Provider) SignUploadPart(ctx context.Context, key, uploadID string, partNumber int, checksum drive.Checksum, ttl time.Duration) (drive.SignedPart, bool, error) {
 	input := &s3.UploadPartInput{
 		Bucket: aws.String(p.bucket), Key: aws.String(key), UploadId: aws.String(uploadID), PartNumber: aws.Int32(int32(partNumber)),
 	}
-	if p.checksumHeaders && checksum.Algorithm == "sha256" {
+	// When the checksum header participates in the signature, S3 verifies the uploaded
+	// bytes against it and rejects a mismatch. That is what makes "the part already in
+	// storage is this part of this file" a storage-enforced fact rather than a client
+	// promise, so resume can safely skip a signed part (ADR-0028).
+	bound := p.checksumHeaders && checksum.Algorithm == "sha256"
+	if bound {
 		input.ChecksumSHA256 = aws.String(checksum.Value)
 	}
 	output, err := p.presigner.PresignUploadPart(ctx, input, func(options *s3.PresignOptions) {
 		options.Expires = ttl
 	})
 	if err != nil {
-		return drive.SignedPart{}, mapError(err, "could not sign upload part")
+		return drive.SignedPart{}, false, mapError(err, "could not sign upload part")
 	}
 	return drive.SignedPart{
 		PartNumber: partNumber, Method: output.Method, URL: output.URL,
 		RequiredHeaders: flattenHeaders(output.SignedHeader), ExpiresAt: time.Now().UTC().Add(ttl),
-	}, nil
+	}, bound, nil
 }
 
 func (p *Provider) CompleteMultipart(ctx context.Context, key, uploadID string, parts []drive.CompletedPart) (drive.ObjectInfo, error) {
@@ -165,10 +176,22 @@ func (p *Provider) AbortMultipart(ctx context.Context, key, uploadID string) err
 
 // ListParts pages through S3 ListParts. S3 caps a page at 1000 parts, so a 10,000-part
 // upload needs ten calls; the cursor is the part number marker, not an opaque token.
+//
+// The loop is bounded in three independent ways, because a misbehaving endpoint must not
+// be able to hang a resumed client or grow memory without limit:
+//
+//   - a cursor must strictly advance (NextPartNumberMarker > the marker just used);
+//   - the page count is capped at maxListPartsPages;
+//   - collection stops once drive.MaxUploadParts parts have been seen, which is the most a
+//     single completion request can carry, so asking for an eleventh page is pointless.
 func (p *Provider) ListParts(ctx context.Context, key, uploadID string) ([]drive.StoredPart, error) {
 	parts := make([]drive.StoredPart, 0)
 	var marker *string
-	for {
+	previous := 0
+	for page := 0; ; page++ {
+		if page >= maxListPartsPages {
+			return nil, drive.E(drive.CodeDependencyUnavailable, "multipart part listing exceeded its page bound")
+		}
 		output, err := p.client.ListParts(ctx, &s3.ListPartsInput{
 			Bucket: aws.String(p.bucket), Key: aws.String(key), UploadId: aws.String(uploadID),
 			PartNumberMarker: marker,
@@ -183,9 +206,22 @@ func (p *Provider) ListParts(ctx context.Context, key, uploadID string) ([]drive
 				Size:       aws.ToInt64(part.Size),
 			})
 		}
-		if !aws.ToBool(output.IsTruncated) || output.NextPartNumberMarker == nil {
+		if len(parts) >= drive.MaxUploadParts {
+			parts = parts[:drive.MaxUploadParts]
+			sort.Slice(parts, func(i, j int) bool { return parts[i].PartNumber < parts[j].PartNumber })
+			return parts, nil
+		}
+		if !aws.ToBool(output.IsTruncated) {
 			break
 		}
+		// S3 returns the marker as a string; it must both parse and strictly advance. A
+		// truncated page with no usable cursor cannot be followed, and treating it as the
+		// end would silently under-report parts, so fail loudly instead.
+		next, parseErr := strconv.Atoi(aws.ToString(output.NextPartNumberMarker))
+		if output.NextPartNumberMarker == nil || parseErr != nil || next <= previous {
+			return nil, drive.E(drive.CodeDependencyUnavailable, "multipart part listing returned a non-advancing cursor")
+		}
+		previous = next
 		marker = output.NextPartNumberMarker
 	}
 	sort.Slice(parts, func(i, j int) bool { return parts[i].PartNumber < parts[j].PartNumber })

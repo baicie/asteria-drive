@@ -531,6 +531,16 @@ type CompletedPart struct {
 	Size       int64    `json:"size,omitempty"`
 }
 
+// PartSignature is the content identity a client committed to when it asked for a part's
+// signature. It is the only evidence that a part already in storage holds the bytes of
+// the file being resumed rather than those of a different file with the same name, size
+// and lastModified (ADR-0028).
+type PartSignature struct {
+	PartNumber int
+	Size       int64
+	SHA256     string
+}
+
 // StoredPart is one part that object storage has durably accepted for a multipart
 // upload. It is the read-only source for cross-reload resume (ADR-0027): it carries no
 // credential and no signed URL, only the identity of a part that can be re-signed.
@@ -538,6 +548,10 @@ type StoredPart struct {
 	PartNumber int
 	ETag       string
 	Size       int64
+	// ContentSHA256 is the digest the client declared when this part was signed, or empty
+	// when the part has no recorded signature. Empty means "no integrity evidence":
+	// callers must not skip such a part on resume.
+	ContentSHA256 string
 }
 
 // UploadPartListing is the merged view of the parts a resumed client already uploaded.

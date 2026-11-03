@@ -51,7 +51,15 @@ type testAPI struct {
 	repository *memory.Repository
 	tenantA    drive.Tenant
 	tenantB    drive.Tenant
+	// clock drives every TTL decision in the service, so a test can age a session without
+	// writing a terminal status it means to observe.
+	clock *testClock
 }
+
+// testClock is a mutable wall clock shared with the service under test.
+type testClock struct{ now time.Time }
+
+func (c *testClock) Now() time.Time { return c.now }
 
 func newTestAPI(t *testing.T) testAPI {
 	return newTestAPIWithLogger(t, slog.New(slog.NewTextHandler(io.Discard, nil)))
@@ -65,8 +73,9 @@ func newTestAPIWithLogger(t *testing.T, logger *slog.Logger) testAPI {
 	if err != nil {
 		t.Fatal(err)
 	}
+	clock := &testClock{now: time.Now().UTC()}
 	service, err := drive.NewService(drive.ServiceOptions{
-		Repository: repository, Storage: storage, Cursor: cursor,
+		Repository: repository, Storage: storage, Cursor: cursor, Clock: clock,
 		MaxFileSize: 1 << 30, PartSize: 8 << 20, UploadTTL: time.Hour,
 		UploadSignTTL: time.Minute, DownloadSignTTL: time.Minute,
 	})
@@ -97,7 +106,7 @@ func newTestAPIWithLogger(t *testing.T, logger *slog.Logger) testAPI {
 	}
 	return testAPI{
 		handler: httpServer.Handler(), server: httpServer, service: service,
-		storage: storage, repository: repository, tenantA: tenantA, tenantB: tenantB,
+		storage: storage, repository: repository, tenantA: tenantA, tenantB: tenantB, clock: clock,
 	}
 }
 

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ref } from 'vue'
 import type { Node } from '../../api/types'
 import { useBusy } from '../../lib/busy'
@@ -54,7 +54,9 @@ function handle(overrides: Partial<UploadResumeHandle> = {}): UploadResumeHandle
 }
 
 function makeFile(bytes = 'abcdefghij', name = 'report.bin', lastModified = NOW) {
-  return new File([bytes], name, { type: 'application/octet-stream', lastModified })
+  const file = new File([bytes], name, { type: 'application/octet-stream', lastModified })
+  testFileContents.set(file, bytes)
+  return file
 }
 
 function json(body: unknown, status = 200) {
@@ -116,6 +118,42 @@ function seed(storage: ResumeStorage, value = handle({ createdAt: Date.now() }))
   writeResumeHandle(storage, value)
 }
 
+/**
+ * jsdom's Blob.slice returns a stub without arrayBuffer(), so the real WebCrypto digest
+ * cannot run there. Parts are sliced from recorded content and hashed deterministically;
+ * the resume assertions only need "same bytes → same digest".
+ */
+const testFileContents = new WeakMap<File, string>()
+
+beforeEach(() => {
+  vi.spyOn(File.prototype, 'slice').mockImplementation(function (this: File, start?: number, end?: number) {
+    const content = testFileContents.get(this) ?? ''
+    const slice = content.slice(start ?? 0, end ?? content.length)
+    return {
+      size: slice.length,
+      text: async () => slice,
+      arrayBuffer: async () => {
+        const bytes = new TextEncoder().encode(slice)
+        return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
+      },
+    } as unknown as Blob
+  })
+  // The hook hashes parts with WebCrypto; the digest must still distinguish contents.
+  vi.stubGlobal('crypto', {
+    subtle: {
+      digest: async (_algorithm: string, buffer: ArrayBuffer) => {
+        const bytes = new Uint8Array(buffer)
+        const text = String.fromCharCode(...bytes)
+        const hash = new Uint8Array(32)
+        for (let index = 0; index < text.length; index += 1) {
+          hash[index % 32] = (hash[index % 32] * 33 + text.charCodeAt(index)) % 256
+        }
+        return hash.buffer
+      },
+    },
+  })
+})
+
 afterEach(() => {
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
@@ -152,12 +190,13 @@ describe('resume handle lifecycle on a fresh upload', () => {
     expect(readResumeHandle(storage, NOW)).toBeNull()
   })
 
-  it('keeps the handle after a cancel so the user can continue it later', async () => {
-    const storage = memoryStorage()
-    const abortable = vi.fn((_input: RequestInfo | URL, init: RequestInit = {}) =>
+  /** A gateway whose S3 PUTs hang until the transfer is aborted. */
+  function stallingUpload(storage: ResumeStorage & { data: Map<string, string> }) {
+    const deletes: string[] = []
+    const abortable = (_input: RequestInfo | URL, init: RequestInit = {}) =>
       new Promise<Response>((_resolve, reject) => {
         init.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')))
-      }))
+      })
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
       const url = String(input)
       if (url.includes('/parts/sign')) {
@@ -165,18 +204,55 @@ describe('resume handle lifecycle on a fresh upload', () => {
         return json({ data: { part_number: part, method: 'PUT', url: `https://s3.test/part/${part}`, required_headers: {} } })
       }
       if (url.includes('s3.test')) return abortable(input, init)
+      if (init.method === 'DELETE') {
+        deletes.push(url)
+        return new Response(null, { status: 204 })
+      }
       return json({ data: { id: 'upload-1', status: 'created', part_size: PART_SIZE, expected_size: 10 } })
     }))
+    return {
+      storage,
+      deletes,
+      async pauseAndSettle(task: ReturnType<typeof makeTask>['task']) {
+        const started = task.start(makeFile())
+        await vi.waitFor(() => expect(storage.data.get(RESUME_STORAGE_KEY)).toBeTruthy())
+        task.pause()
+        await started
+      },
+      async cancelAndSettle(task: ReturnType<typeof makeTask>['task']) {
+        const started = task.start(makeFile())
+        await vi.waitFor(() => expect(storage.data.get(RESUME_STORAGE_KEY)).toBeTruthy())
+        task.cancel()
+        await started
+      },
+    }
+  }
 
+  it('keeps the handle and the server session after a pause', async () => {
+    const storage = memoryStorage()
+    const stall = stallingUpload(storage)
     const { task } = makeTask(storage)
-    const started = task.start(makeFile())
-    await vi.waitFor(() => expect(storage.data.get(RESUME_STORAGE_KEY)).toBeTruthy())
-    task.cancel()
-    await started
+
+    await stall.pauseAndSettle(task)
 
     expect(task.failureKind.value).toBe('cancelled')
-    // The session still exists remotely: dropping the handle would orphan it.
+    // Pause exists so the parts survive: no abort may reach the server.
+    expect(stall.deletes).toEqual([])
     expect(readResumeHandle(storage, NOW)).toMatchObject({ uploadId: 'upload-1' })
+  })
+
+  it('aborts the server session and clears the handle on cancel', async () => {
+    const storage = memoryStorage()
+    const stall = stallingUpload(storage)
+    const { task } = makeTask(storage)
+
+    await stall.cancelAndSettle(task)
+
+    expect(task.failureKind.value).toBe('cancelled')
+    // Cancel is the opposite of pause: the multipart upload must be released, and a
+    // handle to a session that no longer exists would only offer a resume that 404s.
+    expect(stall.deletes).toEqual(['/api/v1/uploads/upload-1'])
+    expect(readResumeHandle(storage, NOW)).toBeNull()
   })
 
   it('drops the handle when the server refuses the upload for good', async () => {
@@ -392,7 +468,7 @@ describe('resuming from the banner', () => {
     expect(notices.some((entry) => entry.kind === 'error' && entry.text.includes('不一致'))).toBe(true)
   })
 
-  it('uploads only the missing part and clears everything on success', async () => {
+  it('re-uploads a part with no integrity evidence and clears everything on success', async () => {
     const storage = memoryStorage()
     const { task, notices, refreshed } = makeTask(storage)
     await primePending(task, storage)
@@ -402,7 +478,9 @@ describe('resuming from the banner', () => {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
       const url = String(input)
       if (url.endsWith('/parts') && (init.method ?? 'GET') === 'GET') {
-        return json({ data: { upload_id: 'upload-1', status: 'uploading', part_size: PART_SIZE, parts: [{ part_number: 1, etag: '"etag-1"', size: 5 }], complete: true } })
+        // The server reports part 1 but holds no signed digest for it, so this client
+        // cannot prove those bytes belong to the selected file and must re-send them.
+        return json({ data: { upload_id: 'upload-1', status: 'uploading', part_size: PART_SIZE, parts: [{ part_number: 1, etag: '"stale"', size: 5 }], complete: true } })
       }
       if (url.includes('/parts/sign')) {
         const part = JSON.parse(String(init.body)).part_number as number
@@ -419,8 +497,11 @@ describe('resuming from the banner', () => {
 
     const outcome = await task.resume(makeFile())
 
-    expect(signed).toEqual([2])
-    expect(completion).toMatchObject({ parts: [{ part_number: 1, etag: '"etag-1"' }, { part_number: 2, etag: '"etag-2"' }] })
+    expect(signed).toEqual([1, 2])
+    // The completion list carries the freshly uploaded ETags, not the untrusted ones.
+    expect(completion).toMatchObject({
+      parts: [{ part_number: 1, etag: '"etag-1"' }, { part_number: 2, etag: '"etag-2"' }],
+    })
     expect(outcome).toEqual({ outcome: 'resumed', uploadedParts: 2, totalParts: 2 })
     expect(task.pendingResume.value).toBeNull()
     expect(readResumeHandle(storage, NOW)).toBeNull()

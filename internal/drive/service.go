@@ -513,11 +513,37 @@ func (s *Service) SignUploadPart(ctx context.Context, identity Identity, uploadI
 			return SignedPart{}, err
 		}
 	}
-	signed, err := s.storage.SignUploadPart(ctx, session.ObjectKey, session.StorageUploadID, partNumber, checksum, s.uploadSignTTL)
+	signed, bound, err := s.storage.SignUploadPart(ctx, session.ObjectKey, session.StorageUploadID, partNumber, checksum, s.uploadSignTTL)
 	if err != nil {
 		return SignedPart{}, mapStorageError(err)
 	}
+	// Record the client's declared content identity only when storage actually enforces it.
+	// Without the signed checksum header a PUT could store any bytes, so recording a digest
+	// the server cannot verify would turn "no evidence" into false evidence, and resume
+	// would skip a part it must re-upload.
+	if bound {
+		partSize := signedPartSize(session, partNumber)
+		if err := s.repository.RecordPartSignature(ctx, identity, uploadID, PartSignature{
+			PartNumber: partNumber, Size: partSize, SHA256: checksum.Value,
+		}, s.clock.Now()); err != nil {
+			return SignedPart{}, err
+		}
+	}
 	return signed, nil
+}
+
+// signedPartSize is the byte length of a part of this session, derived from the declared
+// total size and the session part size. The last part is whatever remains.
+func signedPartSize(session UploadSession, partNumber int) int64 {
+	start := int64(partNumber-1) * session.PartSize
+	remaining := session.ExpectedSize - start
+	if remaining > session.PartSize {
+		return session.PartSize
+	}
+	if remaining < 0 {
+		return 0
+	}
+	return remaining
 }
 
 type CompleteOutput struct {
@@ -674,8 +700,9 @@ func (s *Service) failUploadCompletion(ctx context.Context, identity Identity, s
 // Control-plane rows win on a conflict: once a completion digest is frozen, the client
 // must resend exactly those parts or completion fails with idempotency_conflict.
 //
-// An expired session is transitioned to EXPIRED exactly as a signing attempt would do, so
-// a resumed client learns the session is gone instead of uploading into a dead multipart.
+// This endpoint is strictly read-only. An elapsed session is reported as EXPIRED in the
+// response without changing its stored status or aborting its multipart upload: a GET must
+// not have persistent side effects, and the maintenance loop owns the actual transition.
 // A session that storage no longer knows (aborted or expired by maintenance) is reported
 // as invalid_state with no parts rather than leaking the storage error.
 func (s *Service) ListUploadParts(ctx context.Context, identity Identity, uploadID string, limit int) (UploadPartListing, error) {
@@ -690,13 +717,9 @@ func (s *Service) ListUploadParts(ctx context.Context, identity Identity, upload
 		return UploadPartListing{}, err
 	}
 	if !s.clock.Now().Before(session.ExpiresAt) && !session.Status.Terminal() {
-		if _, err := s.repository.AbortUpload(ctx, identity, uploadID, UploadExpired, s.clock.Now()); err != nil {
-			return UploadPartListing{}, err
-		}
-		if err := s.abortMultipart(ctx, session); err != nil {
-			return UploadPartListing{}, err
-		}
-		return UploadPartListing{UploadID: uploadID, Status: UploadExpired, PartSize: session.PartSize, Parts: []StoredPart{}}, nil
+		// Report the effective status without writing it: the maintenance loop performs the
+		// real transition and the multipart abort.
+		return UploadPartListing{UploadID: uploadID, Status: UploadExpired, PartSize: session.PartSize, Parts: []StoredPart{}, Complete: true}, nil
 	}
 
 	listing := UploadPartListing{UploadID: uploadID, Status: session.Status, PartSize: session.PartSize, Parts: []StoredPart{}}
@@ -705,8 +728,23 @@ func (s *Service) ListUploadParts(ctx context.Context, identity Identity, upload
 		return UploadPartListing{}, err
 	}
 	if len(recorded) > 0 {
+		// The frozen completion list is the authority once completion has been requested:
+		// these are the exact parts the server will accept, so they are complete and keep
+		// their signed digests.
+		signatures, signErr := s.repository.PartSignatures(ctx, identity, uploadID)
+		if signErr != nil {
+			return UploadPartListing{}, signErr
+		}
+		byPart := make(map[int]PartSignature, len(signatures))
+		for _, signature := range signatures {
+			byPart[signature.PartNumber] = signature
+		}
 		for _, part := range recorded {
-			listing.Parts = append(listing.Parts, StoredPart{PartNumber: part.PartNumber, ETag: part.ETag, Size: part.Size})
+			stored := StoredPart{PartNumber: part.PartNumber, ETag: part.ETag, Size: part.Size}
+			if signature, ok := byPart[part.PartNumber]; ok && signature.Size == part.Size {
+				stored.ContentSHA256 = signature.SHA256
+			}
+			listing.Parts = append(listing.Parts, stored)
 		}
 		listing.Complete = true
 		return listing, nil
@@ -723,15 +761,33 @@ func (s *Service) ListUploadParts(ctx context.Context, identity Identity, upload
 		}
 		return UploadPartListing{}, mapStorageError(err)
 	}
+	// Attach the content identity each part was signed with. A part with no matching
+	// signature has no integrity evidence, and the client must re-upload it rather than
+	// splice unknown bytes into the resumed object (ADR-0028).
+	signatures, err := s.repository.PartSignatures(ctx, identity, uploadID)
+	if err != nil {
+		return UploadPartListing{}, err
+	}
+	byPart := make(map[int]PartSignature, len(signatures))
+	for _, signature := range signatures {
+		byPart[signature.PartNumber] = signature
+	}
 	for _, part := range stored {
 		if part.PartNumber < 1 || part.PartNumber > MaxUploadParts || part.ETag == "" {
 			continue
 		}
+		if signature, ok := byPart[part.PartNumber]; ok && signature.Size == part.Size {
+			part.ContentSHA256 = signature.SHA256
+		}
 		listing.Parts = append(listing.Parts, part)
 	}
 	sort.Slice(listing.Parts, func(i, j int) bool { return listing.Parts[i].PartNumber < listing.Parts[j].PartNumber })
+	// Completeness is decided before truncation: if the caller's limit cuts the list short,
+	// the returned subset is not authoritative. Storage itself never returns more than
+	// MaxUploadParts, which is the maximum a completion request can carry, so a storage
+	// listing at that bound is still complete.
 	listing.Complete = len(listing.Parts) <= limit
-	if limit > 0 && len(listing.Parts) > limit {
+	if len(listing.Parts) > limit {
 		listing.Parts = listing.Parts[:limit]
 	}
 	return listing, nil

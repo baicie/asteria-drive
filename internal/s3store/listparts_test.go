@@ -96,3 +96,110 @@ func TestListPartsMapsMissingUploadToNotFound(t *testing.T) {
 		t.Fatal("mapped error leaked S3 credentials")
 	}
 }
+
+// With maxListPartsPages pages of 1000 parts each, a server that keeps saying "truncated"
+// would otherwise spin forever. The loop must fail loudly instead of hanging or quietly
+// returning a partial list that a resume would then treat as complete.
+func TestListPartsRejectsANonAdvancingCursor(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		w.Header().Set("Content-Type", "application/xml")
+		// Same marker every page: a cursor that never advances.
+		fmt.Fprint(w, `<?xml version="1.0" encoding="UTF-8"?>
+<ListPartsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+  <Bucket>test-bucket</Bucket><Key>tenant/object</Key><UploadId>upload-1</UploadId>
+  <IsTruncated>true</IsTruncated><NextPartNumberMarker>1</NextPartNumberMarker>
+  <Part><PartNumber>1</PartNumber><ETag>"e1"</ETag><Size>5</Size></Part>
+</ListPartsResult>`)
+	}))
+	t.Cleanup(server.Close)
+
+	provider, err := New(context.Background(), Options{
+		Endpoint: server.URL, Region: "us-east-1", Bucket: "test-bucket",
+		AccessKey: "test-access-key", SecretKey: "test-secret-key", UsePathStyle: true,
+	})
+	if err != nil {
+		t.Fatalf("create provider: %v", err)
+	}
+	_, err = provider.ListParts(context.Background(), "tenant/object", "upload-1")
+	if drive.CodeOf(err) != drive.CodeDependencyUnavailable {
+		t.Fatalf("non-advancing cursor error = %v, want dependency_unavailable", err)
+	}
+	if got := requests.Load(); got > 2 {
+		t.Fatalf("ListParts made %d requests before giving up, want at most 2", got)
+	}
+}
+
+// A truncated page with no NextPartNumberMarker cannot be followed. Treating it as the end
+// would silently under-report parts; the provider must refuse instead.
+func TestListPartsRejectsATruncatedPageWithoutACursor(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		w.Header().Set("Content-Type", "application/xml")
+		fmt.Fprint(w, `<?xml version="1.0" encoding="UTF-8"?>
+<ListPartsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+  <Bucket>test-bucket</Bucket><Key>tenant/object</Key><UploadId>upload-1</UploadId>
+  <IsTruncated>true</IsTruncated>
+  <Part><PartNumber>1</PartNumber><ETag>"e1"</ETag><Size>5</Size></Part>
+</ListPartsResult>`)
+	}))
+	t.Cleanup(server.Close)
+
+	provider, err := New(context.Background(), Options{
+		Endpoint: server.URL, Region: "us-east-1", Bucket: "test-bucket",
+		AccessKey: "test-access-key", SecretKey: "test-secret-key", UsePathStyle: true,
+	})
+	if err != nil {
+		t.Fatalf("create provider: %v", err)
+	}
+	if _, err := provider.ListParts(context.Background(), "tenant/object", "upload-1"); drive.CodeOf(err) != drive.CodeDependencyUnavailable {
+		t.Fatalf("missing cursor error = %v, want dependency_unavailable", err)
+	}
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("ListParts made %d requests, want 1", got)
+	}
+}
+
+// The provider stops at the S3 part limit instead of growing without bound. The service
+// then reports a full listing, because nothing beyond that limit can be completed either.
+func TestListPartsStopsAtTheS3PartLimit(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		page := requests.Add(1)
+		w.Header().Set("Content-Type", "application/xml")
+		var body strings.Builder
+		body.WriteString(`<?xml version="1.0" encoding="UTF-8"?><ListPartsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">`)
+		body.WriteString(`<Bucket>test-bucket</Bucket><Key>tenant/object</Key><UploadId>upload-1</UploadId>`)
+		body.WriteString(`<IsTruncated>true</IsTruncated>`)
+		next := page*1000 + 1
+		fmt.Fprintf(&body, `<NextPartNumberMarker>%d</NextPartNumberMarker>`, next)
+		start := (page-1)*1000 + 1
+		for partNumber := start; partNumber < start+1000; partNumber++ {
+			fmt.Fprintf(&body, `<Part><PartNumber>%d</PartNumber><ETag>"e%d"</ETag><Size>5</Size></Part>`, partNumber, partNumber)
+		}
+		body.WriteString(`</ListPartsResult>`)
+		fmt.Fprint(w, body.String())
+		_ = r
+	}))
+	t.Cleanup(server.Close)
+
+	provider, err := New(context.Background(), Options{
+		Endpoint: server.URL, Region: "us-east-1", Bucket: "test-bucket",
+		AccessKey: "test-access-key", SecretKey: "test-secret-key", UsePathStyle: true,
+	})
+	if err != nil {
+		t.Fatalf("create provider: %v", err)
+	}
+	parts, err := provider.ListParts(context.Background(), "tenant/object", "upload-1")
+	if err != nil {
+		t.Fatalf("list parts: %v", err)
+	}
+	if len(parts) != drive.MaxUploadParts {
+		t.Fatalf("parts = %d, want exactly the S3 limit %d", len(parts), drive.MaxUploadParts)
+	}
+	if got := requests.Load(); got != 10 {
+		t.Fatalf("pages requested = %d, want 10 (10000 parts at 1000 per page)", got)
+	}
+}

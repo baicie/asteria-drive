@@ -2234,6 +2234,14 @@ components:
           type: integer
           format: int64
           minimum: 0
+        content_sha256:
+          type: string
+          description: |
+            Base64 SHA-256 the part was signed with. Empty or omitted means the server
+            holds no integrity evidence for this part; a resuming client MUST re-upload
+            such a part rather than skip it (ADR-0028). Present only when the storage
+            backend enforces the signed checksum on the PUT.
+          pattern: '^([A-Za-z0-9+/]{43}=)?$'
     UploadParts:
       type: object
       additionalProperties: false
@@ -2255,7 +2263,12 @@ components:
             $ref: "#/components/schemas/ListedPart"
         complete:
           type: boolean
-          description: False when the listing was truncated; treat it as non-authoritative.
+          description: |
+            False when the listing was truncated by the requested limit; treat it as
+            non-authoritative and re-upload every part. A `completing`/`object_completed`
+            session returns its frozen completion list and is always complete. An elapsed
+            session is reported with `status: expired` and no parts, without the endpoint
+            changing the session: expiry is owned by the maintenance loop.
     UploadPartsEnvelope:
       type: object
       additionalProperties: false

@@ -10,6 +10,7 @@ import {
   classifyControlPlaneError,
   classifyFetchError,
   classifyPartResponse,
+  isCancellation,
   type UploadCleanupFailure,
   type UploadErrorContext,
   type UploadErrorKind,
@@ -38,6 +39,13 @@ export interface SignedPart {
   required_headers?: Record<string, string>
 }
 
+/** A part the client committed to uploading, identified by the hash of its bytes. */
+export interface PartChecksum {
+  algorithm: 'sha256'
+  /** Base64 digest, computed over exactly the bytes of this part. */
+  value: string
+}
+
 export interface CompletedPart {
   part_number: number
   etag: string
@@ -46,7 +54,7 @@ export interface CompletedPart {
 
 export interface UploadGateway {
   create(file: File, parentId: string, idempotencyKey: string): Promise<UploadSession>
-  sign(uploadId: string, partNumber: number): Promise<SignedPart>
+  sign(uploadId: string, partNumber: number, checksum?: PartChecksum): Promise<SignedPart>
   complete(uploadId: string, parts: CompletedPart[]): Promise<void>
   read(uploadId: string): Promise<UploadSession>
   abort(uploadId: string): Promise<void>
@@ -61,6 +69,20 @@ export interface UploadOptions {
   onPhase?: (phase: 'uploading' | 'completing') => void
   /** Fired once the control plane has created the session, before any part is sent. */
   onSession?: (session: UploadSession) => void
+  /**
+   * Computes the content digest sent with each part signature. It is what makes parts in
+   * storage provably belong to this file, so resume may skip them. Injectable so tests can
+   * stay synchronous; the browser implementation is `webCryptoPartDigest`.
+   */
+  digest?: (bytes: Blob) => Promise<PartChecksum>
+  /**
+   * What an interruption means for the server session, evaluated at the moment the
+   * transfer actually fails. `cancel` (the default) aborts the multipart upload, because
+   * the user asked to give it up. `pause` leaves the session and its durable parts in
+   * place so it can be resumed; it only stops the local transfer. It is a function
+   * because a pause is decided after this call has already started.
+   */
+  interruption?: () => 'cancel' | 'pause'
 }
 
 /** Explicit, exported bounds so callers and tests can assert on them. */
@@ -151,12 +173,19 @@ async function uploadPart(
   file: File,
   index: number,
   signal: AbortSignal,
+  options: UploadOptions,
 ): Promise<CompletedPart> {
   const partNumber = index + 1
   const start = index * session.part_size
   const chunk = file.slice(start, Math.min(start + session.part_size, file.size))
   const maxAttempts = UPLOAD_LIMITS.partAttempts
   let lastError: UploadError | null = null
+
+  // Hash these bytes once, before the attempt loop. Every retry re-signs with the same
+  // digest, which is what lets the server recognise the part after a retry instead of
+  // treating it as a different upload of the same number.
+  const checksum = options.digest ? await options.digest(chunk) : undefined
+  ensureNotAborted(signal)
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     ensureNotAborted(signal)
@@ -165,7 +194,7 @@ async function uploadPart(
       // Always re-sign on retry: an earlier short-lived URL may have expired.
       let signed: SignedPart
       try {
-        signed = await gateway.sign(session.id, partNumber)
+        signed = await gateway.sign(session.id, partNumber, checksum)
       } catch (error) {
         // A failed signature request is a control-plane failure. A 401/403 must not be
         // retried: re-signing will be denied the same way.
@@ -265,6 +294,34 @@ function expectedPartSize(fileSize: number, partSize: number, index: number): nu
   return Math.min(partSize, fileSize - index * partSize)
 }
 
+function base64(bytes: Uint8Array): string {
+  let binary = ''
+  for (const byte of bytes) binary += String.fromCharCode(byte)
+  return btoa(binary)
+}
+
+/**
+ * SHA-256 of one part's bytes, in the base64 form the control plane and S3 both use.
+ *
+ * Cost: WebCrypto hashes one part slice at a time, off the main thread. A fresh upload
+ * hashes every part it sends; a resume hashes only the parts it re-sends. For a 1 GiB file
+ * in 8 MiB parts that is 128 hashes of 8 MiB each — roughly a second of CPU in Chromium and
+ * no extra network traffic. It is deliberately not a whole-file hash: that would force a
+ * second full read before the first byte could be sent, and would not help verify a single
+ * resumed part.
+ */
+export async function webCryptoPartDigest(bytes: Blob): Promise<PartChecksum> {
+  const buffer = await bytes.arrayBuffer()
+  const digest = await crypto.subtle.digest('SHA-256', buffer)
+  return { algorithm: 'sha256', value: base64(new Uint8Array(digest)) }
+}
+
+/** The real digest, or a permissive stand-in only when the platform cannot hash. */
+function digestFor(options: UploadOptions): (bytes: Blob) => Promise<PartChecksum> {
+  if (options.digest) return options.digest
+  return webCryptoPartDigest
+}
+
 function validateSession(session: UploadSession): number {
   if (!Number.isInteger(session.part_size) || session.part_size < 1) {
     throw new UploadError('invalid-response', '服务端返回了无效的分片大小', {
@@ -313,7 +370,7 @@ async function uploadRemainingParts(
       if (slot >= pending.length) return
       const index = pending[slot]
       try {
-        const part = await uploadPart(gateway, session, file, index, controller.signal)
+        const part = await uploadPart(gateway, session, file, index, controller.signal, options)
         completed[index] = part
         finished += 1
         options.onProgress?.(Math.round((finished / partCount) * 100))
@@ -415,9 +472,12 @@ export async function uploadMultipart(
     await completeWithRetries(gateway, session.id, completed, options)
   } catch (error) {
     // The primary error always wins. Cleanup is attempted only when no completion was
-    // sent, and any cleanup failure is attached as metadata rather than thrown.
+    // sent — and never for a pause, whose whole point is to keep the session and its
+    // durable parts alive for a later resume. Any cleanup failure is attached as metadata
+    // rather than thrown.
     const primary = error instanceof UploadError ? error : classifyFetchError(error)
-    if (session && !completing) {
+    const paused = isCancellation(primary) && options.interruption?.() === 'pause'
+    if (session && !completing && !paused) {
       const cleanup = await abortQuietly(gateway, session.id)
       if (cleanup) throw new UploadFailure(primary, cleanup)
     }
@@ -429,16 +489,23 @@ export async function uploadMultipart(
 
 export type ResumeOutcome =
   | { outcome: 'committed' }
+  /** `uploadedParts` counts only the parts this resume actually sent; `totalParts` is the file's part count. */
   | { outcome: 'resumed'; uploadedParts: number; totalParts: number }
 
 /**
- * Continue a upload session that outlived a page reload (ADR-0027).
+ * Continue an upload session that outlived a page reload (ADR-0027, ADR-0028).
  *
  * The caller has already read the handle from sessionStorage; this function asks the server
  * what it actually holds and trusts the server's answer, not the handle. No part is re-sent
  * once the session has reached completion: at that point only an idempotent completion replay
  * is safe. A part failure deliberately does NOT abort the session — the whole point of resume
  * is to keep durable parts for the next attempt.
+ *
+ * Name, size and lastModified are not content identity: two different files can agree on all
+ * three. A part is therefore skipped only when the server reports the digest that part was
+ * signed with AND hashing the re-selected file's bytes at that offset reproduces it. Every
+ * other part is re-uploaded, which costs bandwidth but can never splice another file's bytes
+ * into this object.
  */
 export async function resumeMultipart(
   gateway: UploadGateway,
@@ -493,19 +560,27 @@ export async function resumeMultipart(
     const partSize = validateSession(session)
     const partCount = partCountFor(file.size, partSize, session.id)
     const completed = new Array<CompletedPart | undefined>(partCount).fill(undefined)
+    const verifier = digestFor(options)
     for (const listed of plan.uploaded) {
       const index = listed.part_number - 1
       if (index < 0 || index >= partCount) continue
       if (!listed.etag) continue
       if (listed.size !== expectedPartSize(file.size, partSize, index)) continue
+      // No recorded digest means no proof that this part holds the selected file's bytes.
+      // Re-uploading it is the only safe answer; skipping it could mix two files.
+      ensureNotAborted(controller.signal)
+      const proof = await verifier(file.slice(index * partSize, index * partSize + listed.size))
+      if (!listed.content_sha256 || proof.value !== listed.content_sha256) continue
       completed[index] = toCompletedPart(listed)
     }
 
     options.onPhase?.('uploading')
+    const beforeSend = completed.reduce((count, part) => (part === undefined ? count : count + 1), 0)
     await uploadRemainingParts(gateway, session, file, completed, controller, options)
     await completeWithRetries(gateway, session.id, completed, options)
-    const uploadedParts = completed.filter((part) => part !== undefined).length
-    return { outcome: 'resumed', uploadedParts, totalParts: partCount }
+    // What this resume actually transmitted: the parts that were still missing at the
+    // moment it started sending. Parts verified from storage are not "uploaded parts".
+    return { outcome: 'resumed', uploadedParts: partCount - beforeSend, totalParts: partCount }
   } finally {
     options.signal?.removeEventListener('abort', externalAbort)
   }

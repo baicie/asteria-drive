@@ -82,6 +82,7 @@ const {
   resume: resumeUpload,
   discoverResume,
   dismissResume,
+  pause: pauseUpload,
   cancel: cancelUpload,
   cancelForLogout: cancelUploadForLogout,
 } = useUploadTask({
@@ -532,6 +533,9 @@ onMounted(() => {
             <zw-button variant="primary" :disabled="busyAny" @click="chooseFile">
               <span class="upload-icon">↑</span>
               {{ busy.active('upload') ? (uploadPhase === 'completing' ? '正在提交…' : `上传中 ${uploadProgress}%`) : '上传文件' }}
+            </zw-button>
+            <zw-button v-if="busy.active('upload') && uploadPhase === 'uploading'" variant="secondary" :disabled="uploadCancelling" @click="pauseUpload">
+              {{ uploadCancelling ? '暂停中…' : '暂停' }}
             </zw-button>
             <zw-button v-if="busy.active('upload') && uploadPhase === 'uploading'" variant="secondary" :disabled="uploadCancelling" @click="cancelUpload">
               {{ uploadCancelling ? '取消中…' : '取消上传' }}

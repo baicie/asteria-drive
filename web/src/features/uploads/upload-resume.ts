@@ -41,6 +41,12 @@ export interface ListedPart {
   part_number: number
   etag: string
   size: number
+  /**
+   * Base64 SHA-256 this part was signed with, or absent when the server holds no
+   * integrity evidence for it. A part without it must never be skipped on resume: its
+   * bytes cannot be proven to belong to the file the user just re-selected (ADR-0028).
+   */
+  content_sha256?: string
 }
 
 export interface UploadPartsListing {

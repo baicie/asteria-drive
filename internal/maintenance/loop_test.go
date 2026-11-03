@@ -40,7 +40,7 @@ func TestRunOnceExpiresAndCleansMultipartUpload(t *testing.T) {
 	if err != nil || upload.Status != drive.UploadExpired {
 		t.Fatalf("upload=%+v err=%v", upload, err)
 	}
-	if _, err := storage.SignUploadPart(context.Background(), "uploads/expired", storageUploadID, 1, drive.Checksum{}, time.Minute); drive.CodeOf(err) != drive.CodeNotFound {
+	if _, _, err := storage.SignUploadPart(context.Background(), "uploads/expired", storageUploadID, 1, drive.Checksum{}, time.Minute); drive.CodeOf(err) != drive.CodeNotFound {
 		t.Fatalf("multipart upload was not cleaned: %v", err)
 	}
 }

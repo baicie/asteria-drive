@@ -114,7 +114,7 @@ func TestCustomEndpointChecksumHeadersAreCapabilityGated(t *testing.T) {
 		if err != nil {
 			t.Fatalf("create provider: %v", err)
 		}
-		signed, err := provider.SignUploadPart(context.Background(), "tenant/object", "upload-id", 1, checksum, time.Minute)
+		signed, _, err := provider.SignUploadPart(context.Background(), "tenant/object", "upload-id", 1, checksum, time.Minute)
 		if err != nil {
 			t.Fatalf("sign upload part: %v", err)
 		}
@@ -167,7 +167,7 @@ func TestPublicEndpointIsUsedOnlyForPresigning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sign download: %v", err)
 	}
-	upload, err := provider.SignUploadPart(context.Background(), "tenant/object", "upload-id", 1, drive.Checksum{}, time.Minute)
+	upload, _, err := provider.SignUploadPart(context.Background(), "tenant/object", "upload-id", 1, drive.Checksum{}, time.Minute)
 	if err != nil {
 		t.Fatalf("sign upload part: %v", err)
 	}

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   UPLOAD_LIMITS,
   UploadCancelledError,
@@ -7,12 +7,13 @@ import {
   uploadErrorMessage,
   uploadMultipart,
   type CompletedPart,
+  type PartChecksum,
   type SignedPart,
   type UploadGateway,
   type UploadSession,
 } from './upload-manager'
 import { UploadError, UploadFailure } from './upload-errors'
-import type { UploadPartsListing, UploadResumeHandle } from './upload-resume'
+import type { ListedPart, UploadPartsListing, UploadResumeHandle } from './upload-resume'
 
 const session: UploadSession = { id: 'upload-1', status: 'created', part_size: 5, expected_size: 10 }
 
@@ -458,9 +459,26 @@ describe('uploadErrorMessage', () => {
   })
 })
 
+/** Content of each test file, because jsdom's Blob.slice cannot read its own bytes back. */
+const fileContents = new WeakMap<File, string>()
+
 function resumeFile(bytes = 'abcdefghij', lastModified = 1_760_000_000_000) {
-  return new File([bytes], 'file.txt', { type: 'text/plain', lastModified })
+  const file = new File([bytes], 'file.txt', { type: 'text/plain', lastModified })
+  fileContents.set(file, bytes)
+  return file
 }
+
+// jsdom's Blob.slice returns a stub with neither arrayBuffer() nor readable text, so a
+// real digest over a slice cannot run there. Slicing the recorded content keeps the
+// property under test honest: two files with the same name/size but different bytes hash
+// differently, which is exactly the mixed-content case.
+beforeEach(() => {
+  vi.spyOn(File.prototype, 'slice').mockImplementation(function (this: File, start?: number, end?: number) {
+    const content = fileContents.get(this) ?? ''
+    const slice = content.slice(start ?? 0, end ?? content.length)
+    return { size: slice.length, text: async () => slice } as unknown as Blob
+  })
+})
 
 function makeHandle(file: File, overrides: Partial<UploadResumeHandle> = {}): UploadResumeHandle {
   return {
@@ -489,19 +507,43 @@ function listing(overrides: Partial<UploadPartsListing> = {}): UploadPartsListin
   }
 }
 
+/**
+ * A deterministic content digest for tests. Real hashing uses WebCrypto, which jsdom's
+ * Blob does not fully implement; the resume contract only needs "same bytes → same
+ * digest, different bytes → different digest", which this provides.
+ */
+const testDigest = async (bytes: Blob): Promise<PartChecksum> => {
+  // The shim in beforeEach exposes only `text()`; a real Blob would expose `text()` too.
+  const text = typeof (bytes as { text?: unknown }).text === 'function'
+    ? await bytes.text()
+    : ''
+  return { algorithm: 'sha256', value: `test:${text.length}:${text}` }
+}
+
+/** A listed part whose digest matches the bytes the test file holds at that offset. */
+function signedPart(partNumber: number, bytes: string, etag = `"etag-${partNumber}"`): ListedPart {
+  return {
+    part_number: partNumber,
+    etag,
+    size: bytes.length,
+    content_sha256: `test:${bytes.length}:${bytes}`,
+  }
+}
+
 describe('resumeMultipart', () => {
   it('re-uploads only the missing part and completes with the reconciled list', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { status: 200, headers: { ETag: '"etag-2"' } })))
     const file = resumeFile()
     const { gateway, calls } = makeGateway({
       async parts() {
-        return listing({ parts: [{ part_number: 1, etag: '"etag-1"', size: 5 }] })
+        // Part 1 is signed with the digest of the bytes this file holds at that offset.
+        return listing({ parts: [signedPart(1, 'abcde')] })
       },
     })
 
-    const result = await resumeMultipart(gateway, makeHandle(file), file)
+    const result = await resumeMultipart(gateway, makeHandle(file), file, { digest: testDigest })
 
-    expect(result).toEqual({ outcome: 'resumed', uploadedParts: 2, totalParts: 2 })
+    expect(result).toEqual({ outcome: 'resumed', uploadedParts: 1, totalParts: 2 })
     expect(calls.parts).toEqual(['upload-1'])
     expect(calls.sign).toEqual([2])
     expect(calls.complete).toBe(1)
@@ -512,6 +554,64 @@ describe('resumeMultipart', () => {
     // Resume must never call create or abort: the session already exists.
     expect(calls.create).toBe(0)
     expect(calls.abort).toBe(0)
+  })
+
+  it('re-uploads a listed part when the selected file holds different bytes (P0 mixed content)', async () => {
+    // The attack the round-2 review asks about: file B has the same name, size and
+    // lastModified as A but different content. Part 1 of A is already in storage.
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { status: 200, headers: { ETag: '"fresh-1"' } })))
+    const fileA = resumeFile('AAAAABBBBB')
+    const fileB = resumeFile('XXXXXBBBBB')
+    expect([fileB.name, fileB.size, fileB.lastModified]).toEqual([fileA.name, fileA.size, fileA.lastModified])
+    const handle = makeHandle(fileA)
+    const { gateway, calls } = makeGateway({
+      async parts() {
+        // The server reports the digest A's part 1 was signed with.
+        return listing({ parts: [signedPart(1, 'AAAAA')] })
+      },
+    })
+
+    const result = await resumeMultipart(gateway, handle, fileB, { digest: testDigest })
+
+    // B's part 1 hashes differently, so it must be re-sent rather than reused.
+    expect(calls.sign).toEqual([1, 2])
+    expect(result).toEqual({ outcome: 'resumed', uploadedParts: 2, totalParts: 2 })
+    // Both parts were re-sent, so both ETags come from the fresh PUT.
+    expect(calls.completeParts[0]).toEqual([
+      { part_number: 1, etag: '"fresh-1"', size: 5 },
+      { part_number: 2, etag: '"fresh-1"', size: 5 },
+    ])
+  })
+
+  it('re-uploads a part the server has no integrity evidence for', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { status: 200, headers: { ETag: '"fresh-1"' } })))
+    const file = resumeFile()
+    const { gateway, calls } = makeGateway({
+      async parts() {
+        // No content_sha256: the server cannot prove these bytes belong to this file.
+        return listing({ parts: [{ part_number: 1, etag: '"etag-1"', size: 5 }] })
+      },
+    })
+
+    await resumeMultipart(gateway, makeHandle(file), file, { digest: testDigest })
+
+    expect(calls.sign).toEqual([1, 2])
+    expect(calls.completeParts[0][0]).toEqual({ part_number: 1, etag: '"fresh-1"', size: 5 })
+  })
+
+  it('verifies parts by digest even when part order in the listing is reversed', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { status: 200, headers: { ETag: '"x"' } })))
+    const file = resumeFile()
+    const { gateway, calls } = makeGateway({
+      async parts() {
+        return listing({ parts: [signedPart(2, 'fghij'), signedPart(1, 'abcde')] })
+      },
+    })
+
+    await resumeMultipart(gateway, makeHandle(file), file, { digest: testDigest })
+
+    expect(calls.sign).toEqual([])
+    expect(calls.completeParts[0].map((part) => part.part_number)).toEqual([1, 2])
   })
 
   it('completes immediately without uploading when the session was completing', async () => {
@@ -585,11 +685,11 @@ describe('resumeMultipart', () => {
     const { gateway, calls } = makeGateway({
       async parts() {
         // complete=false means the server could not prove this is the whole set.
-        return listing({ complete: false, parts: [{ part_number: 1, etag: '"etag-1"', size: 5 }] })
+        return listing({ complete: false, parts: [signedPart(1, 'abcde')] })
       },
     })
 
-    await resumeMultipart(gateway, makeHandle(file), file)
+    await resumeMultipart(gateway, makeHandle(file), file, { digest: testDigest })
 
     expect(calls.sign).toEqual([1, 2])
   })
@@ -599,11 +699,11 @@ describe('resumeMultipart', () => {
     const file = resumeFile()
     const { gateway, calls } = makeGateway({
       async parts() {
-        return listing({ parts: [{ part_number: 1, etag: '"stale"', size: 4 }] })
+        return listing({ parts: [{ part_number: 1, etag: '"stale"', size: 4, content_sha256: 'test:4:abcd' }] })
       },
     })
 
-    await resumeMultipart(gateway, makeHandle(file), file)
+    await resumeMultipart(gateway, makeHandle(file), file, { digest: testDigest })
 
     expect(calls.sign).toEqual([1, 2])
     expect(calls.completeParts[0][0]).toEqual({ part_number: 1, etag: '"fresh"', size: 5 })
@@ -615,14 +715,14 @@ describe('resumeMultipart', () => {
     const { gateway, calls } = makeGateway({
       async parts() {
         return listing({ parts: [
-          { part_number: 1, etag: '"etag-1"', size: 5 },
-          { part_number: 2, etag: '"etag-2"', size: 5 },
-          { part_number: 9, etag: '"etag-9"', size: 5 },
+          signedPart(1, 'abcde'),
+          signedPart(2, 'fghij'),
+          signedPart(9, 'zzzzz', '"etag-9"'),
         ] })
       },
     })
 
-    await resumeMultipart(gateway, makeHandle(file), file)
+    await resumeMultipart(gateway, makeHandle(file), file, { digest: testDigest })
 
     expect(calls.sign).toEqual([])
     expect(calls.completeParts[0]).toHaveLength(2)
@@ -633,11 +733,11 @@ describe('resumeMultipart', () => {
     const file = resumeFile()
     const { gateway, calls } = makeGateway({
       async parts() {
-        return listing({ parts: [{ part_number: 1, etag: '"etag-1"', size: 5 }] })
+        return listing({ parts: [signedPart(1, 'abcde')] })
       },
     })
 
-    const error = await resumeMultipart(gateway, makeHandle(file), file).catch((e) => e)
+    const error = await resumeMultipart(gateway, makeHandle(file), file, { digest: testDigest }).catch((e) => e)
 
     expect(error).toBeInstanceOf(UploadError)
     expect(error.kind).toBe('non-retryable')
@@ -682,11 +782,11 @@ describe('resumeMultipart', () => {
     const { gateway, calls } = makeGateway({
       async parts() {
         controller.abort()
-        return listing({ parts: [{ part_number: 1, etag: '"etag-1"', size: 5 }] })
+        return listing({ parts: [signedPart(1, 'abcde')] })
       },
     })
 
-    const error = await resumeMultipart(gateway, makeHandle(file), file, { signal: controller.signal })
+    const error = await resumeMultipart(gateway, makeHandle(file), file, { signal: controller.signal, digest: testDigest })
       .catch((e) => e)
 
     expect(error).toBeInstanceOf(UploadCancelledError)
@@ -700,10 +800,7 @@ describe('resumeMultipart', () => {
     const { gateway, calls } = makeGateway({
       async parts() {
         return listing({
-          parts: [
-            { part_number: 1, etag: '"etag-1"', size: 5 },
-            { part_number: 2, etag: '"etag-2"', size: 5 },
-          ],
+          parts: [signedPart(1, 'abcde'), signedPart(2, 'fghij')],
         })
       },
       async complete() {
@@ -714,7 +811,7 @@ describe('resumeMultipart', () => {
       },
     })
 
-    const error = await resumeMultipart(gateway, makeHandle(file), file).catch((e) => e)
+    const error = await resumeMultipart(gateway, makeHandle(file), file, { digest: testDigest }).catch((e) => e)
 
     expect(error).toBeInstanceOf(UploadCompletionUnknownError)
     expect(calls.complete).toBe(UPLOAD_LIMITS.completionAttempts)

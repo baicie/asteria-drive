@@ -433,6 +433,48 @@ func (r *Repository) UploadParts(ctx context.Context, identity drive.Identity, i
 	return parts, nil
 }
 
+// RecordPartSignature persists the digest a client declared for a part it is about to
+// upload. The latest declaration wins: the storage PUT that follows is what decides which
+// bytes part N holds, and it is bound to the most recent signature.
+func (r *Repository) RecordPartSignature(ctx context.Context, identity drive.Identity, id string, part drive.PartSignature, now time.Time) error {
+	if part.PartNumber < 1 || part.PartNumber > drive.MaxUploadParts || part.Size <= 0 || !drive.ValidChecksum(drive.Checksum{Algorithm: "sha256", Value: part.SHA256}) {
+		return drive.E(drive.CodeInvalidRequest, "part signature is invalid")
+	}
+	if _, err := r.pool.Exec(ctx, `
+		INSERT INTO upload_part_signature(
+			tenant_id,upload_session_id,part_number,size_bytes,content_sha256,created_at
+		) VALUES($1,$2,$3,$4,$5,$6)
+		ON CONFLICT(tenant_id,upload_session_id,part_number) DO UPDATE SET
+			size_bytes=EXCLUDED.size_bytes,content_sha256=EXCLUDED.content_sha256,created_at=EXCLUDED.created_at`,
+		identity.TenantID, id, part.PartNumber, part.Size, part.SHA256, now); err != nil {
+		return mapError(err, drive.CodeInternal, "could not record part signature")
+	}
+	return nil
+}
+
+func (r *Repository) PartSignatures(ctx context.Context, identity drive.Identity, id string) ([]drive.PartSignature, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT part_number,size_bytes,content_sha256
+		FROM upload_part_signature WHERE tenant_id=$1 AND upload_session_id=$2
+		ORDER BY part_number`, identity.TenantID, id)
+	if err != nil {
+		return nil, mapError(err, drive.CodeInternal, "could not list part signatures")
+	}
+	defer rows.Close()
+	signatures := make([]drive.PartSignature, 0)
+	for rows.Next() {
+		var signature drive.PartSignature
+		if err := rows.Scan(&signature.PartNumber, &signature.Size, &signature.SHA256); err != nil {
+			return nil, mapError(err, drive.CodeInternal, "could not read part signature")
+		}
+		signatures = append(signatures, signature)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, mapError(err, drive.CodeInternal, "could not list part signatures")
+	}
+	return signatures, nil
+}
+
 func (r *Repository) MarkUploadCleanupComplete(ctx context.Context, identity drive.Identity, id string, now time.Time) error {
 	tag, err := r.pool.Exec(ctx, `
 		UPDATE upload_session SET cleanup_status='complete',maintenance_not_before=NULL,

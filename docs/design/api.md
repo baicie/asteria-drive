@@ -318,9 +318,17 @@ SHA-256 值使用标准 Base64 编码的 32-byte 摘要。后端返回并验证�
 }
 ```
 
-`complete=false` 表示存储侧分页被截断，客户端必须重新上传全部分片而不是相信列出的子集。
+`complete=false` 表示返回被 `limit` 截断，客户端必须重新上传全部分片而不是相信列出的子集。
 两层来源（控制面 `upload_part` 优先，存储侧 `ListParts` 补齐）与完整恢复流程见
 [ADR-0027](../adr/0027-cross-reload-upload-resume.md)。
+
+端点**严格只读**：TTL 已过的会话在响应中报告 `status: expired` 与空分片，但不改库、不
+Abort Multipart；真实迁移由维护循环完成。鉴权为 `files:read` + tenant 匹配——会话是
+**租户内共享**的只读资源，同租户其他 principal（含 viewer）可读，签名仍要求 `files:write`。
+
+每个分片可带 `content_sha256`（该分片签名时绑定的摘要）。缺失表示服务端没有完整性证据，
+恢复的客户端必须重传该分片；只有摘要与当前文件对应字节一致时才可跳过
+（[ADR-0028](../adr/0028-resume-content-identity.md)）。
 
 Web 客户端只持久化非敏感会话句柄（`sessionStorage`，退出登录清除），恢复时重新鉴权并
 重新读取分片清单；禁止通过持久化 presigned URL、Token 或 S3 凭据实现恢复。会话进入
@@ -343,6 +351,9 @@ Web 客户端只持久化非敏感会话句柄（`sessionStorage`，退出登录
 ```
 
 `Content-Disposition` 使用安全编码的显示名。Range 由对象存储处理；API 不代理正文。目录、回收/清理中、未提交和跨租户资源返回 `404`。
+
+`POST /parts/sign` 与下载授权接口都返回短期 bearer URL，因此都带 `Cache-Control: no-store`；
+分片清单同样 `no-store`。
 
 客户端打开方式（Web 控制台）：点击处理函数内**同步**打开空白窗口，再等待授权响应，
 最后把窗口导航到签名 URL。浏览器只允许用户激活期间的 `window.open`，在 `await` 之后

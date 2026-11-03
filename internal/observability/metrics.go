@@ -142,7 +142,7 @@ func (s *instrumentedStorage) CreateMultipart(ctx context.Context, key, mediaTyp
 	return s.StorageProvider.CreateMultipart(ctx, key, mediaType, checksum)
 }
 
-func (s *instrumentedStorage) SignUploadPart(ctx context.Context, key, uploadID string, part int, checksum drive.Checksum, ttl time.Duration) (signed drive.SignedPart, err error) {
+func (s *instrumentedStorage) SignUploadPart(ctx context.Context, key, uploadID string, part int, checksum drive.Checksum, ttl time.Duration) (signed drive.SignedPart, bound bool, err error) {
 	started := time.Now()
 	defer func() { s.metrics.observeStorage("sign_upload_part", started, err) }()
 	return s.StorageProvider.SignUploadPart(ctx, key, uploadID, part, checksum, ttl)

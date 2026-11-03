@@ -56,9 +56,17 @@ KMS 或 secret-controller 轮换、公网 TLS ingress、生产监控/SIEM 与外
   只发一次、重复恢复被拒绝、文件身份不符时不发请求。
 - 开发 Token 与生产 OIDC 的边界记录于
   [development-vs-oidc-auth](security/development-vs-oidc-auth.md)。
+- R2 正确性加固（[ADR-0028](adr/0028-resume-content-identity.md)）：分片内容摘要随签名绑定
+  `x-amz-checksum-sha256`，恢复只跳过“摘要与当前文件字节一致”的分片，其余一律重传，从而
+  排除同名同大小同时间戳但内容不同的混合拼接；`GET /parts` 改为严格只读（过期只报告、由
+  维护任务迁移）；签名与下载授权接口增加 `Cache-Control: no-store`；`ListParts` 增加游标
+  前进性、页数与 10000 分片上界；暂停/取消/结果未知三种中断语义分离。
 - 本地命令、集成套件（22/22）与真实栈恢复用例的证据见
   [web-transfer-resume-20261102](operations/evidence/web-transfer-resume-20261102.md)，
   包含首次推送 `CI / quality` 失败（gofmt 对齐）与修正记录。
+- R2 正确性加固的命令、复现与修复证据见
+  [web-transfer-resume-r2-20261103](operations/evidence/web-transfer-resume-r2-20261103.md)：
+  内容身份、只读端点、缓存头、分页边界与暂停/取消语义。
 
 2026-10-22，本地复核 `go test ./...`、`go vet ./...`、`go build ./...`、`web/` 的
 `vue-tsc`/Vite production build、GitHub Actions workflow lint、OpenAPI lint、

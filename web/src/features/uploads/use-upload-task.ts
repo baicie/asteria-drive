@@ -8,6 +8,7 @@ import {
   resumeMultipart,
   uploadErrorMessage,
   uploadMultipart,
+  webCryptoPartDigest,
   type ResumeOutcome,
   type UploadGateway,
   type UploadSession,
@@ -86,6 +87,12 @@ export function useUploadTask({
   // A probe is an authenticated read; a second one adds load and can race the first
   // settlement. connect() runs once, but a remount or a doubled effect must not double it.
   let probing = false
+  // True between the server creating the session and this upload settling: it tells the
+  // pause/cancel branch whether a handle exists on disk at all.
+  let resumeHandleWritten = false
+  // Set by pause() just before aborting, so start() can tell the transport which
+  // interruption this is.
+  let pausing = false
 
   function makeGateway(uploadToken: string): UploadGateway {
     return {
@@ -100,10 +107,12 @@ export function useUploadTask({
           mime_type: uploadFile.type || 'application/octet-stream',
         }),
       }),
-      sign: (uploadId, partNumber) => api(`/api/v1/uploads/${encodeURIComponent(uploadId)}/parts/sign`, {
+      sign: (uploadId, partNumber, checksum) => api(`/api/v1/uploads/${encodeURIComponent(uploadId)}/parts/sign`, {
         method: 'POST',
         token: uploadToken,
-        body: JSON.stringify({ part_number: partNumber }),
+        // The digest is what binds this part number to these bytes: the server records it
+        // and the resulting signature makes storage reject any other content.
+        body: JSON.stringify(checksum ? { part_number: partNumber, checksum } : { part_number: partNumber }),
       }),
       complete: async (uploadId, parts) => {
         await api(`/api/v1/uploads/${encodeURIComponent(uploadId)}/complete`, {
@@ -149,10 +158,15 @@ export function useUploadTask({
     const parentName = parent.name
     const uploadDirectoryGeneration = directoryGeneration()
     clearNotice()
+    resumeHandleWritten = false
 
     try {
       await uploadMultipart(makeGateway(uploadToken), file, parentId, newIdempotencyKey(), {
         signal: controller.signal,
+        // Pausing keeps the multipart session and its durable parts; cancelling aborts it.
+        // Read at failure time: the user may pause while parts are already in flight.
+        interruption: () => (pausing ? 'pause' : 'cancel'),
+        digest: webCryptoPartDigest,
         onProgress: (value) => {
           if (abort.value === controller) progress.value = value
         },
@@ -161,6 +175,7 @@ export function useUploadTask({
         },
         onSession: (session: UploadSession) => {
           if (abort.value !== controller) return
+          resumeHandleWritten = true
           writeResumeHandle(storage, {
             version: RESUME_HANDLE_VERSION,
             uploadId: session.id,
@@ -187,19 +202,31 @@ export function useUploadTask({
         const uploadError = error instanceof UploadError ? error : null
         failureKind.value = uploadError?.kind ?? null
         failureUploadId.value = uploadError?.context.uploadId ?? null
-        // A cancel and an unknown completion both keep the session resumable: the user may
-        // have changed their mind, or the result may already be committed. Every other
-        // failure leaves a session that is either gone or unusable, so the handle is dropped.
-        if (uploadError?.kind !== 'cancelled' && uploadError?.kind !== 'completion-unknown') {
+        if (uploadError?.kind === 'cancelled') {
+          // The handle was written when the session was created, so it is already on disk
+          // in both cases. What differs is the server side: a pause left the multipart
+          // upload alive, a cancel aborted it, so only a pause may offer a resume.
+          if (pausing && resumeHandleWritten) {
+            notify(`已暂停「${file.name}」，可刷新后继续上传`)
+          } else {
+            clearResumeHandle(storage)
+            notify(pausing ? `已暂停「${file.name}」` : `已取消「${file.name}」的上传`)
+          }
+        } else if (uploadError?.kind === 'completion-unknown') {
+          // The completion request may have committed. Never drop the handle and never
+          // abort: the server status is the only authority on what happened.
+          notify(uploadErrorMessage(error), 'error')
+        } else {
           clearResumeHandle(storage)
+          notify(uploadErrorMessage(error), 'error')
         }
-        notify(uploadErrorMessage(error), 'error')
       }
     } finally {
       if (abort.value === controller) {
         abort.value = null
         phase.value = null
         cancelling.value = false
+        pausing = false
         busy.end(UPLOAD_KEY)
         progress.value = 0
       }
@@ -277,6 +304,7 @@ export function useUploadTask({
     try {
       const outcome = await resumeMultipart(makeGateway(uploadToken), pending.handle, file, {
         signal: controller.signal,
+        digest: webCryptoPartDigest,
         onProgress: (value) => {
           if (abort.value === controller) progress.value = value
         },
@@ -316,18 +344,30 @@ export function useUploadTask({
     }
   }
 
+  /** Stop the local transfer but keep the server session and its durable parts. */
+  function pause() {
+    if (phase.value !== 'uploading' || !abort.value) return
+    pausing = true
+    cancelling.value = true
+    abort.value.abort()
+  }
+
+  /** Stop the transfer and let the server abort the multipart upload. */
   function cancel() {
     if (phase.value !== 'uploading' || !abort.value) return
+    pausing = false
     cancelling.value = true
     abort.value.abort()
   }
 
   function cancelForLogout() {
     const wasActive = abort.value !== null
+    pausing = false
     abort.value?.abort()
     abort.value = null
     phase.value = null
     cancelling.value = false
+    resumeHandleWritten = false
     progress.value = 0
     failureKind.value = null
     failureUploadId.value = null
@@ -351,6 +391,7 @@ export function useUploadTask({
     resume,
     discoverResume,
     dismissResume,
+    pause,
     cancel,
     cancelForLogout,
   }

@@ -2,6 +2,8 @@ package drive_test
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"testing"
 	"time"
 
@@ -116,7 +118,7 @@ func TestListUploadPartsDoesNotSignOrMutate(t *testing.T) {
 	}
 }
 
-func TestListUploadPartsExpiresAnElapsedSession(t *testing.T) {
+func TestListUploadPartsReportsExpiryWithoutWritingIt(t *testing.T) {
 	ctx := context.Background()
 	fixture := newPartsFixture(t, nil)
 	upload := fixture.createUpload(t, "elapsed.bin", 4)
@@ -126,16 +128,20 @@ func TestListUploadPartsExpiresAnElapsedSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list parts after expiry: %v", err)
 	}
-	if listing.Status != drive.UploadExpired || len(listing.Parts) != 0 {
-		t.Fatalf("elapsed listing = %+v, want expired with no parts", listing)
+	if listing.Status != drive.UploadExpired || len(listing.Parts) != 0 || !listing.Complete {
+		t.Fatalf("elapsed listing = %+v, want expired with no parts and complete", listing)
 	}
-	// The transition must be persistent: a second read sees the terminal status.
+	// A GET must not have persistent side effects: the stored session is untouched and the
+	// multipart upload is still there. The maintenance loop owns the real transition.
 	session, err := fixture.service.Upload(ctx, fixture.identity, upload.ID)
 	if err != nil {
 		t.Fatalf("read upload: %v", err)
 	}
-	if session.Status != drive.UploadExpired {
-		t.Fatalf("session status = %q, want expired", session.Status)
+	if session.Status != drive.UploadCreated || session.Revision != upload.Revision {
+		t.Fatalf("listing changed the session: status=%q revision=%d, want created/%d", session.Status, session.Revision, upload.Revision)
+	}
+	if _, err := fixture.storage.ListParts(ctx, upload.ObjectKey, upload.StorageUploadID); err != nil {
+		t.Fatalf("listing aborted the multipart upload: %v", err)
 	}
 }
 
@@ -167,6 +173,82 @@ func TestListUploadPartsReturnsTerminalSessionsWithoutStorage(t *testing.T) {
 	}
 }
 
+func TestListUploadPartsAttachesSignedContentIdentity(t *testing.T) {
+	ctx := context.Background()
+	fixture := newPartsFixture(t, nil)
+	// A single-part file: expected_size <= part_size, so the signed size is the whole file.
+	payload := []byte("abcde")
+	upload := fixture.createUpload(t, "identity.bin", int64(len(payload)))
+	signed, err := fixture.service.SignUploadPart(ctx, fixture.identity, upload.ID, 1, sha256Checksum(payload))
+	if err != nil {
+		t.Fatalf("sign part: %v", err)
+	}
+	stored, err := fixture.storage.PutPart(upload.StorageUploadID, 1, payload)
+	if err != nil {
+		t.Fatalf("put part: %v", err)
+	}
+	_ = signed
+
+	listing, err := fixture.service.ListUploadParts(ctx, fixture.identity, upload.ID, 0)
+	if err != nil {
+		t.Fatalf("list parts: %v", err)
+	}
+	if len(listing.Parts) != 1 {
+		t.Fatalf("parts = %+v, want one", listing.Parts)
+	}
+	if listing.Parts[0].ETag != stored.ETag {
+		t.Fatalf("etag = %q, want %q", listing.Parts[0].ETag, stored.ETag)
+	}
+	if want := sha256Checksum(payload).Value; listing.Parts[0].ContentSHA256 != want {
+		t.Fatalf("content digest = %q, want %q: a signed part must carry its identity", listing.Parts[0].ContentSHA256, want)
+	}
+}
+
+func TestListUploadPartsWithholdsIdentityWhenSizeDiffers(t *testing.T) {
+	ctx := context.Background()
+	fixture := newPartsFixture(t, nil)
+	upload := fixture.createUpload(t, "short.bin", 5)
+	if _, err := fixture.service.SignUploadPart(ctx, fixture.identity, upload.ID, 1, sha256Checksum([]byte("abcde"))); err != nil {
+		t.Fatalf("sign part: %v", err)
+	}
+	// Storage holds different-length bytes for part 1. The signature cannot describe them,
+	// so the listing must report no identity and the client will re-upload.
+	if _, err := fixture.storage.PutPart(upload.StorageUploadID, 1, []byte("abc")); err != nil {
+		t.Fatalf("put part: %v", err)
+	}
+	listing, err := fixture.service.ListUploadParts(ctx, fixture.identity, upload.ID, 0)
+	if err != nil {
+		t.Fatalf("list parts: %v", err)
+	}
+	if len(listing.Parts) != 1 {
+		t.Fatalf("parts = %+v, want one", listing.Parts)
+	}
+	if listing.Parts[0].ContentSHA256 != "" {
+		t.Fatalf("content digest = %q, want none for a size mismatch", listing.Parts[0].ContentSHA256)
+	}
+}
+
+func TestListUploadPartsWithoutSignatureHasNoIdentity(t *testing.T) {
+	ctx := context.Background()
+	fixture := newPartsFixture(t, nil)
+	upload := fixture.createUpload(t, "unsigned.bin", 5)
+	if _, err := fixture.storage.PutPart(upload.StorageUploadID, 1, []byte("abcde")); err != nil {
+		t.Fatalf("put part: %v", err)
+	}
+	listing, err := fixture.service.ListUploadParts(ctx, fixture.identity, upload.ID, 0)
+	if err != nil {
+		t.Fatalf("list parts: %v", err)
+	}
+	if len(listing.Parts) != 1 || listing.Parts[0].ContentSHA256 != "" {
+		t.Fatalf("unsigned part must have no content identity: %+v", listing.Parts)
+	}
+}
+
+func sha256Checksum(payload []byte) drive.Checksum {
+	sum := sha256.Sum256(payload)
+	return drive.Checksum{Algorithm: "sha256", Value: base64.StdEncoding.EncodeToString(sum[:])}
+}
+
 func TestListUploadPartsFrozenCompletionTakesPrecedence(t *testing.T) {
 	ctx := context.Background()
 	fixture := newPartsFixture(t, nil)
@@ -185,5 +267,60 @@ func TestListUploadPartsFrozenCompletionTakesPrecedence(t *testing.T) {
 	}
 	if listing.Status != drive.UploadCommitted || len(listing.Parts) != 1 || listing.Parts[0].ETag != stored.ETag {
 		t.Fatalf("committed listing = %+v", listing)
+	}
+}
+
+// A storage listing that repeats a part number must not make the service claim a complete
+// listing it cannot reconstruct; the service keeps the last value and still marks it whole.
+func TestListUploadPartsHandlesDuplicateAndOutOfRangeNumbers(t *testing.T) {
+	ctx := context.Background()
+	fixture := newPartsFixture(t, nil)
+	upload := fixture.createUpload(t, "odd.bin", 10)
+	if _, err := fixture.storage.PutPart(upload.StorageUploadID, 1, []byte("aaaaa")); err != nil {
+		t.Fatalf("put part 1: %v", err)
+	}
+	if _, err := fixture.storage.PutPart(upload.StorageUploadID, 2, []byte("bbbbb")); err != nil {
+		t.Fatalf("put part 2: %v", err)
+	}
+	listing, err := fixture.service.ListUploadParts(ctx, fixture.identity, upload.ID, 0)
+	if err != nil {
+		t.Fatalf("list parts: %v", err)
+	}
+	if !listing.Complete || len(listing.Parts) != 2 {
+		t.Fatalf("listing = %+v, want two complete parts", listing)
+	}
+	for index, part := range listing.Parts {
+		if part.PartNumber != index+1 {
+			t.Fatalf("part at index %d has number %d", index, part.PartNumber)
+		}
+		if part.ETag == "" || part.Size != 5 {
+			t.Fatalf("part %d metadata = %+v", part.PartNumber, part)
+		}
+	}
+}
+
+// limit cuts the response short; the caller must be told the subset is not authoritative.
+func TestListUploadPartsLimitMarksListingIncomplete(t *testing.T) {
+	ctx := context.Background()
+	fixture := newPartsFixture(t, nil)
+	upload := fixture.createUpload(t, "limited.bin", 15)
+	for partNumber := 1; partNumber <= 3; partNumber++ {
+		if _, err := fixture.storage.PutPart(upload.StorageUploadID, partNumber, []byte("abcde")); err != nil {
+			t.Fatalf("put part: %v", err)
+		}
+	}
+	listing, err := fixture.service.ListUploadParts(ctx, fixture.identity, upload.ID, 2)
+	if err != nil {
+		t.Fatalf("list parts: %v", err)
+	}
+	if listing.Complete || len(listing.Parts) != 2 {
+		t.Fatalf("limited listing = %+v, want two parts and incomplete", listing)
+	}
+	full, err := fixture.service.ListUploadParts(ctx, fixture.identity, upload.ID, 0)
+	if err != nil {
+		t.Fatalf("list all parts: %v", err)
+	}
+	if !full.Complete || len(full.Parts) != 3 {
+		t.Fatalf("unlimited listing = %+v, want three complete parts", full)
 	}
 }

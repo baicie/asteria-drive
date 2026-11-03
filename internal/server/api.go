@@ -682,6 +682,9 @@ type listedPartResponse struct {
 	PartNumber int    `json:"part_number"`
 	ETag       string `json:"etag"`
 	Size       int64  `json:"size"`
+	// ContentSHA256 is the digest this part was signed with, or "" when the server holds
+	// no integrity evidence. A resuming client must not skip a part without it.
+	ContentSHA256 string `json:"content_sha256,omitempty"`
 }
 
 type uploadPartsResponse struct {
@@ -712,7 +715,7 @@ func (a *api) listUploadParts(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, part := range listing.Parts {
 		response.Parts = append(response.Parts, listedPartResponse{
-			PartNumber: part.PartNumber, ETag: part.ETag, Size: part.Size,
+			PartNumber: part.PartNumber, ETag: part.ETag, Size: part.Size, ContentSHA256: part.ContentSHA256,
 		})
 	}
 	// A part listing is derived from a live upload session and changes as parts land; no
@@ -739,6 +742,9 @@ func (a *api) signUploadPart(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, r, err)
 		return
 	}
+	// The body carries a short-lived bearer URL. A shared or browser cache storing it would
+	// extend its life beyond the signature TTL, so it must never be cached.
+	w.Header().Set("Cache-Control", "no-store")
 	a.writeData(w, http.StatusOK, map[string]any{
 		"part_number": signed.PartNumber, "method": signed.Method, "url": signed.URL,
 		"required_headers": signed.RequiredHeaders, "expires_at": signed.ExpiresAt,
@@ -794,6 +800,8 @@ func (a *api) createDownloadAuthorization(w http.ResponseWriter, r *http.Request
 		a.writeError(w, r, err)
 		return
 	}
+	// Same rationale as part signing: this is a short-lived bearer URL, not cacheable data.
+	w.Header().Set("Cache-Control", "no-store")
 	a.writeData(w, http.StatusCreated, map[string]any{"method": signed.Method, "url": signed.URL, "expires_at": signed.ExpiresAt})
 }
 
