@@ -86,7 +86,8 @@ CPU，无额外网络流量；恢复时只哈希需要比对的分片。
 
 | run | 提交 | 用例数 | 结果 | 备注 |
 | --- | --- | --- | --- | --- |
-| [41567679623](https://github.com/baicie/asteria-drive/actions/runs/41567679623) | `06dc4e6` | 3 | 3 passed (5.6s) | R2 最终提交，含 P0 混合内容用例 |
+| [41568113120](https://github.com/baicie/asteria-drive/actions/runs/41568113120) | `accbee4` | 3 | 3 passed (5.5s) | R2 交付提交，全部 11 项检查通过 |
+| [41567679623](https://github.com/baicie/asteria-drive/actions/runs/41567679623) | `06dc4e6` | 3 | 3 passed (5.6s) | R2 格式修正提交，含 P0 混合内容用例 |
 | [41567171544](https://github.com/baicie/asteria-drive/actions/runs/41567171544) | `cfea680` | 3 | 3 passed (4.3s) | R2 首次推送；同 run 的 `CI / quality` 因 gofmt 失败 |
 | [41476098805](https://github.com/baicie/asteria-drive/actions/runs/41476098805) | `ce11e54` | 2 | 2 passed (3.4s) | R1 文档提交 |
 | [41474905270](https://github.com/baicie/asteria-drive/actions/runs/41474905270) | `29e0833` | 2 | 2 passed (6.3s) | R1 首次成功运行 |
