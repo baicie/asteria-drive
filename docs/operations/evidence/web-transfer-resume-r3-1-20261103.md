@@ -182,16 +182,18 @@ ok 4 ... cancelling a resume aborts its multipart upload on the server
 真实栈在 **trust 未开启**的默认配置下运行，因此 B 的“恢复”用例实际走了全量重传路径：
 这既验证了保守边界，也再次证明最终对象逐字节等于所选文件。
 
-## CI / Security（`ce67fbd`）
+## CI / Security（最终 HEAD `366a80f`）
 
 | 检查 | 结果 | 链接 |
 | --- | --- | --- |
-| `CI` | success：quality / race / web / api-contract / integration / **web-live** 全部通过 | <https://github.com/baicie/asteria-drive/actions/runs/41611040615> |
-| `Security` | success：codeql / codeql-web / dependency-review / govulncheck | <https://github.com/baicie/asteria-drive/actions/runs/41611040682> |
+| `CI` | success：quality / race / web / api-contract / integration / **web-live** 全部通过 | <https://github.com/baicie/asteria-drive/actions/runs/41611739001> |
+| `Security` | success：codeql / codeql-web / dependency-review / govulncheck | <https://github.com/baicie/asteria-drive/actions/runs/41611738627> |
 
-`CI / integration` 输出 `verified 25 required integration tests across 3 packages`；
+`CI / integration` 在最终 HEAD 与代码提交 `ce67fbd` 上均输出
+`verified 25 required integration tests across 3 packages`。代码提交 `ce67fbd` 的
 `CI / web-live` 输出 `Running 4 tests using 1 worker` → `4 passed`，即 B 修复后的取消用例与
-默认保守恢复路径均在远端真实栈上运行。
+默认保守恢复路径均在远端真实栈上运行；最终 HEAD 只增加本证据文档，六个 CI job 与四个
+Security job 仍全部成功。
 
 `ce67fbd` 只把必跑集成清单的数量断言从 20 更新为 21（postgres），使 `CI / quality` 与
 `CI / race` 的 `TestRepositoryIntegrationManifestCoverage` 与新增基线用例一致；上一提交
