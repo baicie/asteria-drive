@@ -1,6 +1,6 @@
 # Asteria Drive 当前交付状态
 
-> 最后核对：2026-11-02。本页是当前交付范围和状态的权威摘要；完成声明仍须由
+> 最后核对：2026-11-03。本页是当前交付范围和状态的权威摘要；完成声明仍须由
 > [实施与验收记录](mvp/implementation-log.md) 中的代码、命令或远端设置证据支持。
 > MVP 文档保留其历史范围和验收语义，产品 Phase 2-4 另立目标。
 
@@ -9,12 +9,12 @@
 | 后端 MVP P0-P4 | 已完成并合入 `main` | Namespace、直传上传、下载、回收、PostgreSQL/SeaweedFS 真实依赖验收 |
 | M2-1 身份与基础权限 | 已完成并合入 `main` | OIDC Resource Server、内部主体、租户成员和 owner/admin/editor/viewer 基础 RBAC |
 | M2-2 成员生命周期 | 已完成 | 成员列表、角色/状态更新、最后 active owner 保护、邀请、成员删除、组、ACL 和审计契约；本页所称完成指仓库代码和测试，不表示生产平台准入 |
-| 本地 Web 控制台与开发环境 | 首版与第二增量已合入 `main`；第三增量（传输可靠性 + 跨刷新恢复）在待评审分支 | Vue 控制台、Compose 本地全栈、真实 PostgreSQL/S3 multipart 冒烟、Vite 构建和 Playwright 流程测试已通过；2026-10-22 增加回收站列表/恢复/永久删除与重命名/移动（PR #74，merge commit `ef60f9e`）。详见 [本地冒烟证据](operations/evidence/local-console-smoke-20260916.md)。2026-11-02 的 `feat/web-transfer-reliability` 增加结构化上传错误、下载 URL 加固、Vitest 单测、App 级并发修复，以及 ADR-0027 的跨刷新上传恢复（只读分片端点 + 非敏感会话句柄），尚未合入。该控制台仍不是完整产品，也未进入 release 或生产准入 |
+| 本地 Web 控制台与开发环境 | 首版与第二增量已合入 `main`；第三增量（传输可靠性 + 跨刷新恢复）已合并入 `main` | Vue 控制台、Compose 本地全栈、真实 PostgreSQL/S3 multipart 冒烟、Vite 构建和 Playwright 流程测试已通过；2026-10-22 增加回收站列表/恢复/永久删除与重命名/移动（PR #74，merge commit `ef60f9e`）。详见 [本地冒烟证据](operations/evidence/local-console-smoke-20260916.md)。2026-11-02 的 `feat/web-transfer-reliability` 增加结构化上传错误、下载 URL 加固、Vitest 单测、App 级并发修复，以及 ADR-0027 的跨刷新上传恢复（只读分片端点 + 非敏感会话句柄）。**2026-11-03 已合并**：PR [#96](https://github.com/baicie/asteria-drive/pull/96) merge `5552f19`，PR [#97](https://github.com/baicie/asteria-drive/pull/97) merge `9d9f63d`；但 `v0.2.0` Release 制品早于这两次合并，不包含该增量。该控制台仍不是完整产品，也未进入 release 或生产准入 |
 | CI、安全门禁与分支保护 | 仓库合同与 `main` 远端保护已基本完成；独立发布治理仍不完整 | 远端已有八项 required checks（含 `CI / web`）、strict、administrator enforcement、conversation resolution，并禁止强推/删分支；required PR review（含 CODEOWNERS、旧审批失效、最后推送后审批）已于 2026-10-22 按仓库 owner 指示移除，独立 reviewer 仍未配置，因此不满足 PRD-09/PRD-10 的独立审批要求；`v*` ruleset `22372324` 已 active，创建仅允许 `baicie`，更新/删除禁止；`release` Environment 由 `baicie` 审批且允许自审 |
 | Release 与 API 加固 | 仓库门禁、tag 不可变基础和单人发布审批门已实现；生产候选仍需独立复核 | GitHub Immutable Releases 已启用，`v*` 创建仅允许 `baicie`、更新/删除已禁止，`release` Environment 要求 `baicie` reviewer 且禁止管理员 bypass；`v0.2.0` 已发布且 `isImmutable=true`，包含 API/Web 多架构镜像、Web 静态包与两份 SBOM；历史 `v0.1.1` 仍不是 immutable 证据，`v0.1.0-dev.0` 虽已 immutable 但不是生产候选；单人自审不满足独立安全/平台审批 |
-| staging 当前部署 | 主机仍运行 `v0.1.1`；`v0.2.0` 候选固定点已在仓库准备，未部署 | 历史 run `31713181762` 证明 `v0.1.1` 的迁移、鉴权读写、storage verifier、loopback、容量门禁和 PostgreSQL TLS；PR [#80](https://github.com/baicie/asteria-drive/pull/80) 已把 `v0.2.0` source commit、API OCI digest、Compose digest、deploy/monitor/recovery 脚本摘要更新到候选，但远端 bootstrap 和部署仍需明确审批 |
-| staging 周期监测 | 已通过受保护 `main` 启用并完成 TLS v2 实跑 | 每小时及手工 workflow 仅执行 root-owned、摘要固定的只读探针；run `31953366435` 的 artifact `9265267564` 证明 Compose/镜像/容器、loopback、健康、metrics、TLS 1.3、明文拒绝、Secret 属主边界与 85%/5 GiB 容量门禁；这不是生产监控、SIEM、外部告警或容量规划 |
-| staging 恢复演练 | 已通过受保护 `main` 自动化并完成 TLS v2 实跑 | run `31953850132` 的 artifact `9265397749` 证明 schema `3 -> 3`、15 表、`17 -> 17` 行、storage verifier `2/2`、恢复应用 smoke、TLS 1.3、容量和零残留；边界仍为 `staging-recovery-not-production`，且明确未证明 PITR/WAL 或对象版本恢复 |
+| staging 当前部署 | 主机现时运行版本 **UNKNOWN**（最后一次有证据的部署是 2026-08-16 的 `v0.1.1`）；`v0.2.0` 候选固定点已在仓库准备，未部署；**2026-10-23 起监控不再有成功运行**，主机现时状态未经证实 | 历史 run `31713181762` 证明 `v0.1.1` 的迁移、鉴权读写、storage verifier、loopback、容量门禁和 PostgreSQL TLS；PR [#80](https://github.com/baicie/asteria-drive/pull/80) 已把 `v0.2.0` source commit、API OCI digest、Compose digest、deploy/monitor/recovery 脚本摘要更新到候选，但远端 bootstrap 和部署仍需明确审批 |
+| staging 周期监测 | 历史上有过一次完整的 TLS v2 实跑；**2026-10-23 起调度运行全部失败** | 每小时及手工 workflow 仅执行 root-owned、摘要固定的只读探针；历史 run `31953366435` 的 artifact `9265267564` 证明 Compose/镜像/容器、loopback、健康、metrics、TLS 1.3、明文拒绝、Secret 属主边界与 85%/5 GiB 容量门禁。**自 2026-10-23 起每次调度运行均失败**（最后一次成功为 `39885137443`，2026-10-23T01:38Z）。失败证据只保留远端 stderr 的摘要，无法判定根因；详见 [Phase S1 证据](operations/evidence/phase-s1-staging-20261103.md)。这不是生产监控、SIEM、外部告警或容量规划 |
+| staging 恢复演练 | 历史上有过一次完整的 TLS v2 实跑；**2026-10-26 与 2026-11-02 两次失败** | 历史 run `31953850132` 的 artifact `9265397749` 证明 schema `3 -> 3`、15 表、`17 -> 17` 行、storage verifier `2/2`、恢复应用 smoke、TLS 1.3、容量和零残留。**2026-10-26 与 2026-11-02 的两次演练均失败**（`40305621267`、`41445462781`）；两次的远端证据都是 `source-identity` 阶段失败或 dispatcher 拒绝，随后 v0.1.1 回退同样被拒。边界仍为 `staging-recovery-not-production`，且明确未证明 PITR/WAL 或对象版本恢复 |
 | 外部预签名端点 | 仓库能力已实现，平台证据待补 | S3 控制调用与客户端签名端点已解耦，production 对两者都强制 HTTPS；仍需用户自有 DNS/TLS、同一对象命名空间路由、CORS 和真实公网客户端上传下载证据 |
 | PostgreSQL TLS 门禁 | production 配置门禁、`v0.1.1` release 与 staging v2 运行证据已完成 | production 整个 DSN 必须来自文件且只允许一个 `sslmode=verify-full`；staging deployment/monitor/recovery 已证明主机私有 CA、`DNS:postgres`、TLS 1.2 下限、实际 TLS 1.3、明文拒绝、SCRAM、`pg_stat_ssl` 和 Secret 属主边界；该私有 CA 不证明生产 CA/DNS/轮换 |
 | 可靠性与可观测性 | 代码与仓库证据已完成 | `Idempotency-Key`、自动维护、Prometheus、fuzz/property、百万节点完整性和 10 分钟控制面 SLO 证据已归档；写路径与平台告警仍需独立测量 |

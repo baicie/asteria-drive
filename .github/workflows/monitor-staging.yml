@@ -79,7 +79,7 @@ jobs:
           selected_image=""
           probe_exit=1
           run_probe() {
-            local candidate="$1" candidate_sha="$2"
+            local candidate="$1" candidate_sha="$2" evidence_code=0
             set +e
             ssh \
               -F none -i "$RUNNER_TEMP/ssh/key" -p "$DEPLOY_PORT" \
@@ -92,6 +92,193 @@ jobs:
             local code="$?"
             set -e
             printf '%s probe_exit=%s\n' "$candidate" "$code" >>"$RUNNER_TEMP/staging-monitor-attempts.log"
+            PROBE_EVIDENCE_DIR="$evidence_dir" PROBE_CANDIDATE="$candidate" \
+            PROBE_EXIT_CODE="$code" PROBE_EVIDENCE_PATH="$raw_evidence" \
+            PROBE_STDERR_PATH="$raw_stderr" \
+              python3 - <<'PY' || evidence_code="$?"
+          # --- asteria-staging-probe-attempt:v2 ---
+          # Whitelist-only diagnostics for one SSH probe attempt.
+          #
+          # Raw remote stderr is never copied into the artifact: arbitrary text cannot be
+          # proven free of secrets, so no free text is retained at all. What is recorded:
+          #   classification - one label from a fixed set, chosen by matching fixed formats;
+          #   phase          - the probe's own last_phase, only when it is one of the phases
+          #                    the reviewed scripts actually declare;
+          #   digest + size  - of both the evidence file and stderr, for reconciliation.
+          # The caller still deletes both raw files on exit, and nothing here changes the
+          # probe exit code or any fallback decision.
+          import hashlib
+          import json
+          import os
+          import re
+
+          SCHEMA = "asteria-drive-staging-probe-attempt/v2"
+          CLASSIFICATIONS = frozenset(
+              (
+                  "dispatcher-rejected",
+                  "ssh-auth-failed",
+                  "ssh-host-key-failed",
+                  "ssh-connect-failed",
+                  "compose-identity-failed",
+                  "source-identity-failed",
+                  "capacity-guard-failed",
+                  "remote-command-failed",
+                  "unknown",
+                  "success",
+              )
+          )
+          # Exactly the phases declared by scripts/monitor-staging.sh and
+          # scripts/recover-staging.sh. A value outside this set is dropped, not echoed.
+          PHASES = frozenset(
+              (
+                  "initialize",
+                  "host-capacity",
+                  "compose-identity",
+                  "docker-capacity",
+                  "data-volume-capacity",
+                  "container-identity",
+                  "http-readiness",
+                  "postgres-tls",
+                  "loopback-bindings",
+                  "http-probes",
+                  "source-identity",
+                  "capacity-before",
+                  "prepare-isolation",
+                  "verify-source-postgres-tls",
+                  "backup-source",
+                  "start-isolated-postgres",
+                  "restore-metadata",
+                  "verify-restored-storage",
+                  "start-recovered-api",
+                  "authenticated-read",
+                  "cleanup",
+                  "complete",
+              )
+          )
+          CAPACITY_PHASES = frozenset(
+              {"host-capacity", "docker-capacity", "data-volume-capacity", "capacity-before"}
+          )
+          SSH_PATTERNS = (
+              (
+                  "ssh-auth-failed",
+                  re.compile(
+                      r"^Permission denied "
+                      r"\((?:publickey|password|keyboard-interactive)(?:,[a-z-]+)*\)\.?$"
+                  ),
+              ),
+              (
+                  "ssh-host-key-failed",
+                  re.compile(r"^(?:Host key verification failed\.|WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!.*)$"),
+              ),
+              (
+                  "ssh-connect-failed",
+                  re.compile(
+                      r"^ssh: connect to host \S{1,255} port [0-9]{1,5}: "
+                      r"(?:Connection refused|Connection timed out|Network is unreachable|No route to host)$"
+                  ),
+              ),
+          )
+
+
+          def describe(path):
+              if not os.path.isfile(path):
+                  return {"present": False, "size_bytes": 0, "sha256": None}
+              digest = hashlib.sha256()
+              size = 0
+              with open(path, "rb") as handle:
+                  for chunk in iter(lambda: handle.read(65536), b""):
+                      size += len(chunk)
+                      digest.update(chunk)
+              return {"present": True, "size_bytes": size, "sha256": digest.hexdigest()}
+
+
+          def read_status_and_phase(path):
+              """Return the probe's own status and phase, discarding anything unexpected."""
+              try:
+                  if not os.path.isfile(path) or os.path.getsize(path) > 64 * 1024:
+                      return None, None
+                  with open(path, encoding="utf-8") as handle:
+                      report = json.load(handle)
+              except (OSError, ValueError):
+                  return None, None
+              if not isinstance(report, dict):
+                  return None, None
+              status = report.get("status")
+              if status not in ("failed", "success"):
+                  status = None
+              phase = report.get("last_phase")
+              if phase not in PHASES:
+                  phase = None
+              return status, phase
+
+
+          def classify(exit_code, status, phase, stderr_path):
+              if exit_code == 0:
+                  return "success", phase
+              try:
+                  with open(stderr_path, "rb") as handle:
+                      text = handle.read(64 * 1024).decode("utf-8", "replace")
+              except OSError:
+                  text = ""
+              lines = [line.strip() for line in text.splitlines() if line.strip()]
+              # The dispatcher writes exactly this one line to stderr for every rejection.
+              if lines and all(line == "staging deploy command rejected" for line in lines):
+                  return "dispatcher-rejected", phase
+              if len(lines) == 1:
+                  for label, pattern in SSH_PATTERNS:
+                      if pattern.fullmatch(lines[0]):
+                          return label, phase
+              if status == "failed":
+                  if phase == "compose-identity":
+                      return "compose-identity-failed", phase
+                  if phase == "source-identity":
+                      return "source-identity-failed", phase
+                  if phase in CAPACITY_PHASES:
+                      return "capacity-guard-failed", phase
+                  if phase is not None:
+                      return "remote-command-failed", phase
+              return "unknown", phase
+
+
+          candidate = os.environ["PROBE_CANDIDATE"]
+          if not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", candidate):
+              raise SystemExit(f"probe candidate is invalid: {candidate}")
+          raw_exit = os.environ["PROBE_EXIT_CODE"]
+          if not re.fullmatch(r"-?[0-9]{1,3}", raw_exit):
+              raise SystemExit(f"probe exit code is invalid: {raw_exit}")
+          exit_code = int(raw_exit)
+
+          evidence_path = os.environ["PROBE_EVIDENCE_PATH"]
+          stderr_path = os.environ["PROBE_STDERR_PATH"]
+          status, phase = read_status_and_phase(evidence_path)
+          classification, phase = classify(exit_code, status, phase, stderr_path)
+          if classification not in CLASSIFICATIONS:
+              raise SystemExit("probe classification is not in the approved set")
+
+          report = {
+              "schema": SCHEMA,
+              "candidate": candidate,
+              "exit_code": exit_code,
+              "classification": classification,
+              "phase": phase,
+              "evidence": describe(evidence_path),
+              "stderr": describe(stderr_path),
+          }
+          evidence_dir = os.environ["PROBE_EVIDENCE_DIR"]
+          with open(os.path.join(evidence_dir, f"attempt-{candidate}.json"), "x", encoding="utf-8") as handle:
+              json.dump(report, handle, indent=2, sort_keys=True)
+              handle.write("\n")
+          with open(os.path.join(evidence_dir, "probe-summary.txt"), "a", encoding="utf-8") as handle:
+              handle.write(
+                  "attempt {0} exit={1} classification={2} phase={3}\n".format(
+                      candidate, exit_code, classification, phase or "none"
+                  )
+              )
+          # --- end asteria-staging-probe-attempt ---
+          PY
+            if [[ "$evidence_code" -ne 0 ]]; then
+              echo "probe evidence helper failed with exit $evidence_code" >&2
+            fi
             return "$code"
           }
           fallback_allowed() {
@@ -139,6 +326,8 @@ jobs:
           fi
           if [[ -z "$selected_version" ]]; then
             printf 'no approved staging monitor probe succeeded without masking a real failure\n' >&2
+            # The classifier already recorded one fixed-format line per attempt.
+            cat "$evidence_dir/probe-summary.txt" 2>/dev/null || true
             probe_exit=1
           fi
           cp "$RUNNER_TEMP/staging-monitor-attempts.log" "$evidence_dir/probe-attempts.txt" 2>/dev/null || true
