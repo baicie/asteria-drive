@@ -28,7 +28,8 @@
 
 1. 当前主机上 dispatcher 与 monitor/recovery 脚本的实际摘要。
 2. 当前主机实际运行的镜像版本（`docs/status.md` 中的 `v0.1.1` 是 2026-08-16 的证据）。
-3. 89 字节 stderr 的具体原因。
+3. 89 字节 stderr 的具体原因（**2026-11-04 已由 Phase S2 复原**，见下方更正与
+   [S2 诊断](phase-s2-staging-diagnosis.md)）。
 4. Phase B bootstrap 是否已在主机上执行。
 5. 主机磁盘、Docker 数据目录、容器健康、PostgreSQL TLS 的现时状态。
 
@@ -92,13 +93,18 @@ probe-attempts.txt    : "v0.2.0 probe_exit=1"、"v0.1.1 probe_exit=1"
 - v0.1.1 探针随后也失败；`raw_evidence` 被清空、stderr 被覆盖，最终只剩第二次尝试的
   89 字节 stderr 与一个哈希。
 
-89 字节 stderr 的具体内容 **UNKNOWN**。已排除的可能：
+89 字节 stderr 的具体内容在本阶段 **UNKNOWN**。当时的排除项：
 
 - 不是 `staging deploy command rejected`（32 字节，哈希不符）；
-- 不是 `staging monitor capacity failure: …`：对 0–9%、10–99%、100% 的 used 值、4 个
-  文件系统标签、7 位可用空间做了全空间穷举（程序先用已知明文自校验哈希实现），
-  在 89 字节长度约束下无匹配；
+- 当时认为「不是 `staging monitor capacity failure: …`」：对 0–9%、10–99%、100% 的 used
+  值、4 个文件系统标签、7 位可用空间做了穷举，在 89 字节长度约束下无匹配；
 - 不是常见 docker/curl/flock/df/command-not-found 单行错误（159 条候选全不匹配）。
+
+> **2026-11-04 更正（Phase S2）**：上面的第二条**是错的**。当时的穷举程序把哈希表
+> 键值写反，`no match` 是工具缺陷而不是证据。修正并用已知明文自校验后，89 字节消息
+> 被精确复原为
+> `staging monitor capacity failure: root filesystem is <86–89>% used with <…> KiB available`。
+> 详见 [Phase S2 诊断](phase-s2-staging-diagnosis.md)。本节其余结论不变。
 
 **旧工作流没有保存足以诊断的明文原因**（VERIFIED）：它只留摘要，且 raw 文件在退出前删除。
 这正是 S1.1 要修复的 P1 问题——修复方式见第 3 节，而不是靠继续猜。
