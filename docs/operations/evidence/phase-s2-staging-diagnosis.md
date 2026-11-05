@@ -48,8 +48,11 @@ S1 阶段把 89 字节消息标成了 UNKNOWN。
 
 ### 2.1 `v0.2.0` 探针：dispatcher 拒绝（VERIFIED）
 
-两次运行（`41719084766`、`41754371528`）及此前五次，`v0.2.0` 的
-`attempt-v0.2.0.json` 完全一致：
+5 次带分类器的运行（`41719084766`、`41754371528`、`41807941954`、`41883481449`、
+`41936343589`）中，`v0.2.0` 的 `attempt-v0.2.0.json` 完全一致。更早的 5 次
+（`41400035337`–`41662858662`）产生于分类器合并之前，`v0.2.0` 的 stderr 已被随后的
+`v0.1.1` 尝试覆盖，只能从 `fallback-decision.txt` 得知它属于「version mismatch 或
+dispatcher rejection」两类，无法单独核对摘要。分类器时代的记录如下：
 
 ```json
 {
@@ -181,12 +184,13 @@ git diff --name-only fb0e5e0 9d9f63d | grep -iE 'staging|infra/|scripts/'   → 
 
 | Run | 日期 | 观察 | 标签 |
 | --- | --- | --- | --- |
-| `40305621267` | 2026-10-26 | 两版探针均 `probe_exit=1`；最终 evidence **0 字节**、stderr 32 字节 `1b39cdcb…` | VERIFIED：两个探针都在 `exec` 前被 dispatcher 拒绝，未执行 |
+| `40305621267` | 2026-10-26 | 该运行只有一个 `v0.2.0` 尝试（`cf63a93` 的工作流尚无回退）；evidence **0 字节**、stderr 32 字节 `1b39cdcb…` | VERIFIED：探针在 `exec` 前被 dispatcher 拒绝，未执行 |
 | `41445462781` | 2026-11-02 | `v0.2.0` 触发了 fallback 判定（`fallback-decision.txt` 记录为 version mismatch **或** dispatcher rejection，Artifact 无法区分）；v0.1.1 **实际执行**并失败，stderr **0 字节**，evidence 2299 字节 | v0.2.0 失败形态 UNKNOWN；v0.1.1 具体阶段 UNKNOWN |
 
 > **2026-11-05 核对**：按 `collection-status.json` 原文，`41445462781` 的最终 stderr
 > 是 **0 字节**、evidence 2299 字节；`40305621267` 的 evidence 是 **0 字节**、stderr
-> 32 字节。`source-identity` 只是 fallback 的允许条件之一，**不能当作已观察到的阶段**。
+> 32 字节，且该运行的工作流版本只有一个 `v0.2.0` 尝试、没有回退。`source-identity`
+> 只是 fallback 的允许条件之一，**不能当作已观察到的阶段**。
 > Phase S1 文档中对应的两行已同步更正。
 
 为什么 `v0.1.1` 的 drill 阶段仍 UNKNOWN：recovery 脚本的

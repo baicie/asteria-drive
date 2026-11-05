@@ -209,7 +209,7 @@ du -x -d1 -h / 2>/dev/null | sort -h | tail -20
 | 预期输出 | `df -Pk` 一行数据；`df -PTk` 多一列 `Type`；`docker system df` 的 Images/Containers/Local Volumes/Build Cache 四项；`du` 的目录排行 |
 | 判定依据 | `Used%` > 85 或 `Available` < 5,242,880 KiB → 门禁判定正确，问题在容量；两者都满足 → 与 S2 时点不同，需用当时证据复核 |
 | 权限要求 | root（`journalctl`、`du` 全盘） |
-| 失败处理 | `df` 输出不可解析 → 记录原始输出，不推断；`du` 超时 → 中止，不影响结论 |
+| 失败处理 | `df -T` 不被支持（如 BusyBox）→ 跳过类型列，不影响容量判定；`df -Pk` 输出不可解析 → 记录原始输出，不推断；`du` 超时 → 中止，不影响结论 |
 
 **明确不采集挂载选项**（2026-11-05 修正）：不使用 `findmnt -o OPTIONS`、`cat /proc/mounts`
 或 `mount` 输出。挂载选项可能包含内部地址或凭据（`addr=`、`username=`、`password=`、

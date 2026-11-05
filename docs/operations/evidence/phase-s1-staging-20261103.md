@@ -115,12 +115,13 @@ probe-attempts.txt    : "v0.2.0 probe_exit=1"、"v0.1.1 probe_exit=1"
 
 | Run | 日期 | 失败阶段 | 证据 |
 | --- | --- | --- | --- |
-| `40305621267` | 2026-10-26 | 两个探针都未执行 | evidence 0 字节；32 字节 stderr，`1b39cdcb…`（dispatcher 拒绝） |
+| `40305621267` | 2026-10-26 | 唯一的 v0.2.0 探针未执行（当时工作流无回退） | evidence 0 字节；32 字节 stderr，`1b39cdcb…`（dispatcher 拒绝） |
 | `41445462781` | 2026-11-02 | v0.2.0 形态无法区分；v0.1.1 实际执行并失败 | v0.1.1：evidence 2299 字节、stderr 0 字节 |
 
-> **2026-11-05 更正（Phase S2 收口）**：本表原先写「v0.2.0 `source-identity`」和
-> 「89 字节 stderr」，与 Artifact 原文不符。`40305621267` 的 evidence 是 **0 字节**，
-> 说明两个探针都没有通过 dispatcher；`41445462781` 的最终 stderr 是 **0 字节**，
+> **2026-11-05 更正（Phase S2 收口）**：本表原先写「v0.2.0 `source-identity`」、
+> 「随后 v0.1.1 亦失败」和「89 字节 stderr」，与 Artifact 原文不符。
+> `40305621267` 使用的工作流版本（`cf63a93`）只有**一次** `v0.2.0` 尝试，没有回退分支，
+> 它被 dispatcher 拒绝（evidence 0 字节）；`41445462781` 的最终 stderr 是 **0 字节**，
 > 而 `fallback-decision.txt` 只记录「version mismatch 或 dispatcher rejection」，
 > Artifact 无法区分两者。`source-identity` 只是 fallback 的允许条件，不是已观察到的阶段。
 
