@@ -1,4 +1,4 @@
-# Staging 只读诊断计划（2026-11-04，Phase S2 审查版）
+# Staging 只读诊断计划（2026-11-05，Phase S2 终审版）
 
 - 前置：[Phase S1/S1.1 证据](phase-s1-staging-20261103.md)、
   [Phase S2 诊断](phase-s2-staging-diagnosis.md)、PR
@@ -17,6 +17,8 @@
 | 每条命令补预期输出、判定依据、权限、失败处理 | 落实逐条安全审查 |
 | 增加容量分解命令 | S2 已把失败收敛到根文件系统容量，需要定位占用来源 |
 | 增加「不绕过 dispatcher」说明 | 明确本计划不使用 deploy 凭据，也不改写 dispatcher |
+| 删除 `findmnt … OPTIONS`，改用 `df -PTk`（2026-11-05） | 挂载选项可能含内部地址或凭据（`addr=`、`username=`、`password=`、`credentials=`），且与容量判定无关 |
+| Phase B 判定拆成「当前文件状态」与「历史执行事实」（2026-11-05） | 现有文件集合不能证明 bootstrap 曾经执行，必须与配置和实际行为互相验证 |
 
 ## 1. 已确认、无需重复取证的事实
 
@@ -26,9 +28,10 @@
    `1b39cdcb…` = `printf 'staging deploy command rejected\n'`。
 2. `v0.1.1` 探针**实际运行**到 `host-capacity` 后退出，89 字节 stderr 的 SHA-256
    与 `staging monitor capacity failure: root filesystem is <used>% used with
-   <avail> KiB available\n` 精确匹配（见 S2 诊断文档，含 7 次运行的还原值）。
-3. 最近两次（`41719084766`、`41754371528`）为 **86% used / 5.35–5.39 GiB free**：
-   触发的是 **85% 使用率**上限，不是 5 GiB 下限。
+   <avail> KiB available\n` 精确匹配（见 S2 诊断文档，含 10 次运行的还原值）。
+3. 最近两次（`41719084766`、`41754371528`）为 **86% used / 5.35–5.39 GiB free**；
+   2026-11-04 的三次自然调度（`41807941954`、`41883481449`、`41936343589`）仍为
+   **86% used / 5.33–5.40 GiB free**：触发的是 **85% 使用率**上限，不是 5 GiB 下限。
 4. SSH 传输、ED25519 主机密钥、授权、dispatcher `status` 路径、`v0.1.1` monitor
    脚本摘要（`3ef39670…`）均正常。
 
@@ -120,14 +123,42 @@ image         sha256:964e71a496e0800a48aaeb9d513f3927d175927a7e271dde37e0570532d
 schema        3
 ```
 
-判定：
+### 4.1 判定表：只描述**当前文件状态**
 
-| 观察 | 结论 |
-| --- | --- |
-| 无 `-v0.1.1` 变体、无 controller/verifier/releases.json，`monitor` = `3ef39670…` | 主机停在 v0.1.1 锚点，Phase B **未执行** |
-| 存在全部 v0.2.0 文件且摘要相符 | Phase B **已执行**；接下来的失败与 dispatcher 无关，回到容量 |
-| 存在部分 v0.2.0 文件或摘要不符 | Phase B **执行中断/不完整**，按第 6 节列差异 |
-| `staging-dispatch.conf` 只含一个 `monitor_script_sha256` 键 | 旧版单摘要 dispatcher（与 S2 观察一致） |
+| 观察 | 对当前文件状态成立的结论 | 不能据此推断 |
+| --- | --- | --- |
+| 无 `-v0.1.1` 变体、无 controller/verifier/releases.json，`monitor` = `3ef39670…` | 主机文件集合仍停在 v0.1.1 锚点 | 不能推断 Phase B **从未**执行（可能执行过又被回滚或部分覆盖） |
+| 存在全部 v0.2.0 文件且摘要相符 | 当前文件集合与 v0.2.0 bundle 一致 | 不能单独证明 bootstrap 曾**完整执行**（文件可能被手工复制或分步放置） |
+| 存在部分 v0.2.0 文件或摘要不符 | 当前文件集合与两个版本都不一致 | 不能判断是执行中断、手工复制还是回滚残留 |
+| `staging-dispatch.conf` 只含一个 `monitor_script_sha256` 键 | 当前配置是旧版单摘要形态 | 不能证明**正在运行的 dispatcher 进程**加载的就是这份文件 |
+| `staging-dispatch.conf` 缺失或不可读 | 无法判定配置 | 不得推断任何 Phase B 结论 |
+
+**「Phase B 是否执行过」是历史事实，不是当前文件状态。** 本计划不把文件集合当作执行记录；
+若要回答历史问题，还需要 bootstrap 自身的日志、文件 mtime 序列或维护记录等独立证据，
+本轮不采集、也不假设它们存在。
+
+### 4.2 配置必须与**实际行为**互相验证
+
+S2 已确认的行为（VERIFIED）：同一分钟内，v0.1.1 monitor 摘要被接受并**实际执行**
+（产出 evidence 并走到 `host-capacity`），v0.2.0 monitor 摘要在 `exec` 之前被拒绝
+（32 字节拒绝文本、stdout 0 字节）。因此在主机上必须把**配置内容**与**该行为**对照：
+
+| 配置观察 | 与 S2 行为是否一致 | 允许的结论 |
+| --- | --- | --- |
+| 配置接受 v0.1.1、不接受 v0.2.0 | 一致 | 现时配置即可解释行为；Phase B 历史仍为 UNKNOWN |
+| 配置接受 v0.2.0，行为却拒绝 | **矛盾** | 配置不是权威来源（未重新加载、另有 dispatcher、或校验路径不同），停止并上报，不得据此下结论 |
+| 配置接受两个摘要，且自然调度中 v0.2.0 不再被拒 | 一致 | Phase B 可能已执行且生效，但仍需文件摘要与时间戳佐证 |
+| 配置缺失或键名与 dispatcher 支持的不符 | 无法对照 | 记录为 UNKNOWN，不推断 |
+
+**「Phase B 已执行」只有在三条同时成立时才可写入结论**：
+① 文件集合与 bundle 摘要一致；② dispatcher 配置接受 v0.2.0 摘要；③ 实际行为接受
+v0.2.0 摘要（即 v0.2.0 探针能产出 evidence，而不是 32 字节拒绝文本）。
+缺任一条，结论一律为 UNKNOWN。
+
+条件 ③ **不在只读会话中主动制造**：本计划不执行 v0.2.0 探针。它由下一次自然调度
+（每小时 `:23Z`）的 `Monitor staging` 运行被动产生——如果 Phase B 已生效，该 run 的
+`attempt-v0.2.0.json` 就不再是 `dispatcher-rejected`。因此只读会话的产出是
+「① 与 ②」，③ 需要等待一次自然调度后另行核对。
 
 ## 5. 步骤 B：运行身份（对应 U2）
 
@@ -162,8 +193,8 @@ docker volume ls --filter name=asteria-drive-staging --format '{{.Name}} {{.Driv
 
 ```bash
 df -Pk -- /
+df -PTk -- /       # Type 列替代 findmnt 的 FSTYPE；不采集 SOURCE/OPTIONS
 df -Pi -- /
-findmnt -no SOURCE,FSTYPE,OPTIONS --target / 2>/dev/null || true
 cat /proc/loadavg
 free -m
 
@@ -175,10 +206,16 @@ du -x -d1 -h / 2>/dev/null | sort -h | tail -20
 
 | 项 | 内容 |
 | --- | --- |
-| 预期输出 | `df -Pk` 一行数据；`docker system df` 的 Images/Containers/Local Volumes/Build Cache 四项；`du` 的目录排行 |
+| 预期输出 | `df -Pk` 一行数据；`df -PTk` 多一列 `Type`；`docker system df` 的 Images/Containers/Local Volumes/Build Cache 四项；`du` 的目录排行 |
 | 判定依据 | `Used%` > 85 或 `Available` < 5,242,880 KiB → 门禁判定正确，问题在容量；两者都满足 → 与 S2 时点不同，需用当时证据复核 |
 | 权限要求 | root（`journalctl`、`du` 全盘） |
-| 失败处理 | `df` 输出不可解析或 `findmnt` 缺失 → 记录原始输出，不推断；`du` 超时 → 中止，不影响结论 |
+| 失败处理 | `df` 输出不可解析 → 记录原始输出，不推断；`du` 超时 → 中止，不影响结论 |
+
+**明确不采集挂载选项**（2026-11-05 修正）：不使用 `findmnt -o OPTIONS`、`cat /proc/mounts`
+或 `mount` 输出。挂载选项可能包含内部地址或凭据（`addr=`、`username=`、`password=`、
+`credentials=`、Kerberos principal 等），而容量判定只需要 `Used%`、`Available` 与文件系统
+类型，后者由 `df -PTk` 的 `Type` 列提供。`df` 的 `Filesystem` 列对根文件系统是设备名，
+不含凭据；若观察到网络文件系统，只记录类型，不记录 SOURCE。
 
 **禁止**：`docker system prune`、`docker volume prune`、`docker builder prune`、
 删除日志、删除 PostgreSQL/SeaweedFS 数据、扩容、修改阈值。

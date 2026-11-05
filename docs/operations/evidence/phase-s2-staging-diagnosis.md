@@ -14,7 +14,7 @@
 | `v0.2.0` 探针被 dispatcher 拒绝，stderr 恰为 `staging deploy command rejected` | **VERIFIED** |
 | `v0.1.1` 探针实际运行，并在 `host-capacity` 阶段因**根文件系统使用率 86–89%** 退出 | **VERIFIED** |
 | 触发的是 85% 使用率上限（最近两次 5 GiB 下限并未触发） | **VERIFIED** |
-| 失败不是 `df` 解析缺陷：89 字节消息与 `verify_capacity` 的格式逐字节吻合 | **VERIFIED** |
+| 在已测试的 12 种 `df` 输出形态范围内未发现解析缺陷；89 字节消息与 `verify_capacity` 格式逐字节吻合 | **VERIFIED（范围受限，见第 3 节）** |
 | `#96`/`#97` 与本故障无关 | **VERIFIED** |
 | 主机当前 dispatcher/脚本摘要、运行镜像版本、Phase B 是否执行 | **UNKNOWN** |
 | Recovery Drill 的 `v0.1.1` 具体失败阶段 | **UNKNOWN** |
@@ -85,7 +85,14 @@ monitor 之前就被拒绝。
 
 ### 2.2 `v0.1.1` 探针：真实的容量门禁触发（VERIFIED）
 
-两次新运行的 `attempt-v0.1.1.json`：
+两次运行的 `attempt-v0.1.1.json` 结构相同，只有 evidence 的摘要与大小不同：
+
+| Run | `evidence.size_bytes` | `evidence.sha256` | `stderr.size_bytes` | `stderr.sha256` |
+| --- | --- | --- | --- | --- |
+| `41719084766` | 2199 | `e432f99f…` | 89 | `cd7c7683…` |
+| `41754371528` | **2200** | `a2f6b48e…` | 89 | `21ce08a8…` |
+
+`41719084766` 的完整记录：
 
 ```json
 {
@@ -98,6 +105,9 @@ monitor 之前就被拒绝。
 }
 ```
 
+evidence 大小由 JSON 内数字的位数决定，因此不同运行在 2199/2200 之间波动；
+这属于正常差异，不是内容异常。
+
 89 字节 stderr 的原像复原结果：
 
 | Run | 时间（UTC） | used | available | 触发 85% 上限 | 触发 5 GiB 下限 |
@@ -109,10 +119,16 @@ monitor 之前就被拒绝。
 | `41662858662` | 2026-11-03T15:20Z | 89% | 4,597,900 KiB（4.38 GiB） | 是 | 是 |
 | `41719084766` | 2026-11-03T21:08Z | 86% | 5,605,908 KiB（5.35 GiB） | 是 | 否 |
 | `41754371528` | 2026-11-04T01:29Z | 86% | 5,650,912 KiB（5.39 GiB） | 是 | 否 |
+| `41807941954` | 2026-11-04T09:29Z | 86% | 5,657,284 KiB（5.40 GiB） | 是 | 否 |
+| `41883481449` | 2026-11-04T18:04Z | 86% | 5,600,780 KiB（5.34 GiB） | 是 | 否 |
+| `41936343589` | 2026-11-04T23:46Z | 86% | 5,588,044 KiB（5.33 GiB） | 是 | 否 |
+
+前 7 次由独立审查复核（见第 7 节），后 3 次由本轮收口用同一自校验程序复原，
+**不是独立复核**。
 
 自洽性检验：由 `avail/(1-used)` 反推的总容量在 37.6–40.3 GiB 之间，与
 2026-08-16 记录的总量 41,020,608 KiB（39.1 GiB）一致；同期记录的 available
-（6,242,176 KiB）与该总量也吻合。7 次独立运行给出同一量级的数值，进一步排除
+（6,242,176 KiB）与该总量也吻合。10 次独立运行给出同一量级的数值，进一步排除
 偶然碰撞。
 
 **因此：**
@@ -136,7 +152,7 @@ git diff --name-only fb0e5e0 9d9f63d | grep -iE 'staging|infra/|scripts/'   → 
 首次 monitor 失败（2026-10-23T07:42Z）早于 #96 的任何提交；合并后
 2026-11-03T06:59Z 的失败与合并前同形。
 
-## 3. `df` 解析兼容性（VERIFIED：无缺陷）
+## 3. `df` 解析兼容性（范围内未发现缺陷）
 
 用仓库里的 `parse_filesystem_output` 原始代码跑真实格式样例（离线）：
 
@@ -148,15 +164,30 @@ git diff --name-only fb0e5e0 9d9f63d | grep -iE 'staging|infra/|scripts/'   → 
 | 尾部空行 / CRLF | 正确解析 |
 | 文件系统名含空格、表格前有 warning 行、`Available` 为 `-`、千位分隔符、两行数据 | 全部 fail-closed（返回 1） |
 
-结论：解析器对真实 Linux `df` 输出兼容，对异常输出保守拒绝。**不存在解析缺陷**，
-因此本轮不提交解析修复。
+**结论及其适用范围（重要）**：
+
+- 本结论只覆盖当前基线 `scripts/monitor-staging.sh` 中的 `parse_filesystem_output`，
+  以及上表列出的 12 种输入形态；
+- 它**不是**对任意 `df` 实现、任意 locale/列宽或未来 GNU/BusyBox 版本的普遍证明；
+- 它不证明主机的原始 `df` 输出已被观察——**主机输出从未被读取**；
+- 支持「不是解析缺陷」的正面证据是 10 次读数反推的总容量自洽（37.6–40.3 GiB，
+  与 2026-08-16 记录的 39.1 GiB 吻合），而不是对主机输出的直接比对。
+
+因此本轮**不修改解析器**：现有失败签名已由 `verify_capacity` 的容量消息完整解释，
+在缺少主机取证的前提下改解析器既无证据支持，也会引入新风险。若将来主机侧只读取证
+发现真实 `df` 输出与解析结果不符，再另立修复。
 
 ## 4. Recovery Drill
 
 | Run | 日期 | 观察 | 标签 |
 | --- | --- | --- | --- |
-| `40305621267` | 2026-10-26 | 两版探针均 `probe_exit=1`；stderr 32 字节，`1b39cdcb…` | VERIFIED：dispatcher 拒绝 |
-| `41445462781` | 2026-11-02 | `v0.2.0` 在 `source-identity` 失败（version mismatch，符合预期：主机 compose 为 v0.1.1），v0.1.1 随后失败，stderr **0 字节**，evidence 2299 字节 | 现象 VERIFIED；v0.1.1 具体阶段 UNKNOWN |
+| `40305621267` | 2026-10-26 | 两版探针均 `probe_exit=1`；最终 evidence **0 字节**、stderr 32 字节 `1b39cdcb…` | VERIFIED：两个探针都在 `exec` 前被 dispatcher 拒绝，未执行 |
+| `41445462781` | 2026-11-02 | `v0.2.0` 触发了 fallback 判定（`fallback-decision.txt` 记录为 version mismatch **或** dispatcher rejection，Artifact 无法区分）；v0.1.1 **实际执行**并失败，stderr **0 字节**，evidence 2299 字节 | v0.2.0 失败形态 UNKNOWN；v0.1.1 具体阶段 UNKNOWN |
+
+> **2026-11-05 核对**：按 `collection-status.json` 原文，`41445462781` 的最终 stderr
+> 是 **0 字节**、evidence 2299 字节；`40305621267` 的 evidence 是 **0 字节**、stderr
+> 32 字节。`source-identity` 只是 fallback 的允许条件之一，**不能当作已观察到的阶段**。
+> Phase S1 文档中对应的两行已同步更正。
 
 为什么 `v0.1.1` 的 drill 阶段仍 UNKNOWN：recovery 脚本的
 `verify_capacity` **不打印任何消息**（只返回非零），而 `source-identity` 的
@@ -181,7 +212,7 @@ prepare-isolation               2302
 | --- | --- |
 | dispatcher 实际摘要与配置 | `sha256sum /usr/local/libexec/asteria-staging-dispatch`；`grep -E '^(monitor_script_sha256\|monitor_v011_script_sha256)=' /etc/asteria-drive/staging-dispatch.conf` |
 | monitor/recovery 脚本是否安装 v0.2.0 变体 | 同路径 `sha256sum` + `stat` |
-| Phase B bootstrap 是否执行 | 由上面两组摘要推断：无 `-v0.1.1` 变体 / 无 controller / 无 `staging-releases.json` ⇒ 未执行 |
+| Phase B bootstrap 是否执行 | **历史事实，不能只由文件推断**：需 ① 当前文件摘要 ② dispatcher 配置的接受集合 ③ 下一次自然调度中 v0.2.0 是否仍被拒，三者对照（见[计划 4.1/4.2](phase-s1-staging-readonly-plan-20261104.md)） |
 | 当前运行镜像版本 | `docker inspect --format '{{.Config.Image}}' asteria-drive-staging-api-1` |
 | 容量占用来源 | `df -Pk -- /`、`docker system df`、`du -x -d1 -h /` |
 
@@ -194,3 +225,43 @@ prepare-isolation               2302
 - 未触发 monitor / drill / deploy / rollback 工作流。
 - 未修改容量阈值、未清理磁盘、未改任何脚本固定点。
 - 未创建 Release / tag，未合并任何 PR。
+
+## 7. 独立验证记录（2026-11-05）
+
+独立审查于 2026-11-05 下载了 2026-11-02 至 2026-11-04 的 7 次历史 Monitor
+Artifact，并对第 2.2 节还原出的容量门禁消息**逐条重新计算完整 SHA-256**。
+**7 次全部匹配。**
+
+为便于复核，下面列出这 7 条消息的完整 SHA-256（与 Artifact 中
+`remote_stderr.sha256` 或 `attempt-v0.1.1.json` 的 `stderr.sha256` 一致）：
+
+| Run | 完整 SHA-256（89 字节 stderr） |
+| --- | --- |
+| `41400035337` | `2035dcd07c44c6634d1a2e29c37f0498b90d9f09a500d43c09d0c9ad130d1fe2` |
+| `41489190998` | `5b3c53160788e1f94ac253bf8bc45d522b8de1ef2417e588c7a1a7247f13f632` |
+| `41549153916` | `ab40ce59851910b3d1a755be79ff03cfa76df3110a965f59c32b13b8a50a1acf` |
+| `41593365487` | `8b8f56e5a46a710b28a7a9e186b2505d10fefb26f05eb4229e37577128f4b817` |
+| `41662858662` | `344f9ca96076be7578fc2f127004d93ef93888fbe13e2c5d639c56000b520939` |
+| `41719084766` | `cd7c768327c2c770bab85e73190bec3bd34f5d3ce27ff9fbd8933075a189cf93` |
+| `41754371528` | `21ce08a8fd892c252e66764e189fa26716c06682c03f87fdb25b0d962c5c30c0` |
+
+这是对「89 字节 stderr 等于容量门禁消息」这一**离线结论**的独立复核，
+不构成新的主机证据。
+
+## 8. 后续自然调度运行（仍失败，不是主机现场取证）
+
+2026-11-04 又有 3 次自然调度运行，全部失败，签名与前 7 次相同：
+
+| Run | 时间（UTC） | 触发方式 | `v0.2.0` | `v0.1.1` | evidence 大小 |
+| --- | --- | --- | --- | --- | --- |
+| `41807941954` | 2026-11-04T09:29Z | schedule | dispatcher-rejected（32 字节） | capacity-guard-failed @ host-capacity（89 字节） | 2200 |
+| `41883481449` | 2026-11-04T18:04Z | schedule | 同上 | 同上 | 2200 |
+| `41936343589` | 2026-11-04T23:46Z | schedule | 同上 | 同上 | 2200 |
+
+三次的 `headSha` 均为 `0bc4677`（PR #106 合并后的 `main`）。用同一自校验程序复原的
+容量消息分别为 `86% / 5,657,284 KiB`、`86% / 5,600,780 KiB`、`86% / 5,588,044 KiB`，
+仍然只触发 85% 使用率上限，5 GiB 下限不触发。
+
+**边界**：这些是 GitHub Actions 的调度运行与 Artifact 数据，**不是**主机现场取证。
+它们不能回答主机文件摘要、dispatcher 版本、运行镜像或容量占用来源；那些问题仍需要
+第 5 节列出的只读命令，并且需要单独授权。

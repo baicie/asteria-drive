@@ -17,8 +17,9 @@
 
 1. 旧失败（2026-10-23 起）的远端 stderr 摘要与 dispatcher 拒绝文本的摘要一致：
    `1b39cdcb…` 精确等于 `printf 'staging deploy command rejected\n'`。
-2. 新失败（2026-11-02 起）确实存在 89 字节 stderr，并且探针报告
-   `status=failed`、`last_phase=compose-identity`（恢复演练为 `source-identity`）。
+2. 新失败（2026-11-02 起）确实存在 89 字节 stderr，并且 **monitor** 探针报告
+   `status=failed`、`last_phase=compose-identity`；恢复演练对应的 `last_phase`
+   没有被保留，属 UNKNOWN（见 2.3 与 2026-11-05 更正）。
 3. 旧工作流没有保存足以诊断的明文原因：raw stderr 在退出前被删除，Artifact 只有摘要。
 4. #96/#97 的合并发生在监控首次失败之后；两次合并没有改动
    `staging` / `infra/` / `scripts/` 任何文件。
@@ -85,7 +86,8 @@ fallback-decision.txt : "fallback: v0.2.0 probe proved version mismatch or dispa
 probe-attempts.txt    : "v0.2.0 probe_exit=1"、"v0.1.1 probe_exit=1"
 ```
 
-`41489190998`、`41549153916`、`41593365487` 完全同形（89 字节 stderr，两版都失败）。
+`41489190998`、`41549153916`、`41593365487` 的签名相同（89 字节 stderr，两版都失败）；
+只有 evidence 大小随 JSON 内数字位数在 2199/2200 之间波动，不是内容差异。
 由此可以确认（VERIFIED）：
 
 - dispatcher **已经**接受并运行了探针——否则不会产出 2199 字节 evidence 与 89 字节 stderr；
@@ -113,12 +115,20 @@ probe-attempts.txt    : "v0.2.0 probe_exit=1"、"v0.1.1 probe_exit=1"
 
 | Run | 日期 | 失败阶段 | 证据 |
 | --- | --- | --- | --- |
-| `40305621267` | 2026-10-26 | v0.2.0 `source-identity`，随后 v0.1.1 亦失败 | 32 字节 stderr，`1b39cdcb…`（dispatcher 拒绝） |
-| `41445462781` | 2026-11-02 | v0.2.0 `source-identity`，随后 v0.1.1 亦失败 | 89 字节 stderr |
+| `40305621267` | 2026-10-26 | 两个探针都未执行 | evidence 0 字节；32 字节 stderr，`1b39cdcb…`（dispatcher 拒绝） |
+| `41445462781` | 2026-11-02 | v0.2.0 形态无法区分；v0.1.1 实际执行并失败 | v0.1.1：evidence 2299 字节、stderr 0 字节 |
 
-两次都未进入备份、隔离恢复或数据校验阶段，因此**不存在恢复正确性缺陷的证据**；
-失败发生在读取源身份之前。`41445462781` 的 v0.1.1 回退同样失败且原文被删除，
-原因 UNKNOWN。
+> **2026-11-05 更正（Phase S2 收口）**：本表原先写「v0.2.0 `source-identity`」和
+> 「89 字节 stderr」，与 Artifact 原文不符。`40305621267` 的 evidence 是 **0 字节**，
+> 说明两个探针都没有通过 dispatcher；`41445462781` 的最终 stderr 是 **0 字节**，
+> 而 `fallback-decision.txt` 只记录「version mismatch 或 dispatcher rejection」，
+> Artifact 无法区分两者。`source-identity` 只是 fallback 的允许条件，不是已观察到的阶段。
+
+两次都没有证据表明进入过备份、隔离恢复或数据校验阶段，因此**不存在恢复正确性缺陷的
+证据**。`41445462781` 的 v0.1.1 回退**实际执行**（2299 字节 evidence、0 字节 stderr），
+但恢复脚本的 `verify_capacity` 与 `source-identity` 失败路径都不打印消息，所以
+「失败发生在读取源身份之前」**不能成立**——失败阶段可能是 `source-identity`，
+也可能是它之后的 `capacity-before`，两者都静默。
 
 ### 2.4 与 #96/#97 及 `v0.2.0` 应用代码的关系
 
@@ -240,7 +250,7 @@ monitor 工作流的既有契约禁止 `actions/checkout@`（见
    `asteria-drive-staging-api-1` 的 `.Config.Image`。
 
 对应只读命令与预期比对值见
-[staging-v0.2.0-bootstrap-runbook.md](../acceptance/staging-v0.2.0-bootstrap-runbook.md)
+[staging-v0.2.0-bootstrap-runbook.md](../../acceptance/staging-v0.2.0-bootstrap-runbook.md)
 第 2 节；执行前需要用户明确授权。
 
 ## 6. 部署准入评估
