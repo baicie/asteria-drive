@@ -26,7 +26,7 @@
 | --- | --- | --- | --- |
 | B1 | 主机根文件系统使用率 86–89%，超过 85% 门禁 | 10 次 monitor（2026-11-02 至 2026-11-04）的 89 字节 stderr 已精确复原（S2 诊断 2.2、第 8 节） | **VERIFIED 现象** |
 | B2 | 主机 dispatcher 拒绝 `v0.2.0` monitor 摘要 | 32 字节 stderr = dispatcher 拒绝文本；同一次运行中 `v0.1.1` 摘要被接受 | **VERIFIED 行为** |
-| B3 | 主机实际文件摘要、运行镜像、Phase B 状态 | 未读取主机 | **UNKNOWN** |
+| B3 | 主机实际文件摘要、运行镜像、Phase B 状态（`PHASE_B_OPERATIONAL_STATE_VERIFIED` 与 `PHASE_B_EXECUTION_HISTORY_VERIFIED`） | 未读取主机 | **UNKNOWN** |
 | B4 | 监控与恢复无成功运行 | 2026-10-23 起 monitor 全红，最近一次为 `41936343589`（2026-11-04T23:46Z）；drill 两次失败 | VERIFIED |
 
 B1 与 B2 是两个**独立**阻塞：

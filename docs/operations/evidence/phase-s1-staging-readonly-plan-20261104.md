@@ -19,6 +19,7 @@
 | 增加「不绕过 dispatcher」说明 | 明确本计划不使用 deploy 凭据，也不改写 dispatcher |
 | 删除 `findmnt … OPTIONS`，改用 `df -PTk`（2026-11-05） | 挂载选项可能含内部地址或凭据（`addr=`、`username=`、`password=`、`credentials=`），且与容量判定无关 |
 | Phase B 判定拆成「当前文件状态」与「历史执行事实」（2026-11-05） | 现有文件集合不能证明 bootstrap 曾经执行，必须与配置和实际行为互相验证 |
+| 明确拆分 `PHASE_B_OPERATIONAL_STATE_VERIFIED` 与 `PHASE_B_EXECUTION_HISTORY_VERIFIED`（2026-11-05 二轮） | 当前有效安装状态不能替代历史执行事实，禁止由前者推导后者 |
 
 ## 1. 已确认、无需重复取证的事实
 
@@ -123,7 +124,23 @@ image         sha256:964e71a496e0800a48aaeb9d513f3927d175927a7e271dde37e0570532d
 schema        3
 ```
 
-### 4.1 判定表：只描述**当前文件状态**
+### 4.1 两个必须分开的判定
+
+Phase B 有两个**互相独立**的判定，任何一个都不能替代另一个：
+
+| 判定 | 含义 | 需要的证据 | 能说明什么 |
+| --- | --- | --- | --- |
+| `PHASE_B_OPERATIONAL_STATE_VERIFIED` | **当前有效安装状态**满足合同：安装文件摘要、dispatcher 配置的接受集合、自然调度中的实际行为三者一致 | 步骤 A 的文件摘要；`staging-dispatch.conf` 的接受集合；下一次自然调度中 `v0.2.0` 不再被拒 | 这台主机**现在按合同工作** |
+| `PHASE_B_EXECUTION_HISTORY_VERIFIED` | **历史执行事实**：过去确实运行过 Phase B bootstrap | 独立的 bootstrap 执行日志、维护记录或变更单、文件 mtime 序列、配置管理/包管理器日志 | 过去**发生过**这次安装 |
+
+**禁止推导**：`PHASE_B_OPERATIONAL_STATE_VERIFIED` 成立时，不得据此写入或表述为
+`PHASE_B_EXECUTION_HISTORY_VERIFIED`，也不得写成「Phase B 已执行」。文件摘要、配置和
+行为都只是**当前状态**的证据，无法区分「一次完整 bootstrap」「分步手工放置」
+「执行后又回滚重放」这些历史路径。
+
+### 4.2 状态判定：文件、配置与实际行为必须互相验证
+
+#### 4.2.1 判定表：只描述**当前文件状态**
 
 | 观察 | 对当前文件状态成立的结论 | 不能据此推断 |
 | --- | --- | --- |
@@ -134,10 +151,10 @@ schema        3
 | `staging-dispatch.conf` 缺失或不可读 | 无法判定配置 | 不得推断任何 Phase B 结论 |
 
 **「Phase B 是否执行过」是历史事实，不是当前文件状态。** 本计划不把文件集合当作执行记录；
-若要回答历史问题，还需要 bootstrap 自身的日志、文件 mtime 序列或维护记录等独立证据，
-本轮不采集、也不假设它们存在。
+`PHASE_B_EXECUTION_HISTORY_VERIFIED` 只认 4.1 节列出的独立历史证据，本计划**不采集**，
+因此在只读会话中它保持 UNKNOWN——即使 `PHASE_B_OPERATIONAL_STATE_VERIFIED` 成立也如此。
 
-### 4.2 配置必须与**实际行为**互相验证
+#### 4.2.2 配置必须与**实际行为**互相验证
 
 S2 已确认的行为（VERIFIED）：同一分钟内，v0.1.1 monitor 摘要被接受并**实际执行**
 （产出 evidence 并走到 `host-capacity`），v0.2.0 monitor 摘要在 `exec` 之前被拒绝
@@ -145,20 +162,23 @@ S2 已确认的行为（VERIFIED）：同一分钟内，v0.1.1 monitor 摘要被
 
 | 配置观察 | 与 S2 行为是否一致 | 允许的结论 |
 | --- | --- | --- |
-| 配置接受 v0.1.1、不接受 v0.2.0 | 一致 | 现时配置即可解释行为；Phase B 历史仍为 UNKNOWN |
+| 配置接受 v0.1.1、不接受 v0.2.0 | 一致 | 现时配置即可解释行为；针对 v0.2.0 的 `PHASE_B_OPERATIONAL_STATE_VERIFIED` 不成立，历史判定仍为 UNKNOWN |
 | 配置接受 v0.2.0，行为却拒绝 | **矛盾** | 配置不是权威来源（未重新加载、另有 dispatcher、或校验路径不同），停止并上报，不得据此下结论 |
-| 配置接受两个摘要，且自然调度中 v0.2.0 不再被拒 | 一致 | Phase B 可能已执行且生效，但仍需文件摘要与时间戳佐证 |
+| 配置接受两个摘要，且自然调度中 v0.2.0 不再被拒 | 一致 | 可支持 `PHASE_B_OPERATIONAL_STATE_VERIFIED`；`PHASE_B_EXECUTION_HISTORY_VERIFIED` 仍需 4.1 的独立证据 |
 | 配置缺失或键名与 dispatcher 支持的不符 | 无法对照 | 记录为 UNKNOWN，不推断 |
 
-**「Phase B 已执行」只有在三条同时成立时才可写入结论**：
+**`PHASE_B_OPERATIONAL_STATE_VERIFIED` 只有在三条同时成立时才可写入结论**：
 ① 文件集合与 bundle 摘要一致；② dispatcher 配置接受 v0.2.0 摘要；③ 实际行为接受
 v0.2.0 摘要（即 v0.2.0 探针能产出 evidence，而不是 32 字节拒绝文本）。
 缺任一条，结论一律为 UNKNOWN。
 
 条件 ③ **不在只读会话中主动制造**：本计划不执行 v0.2.0 探针。它由下一次自然调度
-（每小时 `:23Z`）的 `Monitor staging` 运行被动产生——如果 Phase B 已生效，该 run 的
-`attempt-v0.2.0.json` 就不再是 `dispatcher-rejected`。因此只读会话的产出是
+（每小时 `:23Z`）的 `Monitor staging` 运行被动产生——如果 v0.2.0 的安装状态已生效，
+该 run 的 `attempt-v0.2.0.json` 就不再是 `dispatcher-rejected`。因此只读会话的产出是
 「① 与 ②」，③ 需要等待一次自然调度后另行核对。
+
+即使三条全部成立，也只得到 `PHASE_B_OPERATIONAL_STATE_VERIFIED`；
+`PHASE_B_EXECUTION_HISTORY_VERIFIED` 仍为 UNKNOWN，二者不可互换。
 
 ## 5. 步骤 B：运行身份（对应 U2）
 

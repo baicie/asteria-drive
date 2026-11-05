@@ -246,7 +246,10 @@ monitor 工作流的既有契约禁止 `actions/checkout@`（见
    不再保留文本。
 2. **主机 dispatcher 与脚本的实际摘要**：需要 `sha256sum` 读取
    `/usr/local/libexec/asteria-staging-{dispatch,monitor,recovery}` 与
-   `/etc/asteria-drive/staging-dispatch.conf`，确认 Phase B bootstrap 是否执行过。
+   `/etc/asteria-drive/staging-dispatch.conf`，确认**当前安装状态**与 dispatcher
+   接受的脚本摘要。这只能支持 `PHASE_B_OPERATIONAL_STATE_VERIFIED`；
+   bootstrap 历史上是否执行过需要独立的执行日志或维护记录
+   （`PHASE_B_EXECUTION_HISTORY_VERIFIED`），不能由摘要推断。
 3. **主机现时运行版本**：需要 `docker inspect` 读取
    `asteria-drive-staging-api-1` 的 `.Config.Image`。
 

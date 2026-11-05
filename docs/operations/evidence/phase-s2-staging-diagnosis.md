@@ -16,7 +16,7 @@
 | 触发的是 85% 使用率上限（最近两次 5 GiB 下限并未触发） | **VERIFIED** |
 | 在已测试的 12 种 `df` 输出形态范围内未发现解析缺陷；89 字节消息与 `verify_capacity` 格式逐字节吻合 | **VERIFIED（范围受限，见第 3 节）** |
 | `#96`/`#97` 与本故障无关 | **VERIFIED** |
-| 主机当前 dispatcher/脚本摘要、运行镜像版本、Phase B 是否执行 | **UNKNOWN** |
+| 主机当前 dispatcher/脚本摘要、运行镜像版本、Phase B 状态（运行状态与执行历史） | **UNKNOWN** |
 | Recovery Drill 的 `v0.1.1` 具体失败阶段 | **UNKNOWN** |
 | 是否需要在主机上清理磁盘、清理到多少 | **BLOCKED**（需主机只读取证 + 授权） |
 
@@ -216,7 +216,7 @@ prepare-isolation               2302
 | --- | --- |
 | dispatcher 实际摘要与配置 | `sha256sum /usr/local/libexec/asteria-staging-dispatch`；`grep -E '^(monitor_script_sha256\|monitor_v011_script_sha256)=' /etc/asteria-drive/staging-dispatch.conf` |
 | monitor/recovery 脚本是否安装 v0.2.0 变体 | 同路径 `sha256sum` + `stat` |
-| Phase B bootstrap 是否执行 | **历史事实，不能只由文件推断**：需 ① 当前文件摘要 ② dispatcher 配置的接受集合 ③ 下一次自然调度中 v0.2.0 是否仍被拒，三者对照（见[计划 4.1/4.2](phase-s1-staging-readonly-plan-20261104.md)） |
+| Phase B 执行历史 | `PHASE_B_EXECUTION_HISTORY_VERIFIED` 只认独立的 bootstrap 执行日志、维护记录或文件 mtime 序列；文件摘要、配置接受集合与自然调度行为三者合起来只给出 `PHASE_B_OPERATIONAL_STATE_VERIFIED`，**不能**推导执行历史（见[计划 4.1/4.2](phase-s1-staging-readonly-plan-20261104.md)） |
 | 当前运行镜像版本 | `docker inspect --format '{{.Config.Image}}' asteria-drive-staging-api-1` |
 | 容量占用来源 | `df -Pk -- /`、`docker system df`、`du -x -d1 -h /` |
 
