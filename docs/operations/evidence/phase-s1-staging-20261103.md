@@ -17,8 +17,9 @@
 
 1. 旧失败（2026-10-23 起）的远端 stderr 摘要与 dispatcher 拒绝文本的摘要一致：
    `1b39cdcb…` 精确等于 `printf 'staging deploy command rejected\n'`。
-2. 新失败（2026-11-02 起）确实存在 89 字节 stderr，并且探针报告
-   `status=failed`、`last_phase=compose-identity`（恢复演练为 `source-identity`）。
+2. 新失败（2026-11-02 起）确实存在 89 字节 stderr，并且 **monitor** 探针报告
+   `status=failed`、`last_phase=compose-identity`；恢复演练对应的 `last_phase`
+   没有被保留，属 UNKNOWN（见 2.3 与 2026-11-05 更正）。
 3. 旧工作流没有保存足以诊断的明文原因：raw stderr 在退出前被删除，Artifact 只有摘要。
 4. #96/#97 的合并发生在监控首次失败之后；两次合并没有改动
    `staging` / `infra/` / `scripts/` 任何文件。
@@ -28,7 +29,8 @@
 
 1. 当前主机上 dispatcher 与 monitor/recovery 脚本的实际摘要。
 2. 当前主机实际运行的镜像版本（`docs/status.md` 中的 `v0.1.1` 是 2026-08-16 的证据）。
-3. 89 字节 stderr 的具体原因。
+3. 89 字节 stderr 的具体原因（**2026-11-04 已由 Phase S2 复原**，见下方更正与
+   [S2 诊断](phase-s2-staging-diagnosis.md)）。
 4. Phase B bootstrap 是否已在主机上执行。
 5. 主机磁盘、Docker 数据目录、容器健康、PostgreSQL TLS 的现时状态。
 
@@ -84,7 +86,8 @@ fallback-decision.txt : "fallback: v0.2.0 probe proved version mismatch or dispa
 probe-attempts.txt    : "v0.2.0 probe_exit=1"、"v0.1.1 probe_exit=1"
 ```
 
-`41489190998`、`41549153916`、`41593365487` 完全同形（89 字节 stderr，两版都失败）。
+`41489190998`、`41549153916`、`41593365487` 的签名相同（89 字节 stderr，两版都失败）；
+只有 evidence 大小随 JSON 内数字位数在 2199/2200 之间波动，不是内容差异。
 由此可以确认（VERIFIED）：
 
 - dispatcher **已经**接受并运行了探针——否则不会产出 2199 字节 evidence 与 89 字节 stderr；
@@ -92,13 +95,18 @@ probe-attempts.txt    : "v0.2.0 probe_exit=1"、"v0.1.1 probe_exit=1"
 - v0.1.1 探针随后也失败；`raw_evidence` 被清空、stderr 被覆盖，最终只剩第二次尝试的
   89 字节 stderr 与一个哈希。
 
-89 字节 stderr 的具体内容 **UNKNOWN**。已排除的可能：
+89 字节 stderr 的具体内容在本阶段 **UNKNOWN**。当时的排除项：
 
 - 不是 `staging deploy command rejected`（32 字节，哈希不符）；
-- 不是 `staging monitor capacity failure: …`：对 0–9%、10–99%、100% 的 used 值、4 个
-  文件系统标签、7 位可用空间做了全空间穷举（程序先用已知明文自校验哈希实现），
-  在 89 字节长度约束下无匹配；
+- 当时认为「不是 `staging monitor capacity failure: …`」：对 0–9%、10–99%、100% 的 used
+  值、4 个文件系统标签、7 位可用空间做了穷举，在 89 字节长度约束下无匹配；
 - 不是常见 docker/curl/flock/df/command-not-found 单行错误（159 条候选全不匹配）。
+
+> **2026-11-04 更正（Phase S2）**：上面的第二条**是错的**。当时的穷举程序把哈希表
+> 键值写反，`no match` 是工具缺陷而不是证据。修正并用已知明文自校验后，89 字节消息
+> 被精确复原为
+> `staging monitor capacity failure: root filesystem is <86–89>% used with <…> KiB available`。
+> 详见 [Phase S2 诊断](phase-s2-staging-diagnosis.md)。本节其余结论不变。
 
 **旧工作流没有保存足以诊断的明文原因**（VERIFIED）：它只留摘要，且 raw 文件在退出前删除。
 这正是 S1.1 要修复的 P1 问题——修复方式见第 3 节，而不是靠继续猜。
@@ -107,12 +115,21 @@ probe-attempts.txt    : "v0.2.0 probe_exit=1"、"v0.1.1 probe_exit=1"
 
 | Run | 日期 | 失败阶段 | 证据 |
 | --- | --- | --- | --- |
-| `40305621267` | 2026-10-26 | v0.2.0 `source-identity`，随后 v0.1.1 亦失败 | 32 字节 stderr，`1b39cdcb…`（dispatcher 拒绝） |
-| `41445462781` | 2026-11-02 | v0.2.0 `source-identity`，随后 v0.1.1 亦失败 | 89 字节 stderr |
+| `40305621267` | 2026-10-26 | 唯一的 v0.2.0 探针未执行（当时工作流无回退） | evidence 0 字节；32 字节 stderr，`1b39cdcb…`（dispatcher 拒绝） |
+| `41445462781` | 2026-11-02 | v0.2.0 形态无法区分；v0.1.1 实际执行并失败 | v0.1.1：evidence 2299 字节、stderr 0 字节 |
 
-两次都未进入备份、隔离恢复或数据校验阶段，因此**不存在恢复正确性缺陷的证据**；
-失败发生在读取源身份之前。`41445462781` 的 v0.1.1 回退同样失败且原文被删除，
-原因 UNKNOWN。
+> **2026-11-05 更正（Phase S2 收口）**：本表原先写「v0.2.0 `source-identity`」、
+> 「随后 v0.1.1 亦失败」和「89 字节 stderr」，与 Artifact 原文不符。
+> `40305621267` 使用的工作流版本（`cf63a93`）只有**一次** `v0.2.0` 尝试，没有回退分支，
+> 它被 dispatcher 拒绝（evidence 0 字节）；`41445462781` 的最终 stderr 是 **0 字节**，
+> 而 `fallback-decision.txt` 只记录「version mismatch 或 dispatcher rejection」，
+> Artifact 无法区分两者。`source-identity` 只是 fallback 的允许条件，不是已观察到的阶段。
+
+两次都没有证据表明进入过备份、隔离恢复或数据校验阶段，因此**不存在恢复正确性缺陷的
+证据**。`41445462781` 的 v0.1.1 回退**实际执行**（2299 字节 evidence、0 字节 stderr），
+但恢复脚本的 `verify_capacity` 与 `source-identity` 失败路径都不打印消息，所以
+「失败发生在读取源身份之前」**不能成立**——失败阶段可能是 `source-identity`，
+也可能是它之后的 `capacity-before`，两者都静默。
 
 ### 2.4 与 #96/#97 及 `v0.2.0` 应用代码的关系
 
@@ -229,12 +246,15 @@ monitor 工作流的既有契约禁止 `actions/checkout@`（见
    不再保留文本。
 2. **主机 dispatcher 与脚本的实际摘要**：需要 `sha256sum` 读取
    `/usr/local/libexec/asteria-staging-{dispatch,monitor,recovery}` 与
-   `/etc/asteria-drive/staging-dispatch.conf`，确认 Phase B bootstrap 是否执行过。
+   `/etc/asteria-drive/staging-dispatch.conf`，确认**当前安装状态**与 dispatcher
+   接受的脚本摘要。这只能支持 `PHASE_B_OPERATIONAL_STATE_VERIFIED`；
+   bootstrap 历史上是否执行过需要独立的执行日志或维护记录
+   （`PHASE_B_EXECUTION_HISTORY_VERIFIED`），不能由摘要推断。
 3. **主机现时运行版本**：需要 `docker inspect` 读取
    `asteria-drive-staging-api-1` 的 `.Config.Image`。
 
 对应只读命令与预期比对值见
-[staging-v0.2.0-bootstrap-runbook.md](../acceptance/staging-v0.2.0-bootstrap-runbook.md)
+[staging-v0.2.0-bootstrap-runbook.md](../../acceptance/staging-v0.2.0-bootstrap-runbook.md)
 第 2 节；执行前需要用户明确授权。
 
 ## 6. 部署准入评估

@@ -1,6 +1,6 @@
 # Asteria Drive 当前交付状态
 
-> 最后核对：2026-11-03。本页是当前交付范围和状态的权威摘要；完成声明仍须由
+> 最后核对：2026-11-05。本页是当前交付范围和状态的权威摘要；完成声明仍须由
 > [实施与验收记录](mvp/implementation-log.md) 中的代码、命令或远端设置证据支持。
 > MVP 文档保留其历史范围和验收语义，产品 Phase 2-4 另立目标。
 
@@ -13,8 +13,8 @@
 | CI、安全门禁与分支保护 | 仓库合同与 `main` 远端保护已基本完成；独立发布治理仍不完整 | 远端已有八项 required checks（含 `CI / web`）、strict、administrator enforcement、conversation resolution，并禁止强推/删分支；required PR review（含 CODEOWNERS、旧审批失效、最后推送后审批）已于 2026-10-22 按仓库 owner 指示移除，独立 reviewer 仍未配置，因此不满足 PRD-09/PRD-10 的独立审批要求；`v*` ruleset `22372324` 已 active，创建仅允许 `baicie`，更新/删除禁止；`release` Environment 由 `baicie` 审批且允许自审 |
 | Release 与 API 加固 | 仓库门禁、tag 不可变基础和单人发布审批门已实现；生产候选仍需独立复核 | GitHub Immutable Releases 已启用，`v*` 创建仅允许 `baicie`、更新/删除已禁止，`release` Environment 要求 `baicie` reviewer 且禁止管理员 bypass；`v0.2.0` 已发布且 `isImmutable=true`，包含 API/Web 多架构镜像、Web 静态包与两份 SBOM；历史 `v0.1.1` 仍不是 immutable 证据，`v0.1.0-dev.0` 虽已 immutable 但不是生产候选；单人自审不满足独立安全/平台审批 |
 | staging 当前部署 | 主机现时运行版本 **UNKNOWN**（最后一次有证据的部署是 2026-08-16 的 `v0.1.1`）；`v0.2.0` 候选固定点已在仓库准备，未部署；**2026-10-23 起监控不再有成功运行**，主机现时状态未经证实 | 历史 run `31713181762` 证明 `v0.1.1` 的迁移、鉴权读写、storage verifier、loopback、容量门禁和 PostgreSQL TLS；PR [#80](https://github.com/baicie/asteria-drive/pull/80) 已把 `v0.2.0` source commit、API OCI digest、Compose digest、deploy/monitor/recovery 脚本摘要更新到候选，但远端 bootstrap 和部署仍需明确审批 |
-| staging 周期监测 | 历史上有过一次完整的 TLS v2 实跑；**2026-10-23 起调度运行全部失败** | 每小时及手工 workflow 仅执行 root-owned、摘要固定的只读探针；历史 run `31953366435` 的 artifact `9265267564` 证明 Compose/镜像/容器、loopback、健康、metrics、TLS 1.3、明文拒绝、Secret 属主边界与 85%/5 GiB 容量门禁。**自 2026-10-23 起每次调度运行均失败**（最后一次成功为 `39885137443`，2026-10-23T01:38Z）。失败证据只保留远端 stderr 的摘要，无法判定根因；详见 [Phase S1 证据](operations/evidence/phase-s1-staging-20261103.md)。这不是生产监控、SIEM、外部告警或容量规划 |
-| staging 恢复演练 | 历史上有过一次完整的 TLS v2 实跑；**2026-10-26 与 2026-11-02 两次失败** | 历史 run `31953850132` 的 artifact `9265397749` 证明 schema `3 -> 3`、15 表、`17 -> 17` 行、storage verifier `2/2`、恢复应用 smoke、TLS 1.3、容量和零残留。**2026-10-26 与 2026-11-02 的两次演练均失败**（`40305621267`、`41445462781`）；两次的远端证据都是 `source-identity` 阶段失败或 dispatcher 拒绝，随后 v0.1.1 回退同样被拒。边界仍为 `staging-recovery-not-production`，且明确未证明 PITR/WAL 或对象版本恢复 |
+| staging 周期监测 | 历史上有过一次完整的 TLS v2 实跑；**2026-10-23 起调度运行全部失败**，原因已定位 | 每小时及手工 workflow 仅执行 root-owned、摘要固定的只读探针；历史 run `31953366435` 的 artifact `9265267564` 证明 Compose/镜像/容器、loopback、健康、metrics、TLS 1.3、明文拒绝、Secret 属主边界与 85%/5 GiB 容量门禁。**根因（2026-11-04 复原，2026-11-05 用 10 次运行复核）**：`v0.2.0` 探针被主机 dispatcher 拒绝（旧固定点），回退的 `v0.1.1` 探针实际运行并在 `host-capacity` 退出——89 字节 stderr 精确复原为`root filesystem is 86–89% used`，即**真实触发 85% 使用率上限**；在已测试的 12 种 `df` 输出形态范围内未发现解析缺陷（不是对任意 `df` 实现的普遍证明）。10 次自然调度运行（2026-11-02 至 2026-11-04，最新 `41936343589`）签名一致。主机侧摘要与容量现时值仍需只读取证；详见 [Phase S2 诊断](operations/evidence/phase-s2-staging-diagnosis.md)。这不是生产监控、SIEM、外部告警或容量规划 |
+| staging 恢复演练 | 历史上有过一次完整的 TLS v2 实跑；**2026-10-26 与 2026-11-02 两次失败** | 历史 run `31953850132` 的 artifact `9265397749` 证明 schema `3 -> 3`、15 表、`17 -> 17` 行、storage verifier `2/2`、恢复应用 smoke、TLS 1.3、容量和零残留。**2026-10-26 与 2026-11-02 的两次演练均失败**（`40305621267`、`41445462781`），但两次的远端证据不同：`40305621267` 的最终 stderr 是 32 字节 dispatcher 拒绝文本、evidence 为 0 字节，说明该运行唯一的 `v0.2.0` 探针未执行（当时的工作流还没有 `v0.1.1` 回退）；`41445462781` 的 `v0.1.1` 回退**实际执行**（evidence 2299 字节、stderr 0 字节）并在静默阶段失败，具体阶段仍 UNKNOWN（`source-identity` 与 `capacity-before` 的失败路径都不打印消息）。因此不能表述为「回退同样被拒」，也没有证据表明演练进入过备份或恢复阶段。边界仍为 `staging-recovery-not-production`，且明确未证明 PITR/WAL 或对象版本恢复 |
 | 外部预签名端点 | 仓库能力已实现，平台证据待补 | S3 控制调用与客户端签名端点已解耦，production 对两者都强制 HTTPS；仍需用户自有 DNS/TLS、同一对象命名空间路由、CORS 和真实公网客户端上传下载证据 |
 | PostgreSQL TLS 门禁 | production 配置门禁、`v0.1.1` release 与 staging v2 运行证据已完成 | production 整个 DSN 必须来自文件且只允许一个 `sslmode=verify-full`；staging deployment/monitor/recovery 已证明主机私有 CA、`DNS:postgres`、TLS 1.2 下限、实际 TLS 1.3、明文拒绝、SCRAM、`pg_stat_ssl` 和 Secret 属主边界；该私有 CA 不证明生产 CA/DNS/轮换 |
 | 可靠性与可观测性 | 代码与仓库证据已完成 | `Idempotency-Key`、自动维护、Prometheus、fuzz/property、百万节点完整性和 10 分钟控制面 SLO 证据已归档；写路径与平台告警仍需独立测量 |
@@ -27,6 +27,15 @@ KMS 或 secret-controller 轮换、公网 TLS ingress、生产监控/SIEM 与外
 项目不得描述为公网生产就绪。
 
 ## 最近一次复核
+
+2026-11-05，Phase S2 收口：`main` 仍为 `0bc4677889ecbb51dee3a2e4853c65c1a734fc56`，
+Draft PR [#107](https://github.com/baicie/asteria-drive/pull/107) 只含文档修正，未合并。
+本轮用带已知明文自校验的离线哈希原像搜索，把 2026-11-02 至 2026-11-04 的 10 次自然调度
+Monitor 运行的 89 字节 stderr 全部精确还原为 `staging monitor capacity failure:
+root filesystem is <86–89>% used with <…> KiB available`；最近三次（`41807941954`、
+`41883481449`、`41936343589`）仍为 86% 使用率、可用空间 5.33–5.40 GiB。这些是 GitHub
+Actions Artifact 侧的证据，**不是**主机现场取证：主机文件摘要、运行镜像与容量现时值
+仍未读取，属 UNKNOWN，需要单独授权。
 
 2026-11-02，Web 传输可靠性增量在独立分支 `feat/web-transfer-reliability` 上完成，未合入
 `main`、未打 tag、未发布 Release：
