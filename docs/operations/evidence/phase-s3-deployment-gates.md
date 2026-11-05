@@ -15,6 +15,10 @@
 七项 Gate 中 0 项 VERIFIED 通过、4 项 BLOCKED、3 项 UNKNOWN、0 项 NOT_RUN。
 **准备了修复方案不等于阻塞已解决。**
 
+2026-11-05 已收到主机只读取证授权，但**没有可用的主机通道**（仓库不含主机地址，
+本机无 staging 凭据），因此 2026-11-05 的取证仍未执行，所有 UNKNOWN 保持 UNKNOWN。
+详见[取证清单第 0 节](phase-s3-staging-host-evidence.md)。
+
 ## 1. Gate 矩阵
 
 | Gate | 判定目标 | 当前状态 | 依据 | 解除条件 |

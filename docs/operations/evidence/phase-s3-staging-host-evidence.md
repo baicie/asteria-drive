@@ -11,14 +11,55 @@
 
 ## 0. 结论边界（先读这一节）
 
-本阶段**没有获得主机操作授权**，也没有可用的 root 维护会话。因此：
+本阶段**没有获得可用的主机通道**。授权在 2026-11-05 已给出，但执行前的通道审计
+发现三个都成立的事实：
+
+1. 仓库里**没有**主机地址：`ASTERIA_STAGING_SSH_HOST` 等只存在于 GitHub Secrets
+   （`gh secret list` 返回空，说明当前 token 连读取名称的权限都没有）；
+2. 本机环境**没有** `ASTERIA_*` / `STAGING_*` / `DEPLOY_*` 变量，也没有
+   `~/.ssh/config`；
+3. `~/.ssh/id_ed25519` 是个人工作密钥（`liuzhiwei@bonree.com`），
+   `known_hosts` 里只有 gitlab / github / `82.156.234.84` 三类条目，
+   **没有**可用于 staging 的托管主机记录。
+
+按任务书：「如果尚无授权、没有可用的维护会话……标记 `HOST_EVIDENCE_BLOCKED`，
+完成所有仓库侧工作并提交待执行清单。」因此：
 
 - 主机文件摘要、dispatcher 配置、运行镜像、容量占用来源，全部保持 **UNKNOWN**；
-- 本文中的命令、预期值、判定规则都已离线复核，但**未被对真实主机执行**；
-- 本文任何"预期观察"都是**由仓库源码推导的假设**，不是现场结果，不得写成 VERIFIED。
+- 我没有尝试用任何密钥去连接 `known_hosts` 里的地址来"碰运气"——那不是授权过的
+  通道，且会把一个未知主机当成 staging；
+- 本文任何"预期观察"都是**由仓库源码推导的假设**，不是现场结果。
 
 **不要**把本文的命令清单、Gate 矩阵中的 PREPARED 状态、或修复方案的存在，
 理解为阻塞已解决。`v0.2.0` 仍是 `DEPLOYMENT_BLOCKED`。
+
+### 0.1 已交付的可执行取证脚本
+
+为避免现场手工执行十几条命令时出错，本阶段把 P1–P3 收敛成一个脚本：
+
+`scripts/s3-staging-readonly-evidence.sh`
+
+- 只读：不含 `docker run/exec/rm/restart/pull/prune`、`systemctl`、`compose up/down`、
+  任何 `rm`/`mv`/`chmod`/`install`/重定向写入；
+- 只输出判定与数字：文件摘要只打印 `MATCH / MISMATCH / MISSING / UNKNOWN`，
+  配置只打印「某个键指向哪个版本的脚本」，不打印摘要值与配置正文；
+- 不采集 `.Config.Env`、挂载选项、`/proc/mounts`、容器日志、任何 Secret；
+- 必须在 root 下运行（`EUID != 0` 直接退出）；
+- `du` 需要显式 `--with-du` 才执行，默认跳过，避免无意中产生 I/O。
+
+**离线验证**：用三套合成主机夹具（v0.1.1-only、Phase B 已安装、残缺主机）
+在本地跑通，覆盖了 `MATCH / MISMATCH / MISSING / ABSENT / UNKNOWN` 全部分支，
+并核对输出中不出现任何文件摘要或配置正文（只出现公开的 release digest）。
+夹具测试暴露并修复了三个真实缺陷：
+
+| 缺陷 | 后果 | 修复 |
+| --- | --- | --- |
+| `df` 字段顺序接反（`used` 与 `available` 互换） | 会把 5,538,200 当成使用率、把 87 当成可用 KiB，容量判定完全错误 | 与生产脚本的字段序对齐（`$4` Available、`$5` Capacity） |
+| `compare` 的参数顺序与调用处相反 | 所有文件身份一律报 `MISMATCH` | 统一为 `compare <path> <expected>` |
+| `python3` 在本机是 Store 垫片（`rc=49`） | `releases.json` 解析恒失败 | 先探测可用的解释器（`python3` → `python`），都不可用时显式报 `UNKNOWN` 而不是崩溃 |
+
+第二个缺陷尤其值得记录：如果没做夹具测试，现场会拿到一屏 `MISMATCH`，
+很可能被误读成"主机文件全被改过"。
 
 ## 1. 本阶段已离线核实的事实（VERIFIED，仓库侧）
 
@@ -46,17 +87,36 @@ GitHub 上**没有**基于新 `main`（`17d9e78`）的 Monitor 运行记录：�
 
 ## 2. 执行前提（缺一不可）
 
-1. 用户**单独、明确**授权主机只读取证；本清单不构成授权。
-2. 具备主机 root 只读会话；**不**复用 `asteria-deploy` 受限密钥，**不**修改
-   `authorized_keys`，**不**新建高权限入口。
-3. 维护窗口建议选在两次调度之间（观察到的调度间隔 ≥2h，建议预留 90 分钟）。
-4. 全程只读：不出现 `docker run/exec/rm/restart`、`systemctl restart`、
+1. 用户**单独、明确**授权主机只读取证——**已于 2026-11-05 给出**；
+2. **仍缺**：一条可用的主机通道。至少满足其一：
+   - 操作者在**能访问主机的那台机器上**执行本文脚本，或
+   - 把主机地址/端口/用户/密钥以安全方式提供到本会话（**不要**贴进聊天或 Issue；
+     用本机环境变量或临时 `~/.ssh/config` 条目），或
+   - 由操作者执行脚本并把输出（判定与数字）带回。
+3. 由具备主机 **root 只读**权限的操作者执行；**不**复用 `asteria-deploy` 受限密钥，
+   **不**修改 `authorized_keys`，**不**新建高权限入口。
+4. 维护窗口建议选在两次调度之间（观察到的调度间隔 ≥2h，建议预留 90 分钟）。
+5. 全程只读：不出现 `docker run/exec/rm/restart`、`systemctl restart`、
    `compose up/down`、`prune`、任何文件写入。
-5. 输出保存在操作者本地；**不**粘贴到 Issue/PR/Artifact。摘要只记
+6. 输出保存在操作者本地；**不**粘贴到 Issue/PR/Artifact。摘要只记
    `MATCH / MISMATCH / MISSING / UNKNOWN`，**不记原始值**。
-6. `du` 会产生明显 I/O：限范围、可中止；不对 `/proc`、`/sys`、网络挂载递归。
+7. `du` 会产生明显 I/O：限范围、可中止；不对 `/proc`、`/sys`、网络挂载递归。
 
 ## 3. P1：现时容量与占用来源
+
+### 3.0 一步完成（推荐）
+
+在主机上以 root 运行：
+
+```bash
+sudo ./scripts/s3-staging-readonly-evidence.sh --with-du
+```
+
+脚本按 P1 → P2 → P3 顺序输出下面各节的字段，全部为判定与数字。
+`--with-du` 会执行 `du -x -d1`（带 300 秒超时），**只在维护窗口内使用**；
+不带该参数时 `du` 显示 `NOT_RUN`。
+
+下面的分节命令用于：脚本某项报 `UNKNOWN` 时手工复核，或操作者希望逐条执行。
 
 ### 3.1 容量读数
 
@@ -304,6 +364,8 @@ v0.2.0 而 compose 为 v0.1.1）。
 
 ## 7. 离线复核记录（本阶段已执行）
 
+### 7.1 `df` 解析与容量判定（16 用例）
+
 `df` 解析与容量判定用一个独立脚本离线测试，解析函数**逐字节复制**自
 `scripts/monitor-staging.sh:parse_filesystem_output`，确保清单不会与生产契约漂移。
 
@@ -325,6 +387,26 @@ v0.2.0 而 compose 为 v0.1.1）。
 | 摘要 MATCH / MISMATCH / MISSING | PASS |
 
 共 16 项全部通过。该测试只验证**解析与判定逻辑**，不代表任何主机结果。
+
+### 7.2 取证脚本的三套夹具测试
+
+`scripts/s3-staging-readonly-evidence.sh` 用合成主机夹具离线跑通：
+
+| 夹具 | 覆盖 |
+| --- | --- |
+| v0.1.1-only（预期形态） | 单槽位锚点、`ABSENT` 键、`MISSING` controller/releases、容量 BLOCK |
+| Phase B 已安装 | 六键齐全、`monitor_slot_generation: v0.2.0`、`releases_json` 解析、`controller_state: PRESENT` |
+| 残缺主机 | `MISSING` 文件、`UNKNOWN` 镜像引用 |
+
+输出核对：除公开 release digest 外不出现任何 64 位十六进制串；不含
+`password` / `secret` / `token` / `private_key` 字样。
+
+### 7.3 脚本安全性扫描
+
+对脚本本身做静态扫描，确认不含：`docker run/exec/rm/rmi/restart/stop/kill/pull/
+build/tag/prune`、`systemctl`、`compose up/down`、`rm`、`mv`、`chmod`、`chown`、
+`install`、`truncate`、对 `/etc|/usr|/opt|/var|/run` 的重定向写入、`findmnt`、
+`/proc/mounts`、`.Config.Env`、完整 `docker inspect` JSON。扫描结果为空。
 
 ## 8. 禁止事项（本阶段与现场执行均适用）
 
